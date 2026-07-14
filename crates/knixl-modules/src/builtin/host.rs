@@ -2,7 +2,7 @@
 use kdl::KdlNode;
 use knixl_ir::{AttrKey, AttrPath, Assignment, NixExpr};
 use knixl_kdl::child_arg_str;
-use crate::{LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, Unit, Bucket};
+use crate::{Bucket, Child, Field, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, Unit, ValueTy};
 
 pub struct Host { schema: NodeSchema }
 
@@ -15,16 +15,43 @@ impl Module for Host {
     fn schema(&self) -> &NodeSchema { &self.schema }
     fn lower(&self, node: &KdlNode, ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError> {
         let mut units = Vec::new();
+        let mut raw = Vec::new();
         if let Some(sys) = child_arg_str(node, "system") {
             units.push(unit_default(assign(&["nixpkgs", "hostPlatform"], NixExpr::Str(sys))));
         }
         // delegate everything except the fields host consumes itself
-        for out in ctx.lower_children(node, &["system"])? { units.extend(out.units); }
-        Ok(LowerOutput { units })
+        for out in ctx.lower_children(node, &["system"])? {
+            units.extend(out.units);
+            raw.extend(out.raw);
+        }
+        Ok(LowerOutput { units, raw })
     }
 }
 
-fn schema() -> NodeSchema { todo!("host schema: arg host name; child system; delegate rest") }
+fn schema() -> NodeSchema {
+    NodeSchema {
+        summary: "A NixOS host: a system and the services it runs.".into(),
+        args: vec![Field {
+            name: "name".into(),
+            ty: ValueTy::Str,
+            required: true,
+            doc: "The host name.".into(),
+        }],
+        props: vec![],
+        children: vec![Child {
+            name: "system".into(),
+            ty: ValueTy::Str,
+            required: true,
+            repeated: false,
+            delegate: false,
+            doc: "The Nix system double, e.g. x86_64-linux.".into(),
+            args: vec![],
+            props: vec![],
+        }],
+        // Everything other than `system` is a service, delegated to its own module.
+        open_children: true,
+    }
+}
 
 // ---- shared helpers (candidate for a knixl-modules::helpers module) ----
 
@@ -35,3 +62,31 @@ pub(crate) fn assign(path: &[&str], value: NixExpr) -> Assignment {
     }
 }
 pub(crate) fn unit_default(a: Assignment) -> Unit { Unit { bucket: Bucket::Default, assignment: a } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Registry, Scope};
+
+    fn node(src: &str) -> KdlNode {
+        src.parse::<kdl::KdlDocument>().unwrap().nodes().first().unwrap().clone()
+    }
+
+    #[test]
+    fn host_lowers_system_to_hostplatform() {
+        let host = Host::new();
+        let n = node("host \"web\" {\n    system \"x86_64-linux\"\n}");
+        let reg = Registry::new();
+        let mut diags = Vec::new();
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags);
+
+        let out = host.lower(&n, &mut ctx).unwrap();
+        assert_eq!(out.units.len(), 1);
+        let a = &out.units[0].assignment;
+        let keys: Vec<&str> = a.path.0.iter().map(|k| match k {
+            AttrKey::Ident(s) | AttrKey::Quoted(s) => s.as_str(),
+        }).collect();
+        assert_eq!(keys, vec!["nixpkgs", "hostPlatform"]);
+        assert!(matches!(&a.value, NixExpr::Str(s) if s == "x86_64-linux"));
+    }
+}

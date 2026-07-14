@@ -104,6 +104,10 @@ impl Emit for NixModule {
             w.close(); w.push("];"); w.nl(); w.nl();
         }
         for a in &self.body { a.emit(w); }
+        for r in &self.raw {
+            w.push("# raw-nix passthrough"); w.nl();
+            emit_raw(w, r); w.nl();
+        }
         w.close(); w.push("}"); w.nl();
     }
 }
@@ -425,6 +429,18 @@ mod tests {
             capture(|w| NixExpr::AttrSet(forward).emit(w)),
             capture(|w| NixExpr::AttrSet(reverse).emit(w)),
         );
+    }
+
+    #[test]
+    fn attr_path_to_option_key_collapses_quoted_segments() {
+        let p = AttrPath(vec![
+            AttrKey::Ident("services".into()),
+            AttrKey::Ident("nginx".into()),
+            AttrKey::Ident("virtualHosts".into()),
+            AttrKey::Quoted("example.com".into()),
+            AttrKey::Ident("forceSSL".into()),
+        ]);
+        assert_eq!(p.to_option_key(), "services.nginx.virtualHosts.<name>.forceSSL");
     }
 
     #[test]

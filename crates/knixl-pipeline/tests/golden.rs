@@ -47,14 +47,114 @@ fn build_registry() -> Registry {
     reg
 }
 
-/// A formatter handle. `format()` is not invoked until it is implemented, so the binary
-/// path only needs to be right once Phase 1's formatter integration lands.
+/// The real formatter, honouring `KNIXL_FORMATTER` (point it at a nixfmt wrapper). Records
+/// the binary's actual version.
 fn formatter() -> Formatter {
-    Formatter {
-        name: "nixfmt-rfc-style".into(),
-        version: "0.6.0".into(),
-        bin: PathBuf::from("nixfmt-rfc-style"),
+    let bin = std::env::var("KNIXL_FORMATTER").unwrap_or_else(|_| "nixfmt-rfc-style".into());
+    Formatter::detect("nixfmt-rfc-style", PathBuf::from(bin), "0.6.0")
+}
+
+/// An identity "formatter" (`cat`), so the full pipeline can be exercised end to end even
+/// where nixfmt is not installed. The text is the emitter's structural output, pre-format.
+fn identity_formatter() -> Formatter {
+    Formatter { name: "identity".into(), version: "0".into(), bin: PathBuf::from("cat") }
+}
+
+fn generate_host(host_file: &str) -> Vec<knixl_pipeline::GeneratedFile> {
+    let examples = examples_dir();
+    let path = PathBuf::from("hosts").join(host_file);
+    let src = fs::read_to_string(examples.join(&path)).expect("read host kdl");
+    let tool = "0.3.1".parse().unwrap();
+    generate(&[HostSource { path, src }], &build_registry(), &identity_formatter(), &tool, None)
+        .expect("generate")
+}
+
+/// Assemble a realistic project root in a temp dir: hosts + lock from examples/, and the
+/// module library from the repo's modules/. Returns the root.
+fn temp_project(tag: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("knixl-proj-{}-{tag}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("hosts")).unwrap();
+    fs::create_dir_all(root.join("modules/web-service")).unwrap();
+
+    let examples = examples_dir();
+    for host in ["web.kdl", "db.kdl"] {
+        fs::copy(examples.join("hosts").join(host), root.join("hosts").join(host)).unwrap();
     }
+    fs::copy(examples.join("knixl.lock.kdl"), root.join("knixl.lock.kdl")).unwrap();
+    fs::copy(
+        examples.join("../modules/web-service/knixl-module.kdl"),
+        root.join("modules/web-service/knixl-module.kdl"),
+    )
+    .unwrap();
+    root
+}
+
+#[test]
+fn gather_and_plan_report_missing_when_disk_is_empty() {
+    use knixl_lock::{FileState, Plan};
+    use knixl_pipeline::gather::gather;
+
+    let root = temp_project("missing");
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    // The project has hosts + modules + a lock, but no generated/ dir, so nothing is on disk.
+    let plan = Plan::compute(&project.inputs, &project.disk, &project.lock, &project.versions);
+
+    assert!(!plan.has_validation_errors());
+    assert_eq!(plan.files.len(), 3, "web.nix, db.nix, db-backup.nix");
+    assert!(
+        plan.files.iter().all(|f| matches!(f.state, FileState::Missing { .. })),
+        "every output is Missing when nothing is generated on disk"
+    );
+    // the declarative module was discovered and registered alongside the built-ins
+    assert!(project.registry.get("web-service").is_some());
+    assert!(project.registry.get("postgres").is_some());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn web_pipeline_produces_expected_structure() {
+    let files = generate_host("web.kdl");
+    assert_eq!(files.len(), 1, "web has no side-files");
+    let text = &files[0].text;
+    for needle in [
+        "nixpkgs.hostPlatform = \"x86_64-linux\"",
+        "services.nginx.enable = true",
+        "services.nginx.virtualHosts.\"example.com\".forceSSL = true",
+        "services.nginx.virtualHosts.\"example.com\".locations.\"/\".proxyPass = \"http://127.0.0.1:3000\"",
+        "security.acme.certs.\"example.com\".email = \"ops@example.com\"",
+        // raw-nix passthrough
+        "systemd.services.nginx.serviceConfig.MemoryMax = \"512M\"",
+    ] {
+        assert!(text.contains(needle), "web.nix missing `{needle}`\n---\n{text}");
+    }
+}
+
+#[test]
+fn db_pipeline_produces_two_files_with_mkif_backup() {
+    let files = generate_host("db.kdl");
+    assert_eq!(files.len(), 2, "db has a backup side-file");
+
+    let db = files.iter().find(|f| f.path.file_name().unwrap() == "db.nix").expect("db.nix");
+    assert!(db.text.contains("services.postgresql.enable = true"));
+    assert!(db.text.contains("lib.mkForce"), "listen-tcp forces the preset");
+    assert!(db.text.contains("./db-backup.nix"), "main file imports the side-file");
+
+    let backup = files
+        .iter()
+        .find(|f| f.path.file_name().unwrap() == "db-backup.nix")
+        .expect("db-backup.nix");
+    // Pre-format the dynamic host key is quoted (services.restic.backups."db").
+    assert!(backup.text.contains("services.restic.backups"));
+    assert!(backup.text.contains("lib.mkIf"), "backup is gated by a runtime condition");
+}
+
+/// True if the configured formatter actually runs. The byte-for-byte goldens need a real
+/// nixfmt (set `KNIXL_FORMATTER` to one, e.g. a wrapper); without it they skip rather than
+/// fail, so `cargo test` is green on hosts without nixfmt.
+fn formatter_available() -> bool {
+    formatter().format("{ }\n").is_ok()
 }
 
 /// Generate `host_file` and assert every produced file matches `expected/<basename>`.
@@ -65,7 +165,7 @@ fn assert_host_matches(host_file: &str) {
 
     let registry = build_registry();
     let tool = "0.3.1".parse().unwrap();
-    let files = generate(&[HostSource { path, src }], &registry, &formatter(), &tool)
+    let files = generate(&[HostSource { path, src }], &registry, &formatter(), &tool, None)
         .expect("generate");
 
     assert!(!files.is_empty(), "generate produced no files for {host_file}");
@@ -79,20 +179,29 @@ fn assert_host_matches(host_file: &str) {
 }
 
 #[test]
-#[ignore = "pipeline stubbed until Phase 1; run with --ignored to drive it green"]
 fn web_matches_golden() {
+    if !formatter_available() {
+        eprintln!("skipping web_matches_golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
     assert_host_matches("web.kdl");
 }
 
 #[test]
-#[ignore = "pipeline stubbed until Phase 1; run with --ignored to drive it green"]
 fn db_matches_golden() {
+    if !formatter_available() {
+        eprintln!("skipping db_matches_golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
     assert_host_matches("db.kdl");
 }
 
 #[test]
-#[ignore = "pipeline stubbed until Phase 1; run with --ignored to drive it green"]
 fn generate_is_byte_identical_across_runs() {
+    if !formatter_available() {
+        eprintln!("skipping determinism golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
     let examples = examples_dir();
     let path = PathBuf::from("hosts/web.kdl");
     let src = fs::read_to_string(examples.join(&path)).expect("read host kdl");
@@ -104,6 +213,7 @@ fn generate_is_byte_identical_across_runs() {
             &build_registry(),
             &formatter(),
             &tool,
+            None,
         )
         .expect("generate")
         .into_iter()

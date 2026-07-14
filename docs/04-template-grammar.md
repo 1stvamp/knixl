@@ -14,8 +14,8 @@ Matching exactly the boundary in docs/03 (substitute, repeat-into-list, gate-on-
 
 - scalars: `#true`, `16`, `"literal"`
 - interpolated string: `"{upstream}"`, parts are literal or `{lookup}`
-- indent string: `(indent-str #""" ... """#)`, interpolated, emits a `'' ... ''` block
-- `(collect "child")` : fold a repeated child's first arg into a `List`. The only value form that reads a repeated child directly into a flat list. Use `for-each` when each item must produce distinct structure (a path per item) rather than a flat list.
+- indent string: `(indent-str)#""" ... """#`, interpolated, emits a `'' ... ''` block
+- `(collect)"child"` : fold a repeated child's first arg into a `List`. The only value form that reads a repeated child directly into a flat list. Use `for-each` when each item must produce distinct structure (a path per item) rather than a flat list. (Both are KDL type annotations: `(type)value`.)
 
 ## Paths
 
@@ -68,7 +68,7 @@ web-service "example.com" {
 Template fragment:
 
 ```kdl
-set "services.nginx.virtualHosts.{host}.serverAliases" (collect "alias")
+set "services.nginx.virtualHosts.{host}.serverAliases" (collect)"alias"
 for-each "loc" in "location" {
     set "services.nginx.virtualHosts.{host}.locations.{loc.match}.proxyPass" "{loc.upstream}"
 }

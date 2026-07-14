@@ -23,6 +23,17 @@ impl Registry {
     pub fn get(&self, node_name: &str) -> Option<&dyn Module> {
         self.by_node.get(node_name).map(|b| b.as_ref())
     }
+
+    /// Every registered module's name and version, for the lock's `module` entries.
+    pub fn module_versions(&self) -> BTreeMap<String, semver::Version> {
+        self.by_node
+            .values()
+            .map(|m| {
+                let id = m.id();
+                (id.name, id.version)
+            })
+            .collect()
+    }
 }
 
 impl Default for Registry { fn default() -> Self { Self::new() } }

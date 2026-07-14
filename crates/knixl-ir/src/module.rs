@@ -1,4 +1,4 @@
-use crate::expr::{AttrPath, Binding, Formals, NixExpr, Priority};
+use crate::expr::{AttrPath, Binding, Formals, NixExpr, Priority, RawNix};
 
 /// A module file is not a NixExpr: it has a fixed shape, always emitted the same way.
 #[derive(Debug, Clone)]
@@ -7,6 +7,7 @@ pub struct NixModule {
     pub imports: Vec<NixExpr>,     // imports = [ ... ];  (kept separate so it emits first)
     pub lets: Vec<Binding>,        // optional hoisted let-block (generator pass)
     pub body: Vec<Assignment>,
+    pub raw: Vec<RawNix>,          // verbatim raw-nix passthrough, emitted after the body
     pub provenance: Provenance,    // drives the header comment + lock entry
 }
 

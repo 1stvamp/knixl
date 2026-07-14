@@ -1,0 +1,6 @@
+{
+  "services.nginx.enable": { "type": "boolean", "declarations": ["nixos/modules/services/web-servers/nginx"] },
+  "services.nginx.virtualHosts.<name>.forceSSL": { "type": "boolean", "declarations": ["nginx"] },
+  "services.nginx.virtualHosts.<name>.serverAliases": { "type": "list of string", "declarations": ["nginx"] },
+  "system.stateVersion": { "type": "string", "readOnly": true, "declarations": ["nixos"] }
+}

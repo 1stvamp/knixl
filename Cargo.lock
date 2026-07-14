@@ -274,6 +274,7 @@ dependencies = [
  "knixl-modules",
  "knixl-nix",
  "knixl-oracle",
+ "knixl-pipeline",
  "miette",
 ]
 
@@ -345,6 +346,7 @@ dependencies = [
  "knixl-lock",
  "knixl-modules",
  "knixl-nix",
+ "knixl-oracle",
  "semver",
  "thiserror",
 ]

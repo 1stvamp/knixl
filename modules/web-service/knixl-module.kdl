@@ -30,7 +30,7 @@ module name="web-service" version="1.2.0" {
         set "services.nginx.virtualHosts.{host}.enableACME" #true
         set "services.nginx.virtualHosts.{host}.locations.\"/\".proxyPass" "{upstream}"
 
-        set "services.nginx.virtualHosts.{host}.serverAliases" (collect "alias")
+        set "services.nginx.virtualHosts.{host}.serverAliases" (collect)"alias"
 
         for-each "loc" in "location" {
             set "services.nginx.virtualHosts.{host}.locations.{loc.match}.proxyPass" "{loc.upstream}"
@@ -42,11 +42,11 @@ module name="web-service" version="1.2.0" {
         // generation-time gate on an input flag: include these lines or not.
         when-flag "hardened" {
             set "services.nginx.virtualHosts.{host}.locations.\"/\".extraConfig" \
-                (indent-str #"""
+                (indent-str)#"""
                     add_header X-Frame-Options "SAMEORIGIN" always;
                     add_header X-Content-Type-Options "nosniff" always;
                     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-                """#)
+                """#
         }
     }
 }
