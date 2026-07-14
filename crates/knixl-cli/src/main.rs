@@ -27,6 +27,18 @@ enum Cmd {
     Upgrade { #[arg(long)] yes: bool },
     /// Print the typed reference for a module node (from schema()).
     Doc { node: String },
+    /// Add a package to a host: draft the KDL, verify under nix, preview, then regenerate.
+    Install {
+        /// The nixpkgs attribute name, e.g. ripgrep.
+        pkg: String,
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        yes: bool,
+        /// Treat a skipped nix check (nix absent) as an error.
+        #[arg(long)]
+        strict: bool,
+    },
 }
 
 #[repr(i32)]
@@ -117,7 +129,139 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
         }
 
         Cmd::Doc { node } => { print_doc(ctx, &node, cli.json); Code::Clean }
+
+        Cmd::Install { pkg, host, yes, strict } => install(ctx, &pkg, host.as_deref(), yes, strict),
     }
+}
+
+/// `knixl install <pkg>`: resolve a host, draft the KDL edit, verify under nix, preview,
+/// confirm, and regenerate. The host KDL is reverted on any failure or a declined confirm.
+fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool) -> Code {
+    use knixl_pipeline::install::{add_package, list_hosts, select_host};
+
+    let hosts = match list_hosts(&ctx.root) {
+        Ok(h) => h,
+        Err(e) => { eprintln!("knixl: {e}"); return Code::Internal; }
+    };
+    let target = match select_host(&hosts, host) {
+        Ok(t) => t.clone(),
+        Err(e) => { eprintln!("knixl: {e}"); return Code::Usage; }
+    };
+
+    let original = match std::fs::read_to_string(&target.path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("knixl: {}: {e}", target.path.display()); return Code::Internal; }
+    };
+    let draft = match add_package(&original, pkg) {
+        Ok(Some(d)) => d,
+        Ok(None) => { println!("{pkg} is already installed on {}", target.name); return Code::Clean; }
+        Err(e) => { eprintln!("knixl: cannot edit {}: {e}", target.path.display()); return Code::Internal; }
+    };
+
+    // Package existence first, before touching any file.
+    if let Some(code) = verify_package(ctx, pkg, strict) {
+        return code;
+    }
+
+    // Write the draft, then verify it generates and parses; revert on any failure.
+    if let Err(e) = std::fs::write(&target.path, &draft) {
+        eprintln!("knixl: {}: {e}", target.path.display());
+        return Code::Internal;
+    }
+    let revert = || { let _ = std::fs::write(&target.path, &original); };
+
+    let drafted = Ctx::load();
+    let plan = Plan::compute(&drafted.inputs, &drafted.disk, &drafted.lock, &drafted.running);
+    if plan.has_validation_errors() {
+        report_validation(&plan.validation_errors, false);
+        revert();
+        return Code::Validation;
+    }
+    if let Some(code) = verify_parse(&drafted, strict) {
+        revert();
+        return code;
+    }
+
+    // Preview.
+    println!("\n{}", target.path.display());
+    println!("+   package \"{pkg}\"\n");
+    print_plan(&plan, false);
+
+    if !yes && !confirm(&format!("install {pkg} on {}?", target.name)) {
+        revert();
+        println!("cancelled");
+        return Code::Clean;
+    }
+
+    // Apply: regenerate changed outputs and commit the lock.
+    let mut worst = Code::Clean;
+    for f in &plan.files {
+        match &f.state {
+            FileState::Stale { .. } | FileState::Missing { .. } => write_file(&drafted, f),
+            FileState::Drifted { .. } => { report_taint(f, false); worst = worst.max(Code::Drift); }
+            FileState::Clean | FileState::Orphaned => {}
+        }
+    }
+    if worst == Code::Clean {
+        write_lock(&drafted, &plan.lock_next);
+        println!("installed {pkg} on {}", target.name);
+    } else {
+        revert();
+    }
+    worst
+}
+
+/// Check `pkgs.<pkg>` resolves against the lock's pinned rev (ambient fallback). Returns
+/// `Some(code)` to stop, `None` to proceed. A missing nix is a warning unless `--strict`.
+fn verify_package(ctx: &Ctx, pkg: &str, strict: bool) -> Option<Code> {
+    use knixl_nix::nixeval::{NixError, NixEval, Nixpkgs};
+    let rev = &ctx.lock.oracle.nixpkgs_rev;
+    let src = if rev.is_empty() { Nixpkgs::Ambient } else { Nixpkgs::PinnedRev(rev.clone()) };
+    match NixEval::resolve().package_exists(&src, pkg) {
+        Ok(true) => None,
+        Ok(false) => { eprintln!("knixl: no nixpkgs package named `{pkg}`"); Some(Code::Validation) }
+        Err(NixError::Unavailable(_)) if strict => {
+            eprintln!("knixl: --strict: nix unavailable, cannot verify `{pkg}`");
+            Some(Code::Validation)
+        }
+        Err(NixError::Unavailable(_)) => {
+            eprintln!("warning: nix unavailable, skipping package check for `{pkg}`");
+            None
+        }
+        Err(NixError::Failed(m)) => { eprintln!("knixl: nix check failed: {m}"); Some(Code::Validation) }
+    }
+}
+
+/// Parse the drafted generated files. `Some(code)` to stop, `None` to proceed. A missing
+/// nix skips silently (the package step already reported it).
+fn verify_parse(ctx: &Ctx, _strict: bool) -> Option<Code> {
+    use knixl_nix::nixeval::{NixError, NixEval};
+    let nix = NixEval::resolve();
+    for (path, text) in &ctx.generated {
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("out.nix");
+        let tmp = std::env::temp_dir().join(format!("knixl-parse-{}-{name}", std::process::id()));
+        if std::fs::write(&tmp, text).is_err() { continue; }
+        let verdict = nix.parses(&tmp);
+        let _ = std::fs::remove_file(&tmp);
+        match verdict {
+            Ok(()) => {}
+            Err(NixError::Unavailable(_)) => return None,
+            Err(NixError::Failed(m)) => {
+                eprintln!("knixl: generated {} does not parse: {m}", path.display());
+                return Some(Code::Validation);
+            }
+        }
+    }
+    None
+}
+
+fn confirm(prompt: &str) -> bool {
+    use std::io::Write;
+    print!("{prompt} [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).is_ok()
+        && matches!(line.trim().chars().next(), Some('y') | Some('Y'))
 }
 
 fn main() {

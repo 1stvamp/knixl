@@ -10,6 +10,7 @@
 //! so they stay `#[ignore]`d; the interpreter and reconcile logic are covered by unit tests.
 
 pub mod gather;
+pub mod install;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -156,6 +157,10 @@ fn generate_one(
         let body = files.remove(key).unwrap_or_default();
         let raw = raw_files.remove(key).unwrap_or_default();
 
+        // Fold repeated list contributors (e.g. `package` nodes) into one assignment before
+        // linting, so list-option merges are not mistaken for value conflicts.
+        merge_list_assignments(&mut body);
+
         // Value-conflict lint is per file; the host-level lints attach to the host's file.
         let mut warnings = detect_conflicts(&body);
         if *key == host_name {
@@ -218,6 +223,64 @@ fn generate_one(
     }
 
     Ok(generated)
+}
+
+/// Merge same-path list-valued assignments into one (NixOS list-option semantics), so
+/// repeated contributors like `package` nodes become a single `environment.systemPackages`
+/// rather than a duplicate attribute. Only plain list values are merged: an assignment with
+/// a priority or a runtime condition is left alone, and a mix with non-list values is left
+/// for the conflict lint. Items concatenate in source order; the merged assignment keeps the
+/// position of the first occurrence.
+fn merge_list_assignments(body: &mut Vec<Assignment>) {
+    use std::collections::BTreeMap;
+    // Which paths are mergeable: every occurrence is a bare list (no priority/condition)
+    // and there is more than one.
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    let mut mergeable: BTreeMap<String, bool> = BTreeMap::new();
+    for a in body.iter() {
+        let key = exact_path_key(&a.path);
+        *seen.entry(key.clone()).or_insert(0) += 1;
+        let ok = matches!(a.value, NixExpr::List(_)) && a.priority.is_none() && a.condition.is_none();
+        let e = mergeable.entry(key).or_insert(true);
+        *e = *e && ok;
+    }
+    let targets: std::collections::BTreeSet<String> = seen
+        .iter()
+        .filter(|(k, n)| **n >= 2 && mergeable.get(*k).copied().unwrap_or(false))
+        .map(|(k, _)| k.clone())
+        .collect();
+    if targets.is_empty() {
+        return;
+    }
+
+    // First pass: gather all items per target path, in source order.
+    let mut items: BTreeMap<String, Vec<NixExpr>> = BTreeMap::new();
+    for a in body.iter() {
+        let key = exact_path_key(&a.path);
+        if targets.contains(&key) {
+            if let NixExpr::List(list) = &a.value {
+                items.entry(key).or_default().extend(list.iter().cloned());
+            }
+        }
+    }
+
+    // Second pass: keep the first occurrence of each target (with the merged list), drop
+    // the rest; every other assignment passes through unchanged.
+    let mut placed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut out = Vec::with_capacity(body.len());
+    for a in body.drain(..) {
+        let key = exact_path_key(&a.path);
+        if targets.contains(&key) {
+            if placed.insert(key.clone()) {
+                let merged = items.remove(&key).unwrap_or_default();
+                out.push(Assignment { value: NixExpr::List(merged), ..a });
+            }
+            // else: a later duplicate, dropped (its items are already merged in).
+        } else {
+            out.push(a);
+        }
+    }
+    *body = out;
 }
 
 /// Plan-time lint (docs/02): two assignments to the same option path in one file, neither
@@ -316,5 +379,75 @@ mod tests {
     fn distinct_paths_do_not_conflict() {
         let a = [assign(&["services", "x"], None), assign(&["services", "y"], None)];
         assert!(detect_conflicts(&a).is_empty());
+    }
+
+    fn list_assign(path: &[&str], items: &[&str]) -> Assignment {
+        Assignment {
+            path: AttrPath(path.iter().map(|s| AttrKey::Ident((*s).into())).collect()),
+            value: NixExpr::List(
+                items
+                    .iter()
+                    .map(|i| NixExpr::Select(Box::new(NixExpr::Ref("pkgs".into())), vec![(*i).into()]))
+                    .collect(),
+            ),
+            priority: None,
+            condition: None,
+            doc: None,
+        }
+    }
+
+    fn list_items(a: &Assignment) -> Vec<String> {
+        match &a.value {
+            NixExpr::List(items) => items
+                .iter()
+                .map(|it| match it {
+                    NixExpr::Select(_, p) => p.join("."),
+                    _ => "?".into(),
+                })
+                .collect(),
+            _ => vec![],
+        }
+    }
+
+    #[test]
+    fn same_path_list_assignments_merge_in_source_order() {
+        let mut body = vec![
+            list_assign(&["environment", "systemPackages"], &["ripgrep"]),
+            list_assign(&["environment", "systemPackages"], &["htop"]),
+        ];
+        merge_list_assignments(&mut body);
+        assert_eq!(body.len(), 1, "merged into a single assignment");
+        assert_eq!(list_items(&body[0]), vec!["ripgrep", "htop"]);
+    }
+
+    #[test]
+    fn merge_preserves_position_and_other_assignments() {
+        let mut body = vec![
+            assign(&["services", "x"], None),
+            list_assign(&["environment", "systemPackages"], &["a"]),
+            assign(&["services", "y"], None),
+            list_assign(&["environment", "systemPackages"], &["b"]),
+        ];
+        merge_list_assignments(&mut body);
+        // x, merged-list (at first list position), y
+        assert_eq!(body.len(), 3);
+        assert_eq!(list_items(&body[1]), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn non_list_duplicates_are_not_merged() {
+        let mut body = vec![assign(&["services", "x"], None), assign(&["services", "x"], None)];
+        merge_list_assignments(&mut body);
+        assert_eq!(body.len(), 2, "scalar duplicates are left for the conflict lint");
+    }
+
+    #[test]
+    fn prioritised_list_is_not_merged() {
+        use knixl_ir::Priority;
+        let mut a = list_assign(&["environment", "systemPackages"], &["a"]);
+        a.priority = Some(Priority::Force);
+        let mut body = vec![a, list_assign(&["environment", "systemPackages"], &["b"])];
+        merge_list_assignments(&mut body);
+        assert_eq!(body.len(), 2, "a priority opts out of merging");
     }
 }
