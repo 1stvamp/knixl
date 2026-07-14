@@ -37,7 +37,12 @@ fn schema() -> NodeSchema {
             required: true,
             doc: "The host name.".into(),
         }],
-        props: vec![],
+        props: vec![Field {
+            name: "default".into(),
+            ty: ValueTy::Bool,
+            required: false,
+            doc: "Mark this host as the default target for tooling (e.g. `knixl install`).".into(),
+        }],
         children: vec![Child {
             name: "system".into(),
             ty: ValueTy::Str,
@@ -72,6 +77,20 @@ mod tests {
 
     fn node(src: &str) -> KdlNode {
         src.parse::<kdl::KdlDocument>().unwrap().nodes().first().unwrap().clone()
+    }
+
+    #[test]
+    fn host_accepts_a_default_flag() {
+        let h = Host::new();
+        let n = node("host \"web\" default=#true {\n    system \"x86_64-linux\"\n}");
+        // The `default` marker is tooling metadata for `install`; the schema accepts it.
+        assert!(h.schema().validate(&n).is_ok(), "default prop should validate");
+        // It emits nothing: lowering still yields only the hostPlatform assignment.
+        let reg = Registry::new();
+        let mut diags = Vec::new();
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags);
+        let out = h.lower(&n, &mut ctx).unwrap();
+        assert_eq!(out.units.len(), 1, "default emits nothing extra");
     }
 
     #[test]
