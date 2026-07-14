@@ -144,6 +144,50 @@ impl NodeSchema {
     }
 }
 
+impl NodeSchema {
+    /// A typed, human-readable reference for `knixl doc <node>`, rendered straight from the
+    /// schema so the docs cannot drift from what the module accepts.
+    pub fn render_doc(&self, node_name: &str) -> String {
+        let mut s = format!("{node_name}: {}\n", self.summary);
+        if !self.args.is_empty() {
+            s.push_str("\nArguments:\n");
+            for f in &self.args { s.push_str(&field_line(f)); }
+        }
+        if !self.props.is_empty() {
+            s.push_str("\nProperties:\n");
+            for f in &self.props { s.push_str(&field_line(f)); }
+        }
+        if !self.children.is_empty() {
+            s.push_str("\nChildren:\n");
+            for c in &self.children { s.push_str(&child_line(c)); }
+        }
+        s
+    }
+}
+
+fn ty_str(ty: &ValueTy) -> String {
+    match ty {
+        ValueTy::Bool => "bool".into(),
+        ValueTy::Int => "int".into(),
+        ValueTy::Str => "string".into(),
+        ValueTy::Enum(variants) => format!("enum({})", variants.join("|")),
+        ValueTy::Node => "node".into(),
+    }
+}
+
+fn field_line(f: &Field) -> String {
+    let req = if f.required { " (required)" } else { "" };
+    format!("  {} : {}{}  {}\n", f.name, ty_str(&f.ty), req, f.doc)
+}
+
+fn child_line(c: &Child) -> String {
+    let mut flags = Vec::new();
+    if c.required { flags.push("required"); }
+    if c.repeated { flags.push("repeated"); }
+    let flags = if flags.is_empty() { String::new() } else { format!(" ({})", flags.join(", ")) };
+    format!("  {} : {}{}  {}\n", c.name, ty_str(&c.ty), flags, c.doc)
+}
+
 fn diag_at(span: SourceSpan, message: String) -> Diagnostic {
     Diagnostic { span: Some(span), message }
 }
@@ -360,6 +404,16 @@ mod tests {
         fn lower(&self, _node: &KdlNode, _ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError> {
             Ok(LowerOutput::units(vec![]))
         }
+    }
+
+    #[test]
+    fn render_doc_lists_args_and_children_with_types() {
+        let doc = host_like_schema().render_doc("host");
+        assert!(doc.contains("host:"));
+        assert!(doc.contains("Arguments:"));
+        assert!(doc.contains("name : string (required)"));
+        assert!(doc.contains("Children:"));
+        assert!(doc.contains("system : string (required)"));
     }
 
     #[test]

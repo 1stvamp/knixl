@@ -128,6 +128,7 @@ struct Ctx {
     disk: knixl_lock::reconcile::DiskState,
     lock: knixl_lock::Lock,
     running: knixl_lock::reconcile::Versions,
+    registry: knixl_modules::Registry,
 }
 impl Ctx {
     fn load() -> Ctx {
@@ -139,7 +140,12 @@ impl Ctx {
 
 fn print_plan(_p: &Plan, _json: bool) { todo!() }
 fn print_migration_notes(_p: &Plan) { todo!() }
-fn print_doc(_ctx: &Ctx, _node: &str, _json: bool) { todo!() }
+fn print_doc(ctx: &Ctx, node: &str, _json: bool) {
+    match ctx.registry.get(node) {
+        Some(m) => print!("{}", m.schema().render_doc(node)),
+        None => eprintln!("no module claims node `{node}`"),
+    }
+}
 fn report_validation(_errors: &[String], _json: bool) { todo!() }
 fn report_skew(_p: &Plan, _json: bool) { todo!() }
 fn report_taint(_f: &knixl_lock::FilePlan, _json: bool) { todo!() }
