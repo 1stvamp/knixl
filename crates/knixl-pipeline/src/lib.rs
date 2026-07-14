@@ -9,11 +9,11 @@
 //! golden tests additionally need `nixfmt` on PATH and regenerated `examples/expected/`,
 //! so they stay `#[ignore]`d; the interpreter and reconcile logic are covered by unit tests.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use kdl::{KdlDocument, KdlNode};
-use knixl_ir::{Assignment, Emit, Formals, ModuleRef, NixExpr, NixModule, Provenance, Writer};
+use knixl_ir::{Assignment, Emit, Formals, ModuleRef, NixExpr, NixModule, Provenance, RawNix, Writer};
 use knixl_kdl::{parse, ParseError};
 use knixl_modules::{Bucket, LowerCtx, LowerError, Registry, Scope};
 use knixl_nix::{FormatError, Formatter};
@@ -77,6 +77,7 @@ fn generate_one(
     // keyed by output file. Container modules (host) fold their children in via lower(),
     // so the top level is usually a single `host` node.
     let mut files: BTreeMap<String, Vec<Assignment>> = BTreeMap::new();
+    let mut raw_files: BTreeMap<String, Vec<RawNix>> = BTreeMap::new();
     let mut modules: Vec<ModuleRef> = Vec::new();
     let mut diags: Vec<knixl_modules::Diagnostic> = Vec::new();
 
@@ -104,16 +105,25 @@ fn generate_one(
             let key = bucket_key(&unit.bucket, &host_name);
             files.entry(key).or_default().push(unit.assignment);
         }
+        for r in output.raw {
+            let key = bucket_key(&r.bucket, &host_name);
+            raw_files.entry(key).or_default().push(r.raw);
+        }
     }
 
+    // Every output file: any bucket that produced assignments or raw passthrough.
+    let mut keys: BTreeSet<String> = files.keys().cloned().collect();
+    keys.extend(raw_files.keys().cloned());
+
     // Named side-files (anything not the host's own file). The host file imports them.
-    let side_files: Vec<String> =
-        files.keys().filter(|k| *k != &host_name).cloned().collect();
+    let side_files: Vec<String> = keys.iter().filter(|k| *k != &host_name).cloned().collect();
 
     let module_names: Vec<String> = modules.iter().map(|m| m.name.clone()).collect();
 
     let mut generated = Vec::new();
-    for (key, body) in files {
+    for key in keys {
+        let body = files.remove(&key).unwrap_or_default();
+        let raw = raw_files.remove(&key).unwrap_or_default();
         let imports = if key == host_name {
             side_files
                 .iter()
@@ -128,6 +138,7 @@ fn generate_one(
             imports,
             lets: Vec::new(), // let-hoisting is a later pass (Phase 5)
             body,
+            raw,
             provenance: Provenance {
                 tool_version: tool.clone(),
                 // TODO(phase-2): per-file module attribution needs lower() to report which

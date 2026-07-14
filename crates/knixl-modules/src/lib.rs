@@ -7,7 +7,7 @@ pub mod template;
 pub mod builtin;
 
 use kdl::KdlNode;
-use knixl_ir::Assignment;
+use knixl_ir::{Assignment, RawNix};
 use miette::SourceSpan;
 use semver::Version;
 
@@ -210,8 +210,17 @@ impl<'a> LowerCtx<'a> {
     }
 }
 
-pub struct LowerOutput { pub units: Vec<Unit> }
+pub struct LowerOutput { pub units: Vec<Unit>, pub raw: Vec<RawUnit> }
 pub struct Unit { pub bucket: Bucket, pub assignment: Assignment }
+/// A verbatim raw-nix passthrough statement, bucketed like a Unit.
+pub struct RawUnit { pub bucket: Bucket, pub raw: RawNix }
+
+impl LowerOutput {
+    pub fn new() -> Self { Self { units: Vec::new(), raw: Vec::new() } }
+    /// Convenience for the common case of assignments with no raw passthrough.
+    pub fn units(units: Vec<Unit>) -> Self { Self { units, raw: Vec::new() } }
+}
+impl Default for LowerOutput { fn default() -> Self { Self::new() } }
 
 /// A module says "main file" or "a named side-file"; the generator resolves the path.
 pub enum Bucket { Default, Named(String) }
@@ -349,7 +358,7 @@ mod tests {
         fn node_name(&self) -> &str { "stub" }
         fn schema(&self) -> &NodeSchema { &self.schema }
         fn lower(&self, _node: &KdlNode, _ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError> {
-            Ok(LowerOutput { units: vec![] })
+            Ok(LowerOutput::units(vec![]))
         }
     }
 

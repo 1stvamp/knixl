@@ -57,6 +57,57 @@ fn formatter() -> Formatter {
     }
 }
 
+/// An identity "formatter" (`cat`), so the full pipeline can be exercised end to end even
+/// where nixfmt is not installed. The text is the emitter's structural output, pre-format.
+fn identity_formatter() -> Formatter {
+    Formatter { name: "identity".into(), version: "0".into(), bin: PathBuf::from("cat") }
+}
+
+fn generate_host(host_file: &str) -> Vec<knixl_pipeline::GeneratedFile> {
+    let examples = examples_dir();
+    let path = PathBuf::from("hosts").join(host_file);
+    let src = fs::read_to_string(examples.join(&path)).expect("read host kdl");
+    let tool = "0.3.1".parse().unwrap();
+    generate(&[HostSource { path, src }], &build_registry(), &identity_formatter(), &tool)
+        .expect("generate")
+}
+
+#[test]
+fn web_pipeline_produces_expected_structure() {
+    let files = generate_host("web.kdl");
+    assert_eq!(files.len(), 1, "web has no side-files");
+    let text = &files[0].text;
+    for needle in [
+        "nixpkgs.hostPlatform = \"x86_64-linux\"",
+        "services.nginx.enable = true",
+        "services.nginx.virtualHosts.\"example.com\".forceSSL = true",
+        "services.nginx.virtualHosts.\"example.com\".locations.\"/\".proxyPass = \"http://127.0.0.1:3000\"",
+        "security.acme.certs.\"example.com\".email = \"ops@example.com\"",
+        // raw-nix passthrough
+        "systemd.services.nginx.serviceConfig.MemoryMax = \"512M\"",
+    ] {
+        assert!(text.contains(needle), "web.nix missing `{needle}`\n---\n{text}");
+    }
+}
+
+#[test]
+fn db_pipeline_produces_two_files_with_mkif_backup() {
+    let files = generate_host("db.kdl");
+    assert_eq!(files.len(), 2, "db has a backup side-file");
+
+    let db = files.iter().find(|f| f.path.file_name().unwrap() == "db.nix").expect("db.nix");
+    assert!(db.text.contains("services.postgresql.enable = true"));
+    assert!(db.text.contains("lib.mkForce"), "listen-tcp forces the preset");
+    assert!(db.text.contains("./db-backup.nix"), "main file imports the side-file");
+
+    let backup = files
+        .iter()
+        .find(|f| f.path.file_name().unwrap() == "db-backup.nix")
+        .expect("db-backup.nix");
+    assert!(backup.text.contains("services.restic.backups.db"));
+    assert!(backup.text.contains("lib.mkIf"), "backup is gated by a runtime condition");
+}
+
 /// Generate `host_file` and assert every produced file matches `expected/<basename>`.
 fn assert_host_matches(host_file: &str) {
     let examples = examples_dir();

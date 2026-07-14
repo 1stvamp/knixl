@@ -137,7 +137,7 @@ impl EmitTemplate {
         let mut units = Vec::new();
         let mut loops = LoopScopes::new();
         self.run(&self.stmts, b, &mut loops, &mut units)?;
-        Ok(LowerOutput { units })
+        Ok(LowerOutput::units(units))
     }
 
     // self only recurses today; kept as a method so template state stays reachable

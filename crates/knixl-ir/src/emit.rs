@@ -104,6 +104,10 @@ impl Emit for NixModule {
             w.close(); w.push("];"); w.nl(); w.nl();
         }
         for a in &self.body { a.emit(w); }
+        for r in &self.raw {
+            w.push("# raw-nix passthrough"); w.nl();
+            emit_raw(w, r); w.nl();
+        }
         w.close(); w.push("}"); w.nl();
     }
 }

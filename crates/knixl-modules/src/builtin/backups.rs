@@ -50,7 +50,7 @@ impl Module for Backups {
             doc: None,
         };
 
-        Ok(LowerOutput { units: vec![Unit { bucket: Bucket::Named("backup".into()), assignment }] })
+        Ok(LowerOutput::units(vec![Unit { bucket: Bucket::Named("backup".into()), assignment }]))
     }
 }
 

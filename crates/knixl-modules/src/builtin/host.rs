@@ -15,12 +15,16 @@ impl Module for Host {
     fn schema(&self) -> &NodeSchema { &self.schema }
     fn lower(&self, node: &KdlNode, ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError> {
         let mut units = Vec::new();
+        let mut raw = Vec::new();
         if let Some(sys) = child_arg_str(node, "system") {
             units.push(unit_default(assign(&["nixpkgs", "hostPlatform"], NixExpr::Str(sys))));
         }
         // delegate everything except the fields host consumes itself
-        for out in ctx.lower_children(node, &["system"])? { units.extend(out.units); }
-        Ok(LowerOutput { units })
+        for out in ctx.lower_children(node, &["system"])? {
+            units.extend(out.units);
+            raw.extend(out.raw);
+        }
+        Ok(LowerOutput { units, raw })
     }
 }
 

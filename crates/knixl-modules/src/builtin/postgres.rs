@@ -39,7 +39,7 @@ impl Module for Postgres {
             a.doc = Some("listen-tcp #true overrides the base preset (enableTCPIP = false)".into());
             units.push(unit_default(a));
         }
-        Ok(LowerOutput { units })
+        Ok(LowerOutput::units(units))
     }
 }
 
