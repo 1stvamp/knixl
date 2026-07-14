@@ -143,6 +143,8 @@ fn nix_shim(tag: &str, exists: bool) -> PathBuf {
     );
     let mut f = fs::File::create(&path).unwrap();
     f.write_all(script.as_bytes()).unwrap();
+    f.flush().unwrap();
+    drop(f); // close before exec, or spawning races with ETXTBSY
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     path
 }

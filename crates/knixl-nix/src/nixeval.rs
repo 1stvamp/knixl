@@ -54,7 +54,12 @@ impl NixEval {
     }
 
     fn run(&self, args: &[&str]) -> Result<std::process::Output, NixError> {
-        Command::new(&self.bin).args(args).output().map_err(|e| {
+        crate::output_retrying_etxtbsy(|| {
+            let mut c = Command::new(&self.bin);
+            c.args(args);
+            c
+        })
+        .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 NixError::Unavailable(format!("{} not found", self.bin.display()))
             } else {
@@ -100,6 +105,8 @@ mod tests {
         );
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(script.as_bytes()).unwrap();
+        f.flush().unwrap();
+        drop(f); // close before exec, or spawning races with ETXTBSY
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     }

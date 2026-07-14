@@ -76,7 +76,11 @@ impl Formatter {
     pub fn verify_version(&self) -> Result<(), FormatError> {
         use std::process::Command;
 
-        let output = Command::new(&self.bin).arg("--version").output()?;
+        let output = output_retrying_etxtbsy(|| {
+            let mut c = Command::new(&self.bin);
+            c.arg("--version");
+            c
+        })?;
         if !output.status.success() {
             return Err(FormatError::NonZero(output.status.code().unwrap_or(-1)));
         }
@@ -88,6 +92,25 @@ impl Formatter {
                 expected: self.version.clone(),
                 found: reported.trim().to_string(),
             })
+        }
+    }
+}
+
+/// Run a command to completion, retrying briefly on `ETXTBSY`. Spawning a binary that was
+/// only just written can race with another thread's fork holding a write handle to it (a
+/// well-known issue for multithreaded programs that exec freshly-created executables); a
+/// few short retries let that window close.
+pub(crate) fn output_retrying_etxtbsy(
+    mut build: impl FnMut() -> std::process::Command,
+) -> std::io::Result<std::process::Output> {
+    let mut attempt = 0;
+    loop {
+        match build().output() {
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 10 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            other => return other,
         }
     }
 }
@@ -137,6 +160,8 @@ mod tests {
         );
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(script.as_bytes()).unwrap();
+        file.flush().unwrap();
+        drop(file); // close the write handle before exec, or spawning races with ETXTBSY
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
