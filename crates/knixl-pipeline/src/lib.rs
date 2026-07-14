@@ -5,10 +5,9 @@
 //! It returns bytes and writes nothing; the caller (or `Plan::compute`) decides what
 //! reaches disk.
 //!
-//! SPEC-GRADE SKETCH: the orchestration glue here is real, but the stages it drives
-//! (schema validation, `lower`, the emit helpers, the formatter) are still elided in
-//! their own crates, so calling `generate` panics until Phase 1 fills them in. That is
-//! deliberate: the golden harness is red on purpose and turns green as the stubs land.
+//! The pipeline runs end to end (parse, dispatch, lower, emit, format). The byte-for-byte
+//! golden tests additionally need `nixfmt` on PATH and regenerated `examples/expected/`,
+//! so they stay `#[ignore]`d; the interpreter and reconcile logic are covered by unit tests.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -155,7 +154,8 @@ fn generate_one(
 fn bucket_key(bucket: &Bucket, host_name: &str) -> String {
     match bucket {
         Bucket::Default => host_name.to_string(),
-        Bucket::Named(name) => name.clone(),
+        // docs/03: a named side-file is `<host>-<name>.nix`, e.g. db-backup.nix.
+        Bucket::Named(name) => format!("{host_name}-{name}"),
     }
 }
 
