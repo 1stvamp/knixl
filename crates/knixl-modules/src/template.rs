@@ -507,6 +507,148 @@ fn prop_bool(node: &kdl::KdlNode, key: &str) -> Option<bool> {
     node.get(key).and_then(|v| v.as_bool())
 }
 
+// ---- module-load dry type-pass (docs/04): catch bad lookups at load, not at generate ----
+
+type ShapeMap = std::collections::BTreeMap<String, Shape>;
+
+enum Shape {
+    Scalar,
+    Scope(ShapeMap),
+    List(Box<Shape>),
+}
+
+fn schema_shape(schema: &NodeSchema) -> ShapeMap {
+    let mut m = ShapeMap::new();
+    for f in &schema.args {
+        m.insert(f.name.clone(), Shape::Scalar);
+    }
+    for f in &schema.props {
+        m.insert(f.name.clone(), Shape::Scalar);
+    }
+    for c in &schema.children {
+        let base = child_shape(c);
+        m.insert(c.name.clone(), if c.repeated { Shape::List(Box::new(base)) } else { base });
+    }
+    m
+}
+
+fn child_shape(c: &Child) -> Shape {
+    if c.args.is_empty() && c.props.is_empty() {
+        Shape::Scalar
+    } else {
+        let mut m = ShapeMap::new();
+        for f in c.args.iter().chain(c.props.iter()) {
+            m.insert(f.name.clone(), Shape::Scalar);
+        }
+        Shape::Scope(m)
+    }
+}
+
+/// Verify every template lookup resolves to the right shape against the schema. Runs once
+/// at load, so `{acme.email}` resolving to a scope (rather than a scalar) fails here.
+fn dry_check(schema: &NodeSchema, template: &EmitTemplate) -> Result<(), LowerError> {
+    let shapes = schema_shape(schema);
+    let mut loops: Vec<(&str, &Shape)> = Vec::new();
+    let mut errors = Vec::new();
+    check_stmts(&template.stmts, &shapes, &mut loops, &mut errors);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(LowerError::Other(format!("template does not type-check: {}", errors.join("; "))))
+    }
+}
+
+fn lookup_shape<'a>(
+    segs: &[String],
+    shapes: &'a ShapeMap,
+    loops: &[(&'a str, &'a Shape)],
+) -> Result<&'a Shape, String> {
+    let (first, rest) = segs.split_first().ok_or_else(|| "empty lookup".to_string())?;
+    let mut cur = loops
+        .iter()
+        .rev()
+        .find(|(n, _)| n == first)
+        .map(|(_, s)| *s)
+        .or_else(|| shapes.get(first))
+        .ok_or_else(|| format!("unknown binding `{first}`"))?;
+    for seg in rest {
+        cur = match cur {
+            Shape::Scope(m) => m.get(seg).ok_or_else(|| format!("`{seg}` is not a field here"))?,
+            _ => return Err(format!("`{first}` is not a scope")),
+        };
+    }
+    Ok(cur)
+}
+
+fn expect_scalar(segs: &[String], shapes: &ShapeMap, loops: &[(&str, &Shape)], errors: &mut Vec<String>) {
+    match lookup_shape(segs, shapes, loops) {
+        Ok(Shape::Scalar) => {}
+        Ok(_) => errors.push(format!("`{}` is not a scalar", segs.join("."))),
+        Err(e) => errors.push(e),
+    }
+}
+
+fn check_stmts<'a>(
+    stmts: &'a [Stmt],
+    shapes: &'a ShapeMap,
+    loops: &mut Vec<(&'a str, &'a Shape)>,
+    errors: &mut Vec<String>,
+) {
+    for st in stmts {
+        match st {
+            Stmt::Set { path, value } => {
+                for seg in &path.0 {
+                    match seg {
+                        SegmentTemplate::Interp(lk) => expect_scalar(&lk.0, shapes, loops, errors),
+                        SegmentTemplate::QuotedLit(t) => check_str_lookups(t, shapes, loops, errors),
+                        SegmentTemplate::Ident(_) => {}
+                    }
+                }
+                match value {
+                    ValueTemplate::Str(parts) | ValueTemplate::IndentStr(parts) => {
+                        for part in parts {
+                            if let StrPart::Interp(lk) = part {
+                                expect_scalar(&lk.0, shapes, loops, errors);
+                            }
+                        }
+                    }
+                    ValueTemplate::Collect(child) => {
+                        match lookup_shape(std::slice::from_ref(child), shapes, loops) {
+                            Ok(Shape::List(_)) => {}
+                            Ok(_) => errors.push(format!("collect `{child}` is not a repeated child")),
+                            Err(e) => errors.push(e),
+                        }
+                    }
+                    ValueTemplate::Bool(_) | ValueTemplate::Int(_) => {}
+                }
+            }
+            Stmt::WhenFlag { flag, body } => {
+                expect_scalar(std::slice::from_ref(flag), shapes, loops, errors);
+                check_stmts(body, shapes, loops, errors);
+            }
+            Stmt::ForEach { var, source, body } => {
+                match lookup_shape(std::slice::from_ref(source), shapes, loops) {
+                    Ok(Shape::List(inner)) => {
+                        loops.push((var.as_str(), inner));
+                        check_stmts(body, shapes, loops, errors);
+                        loops.pop();
+                    }
+                    Ok(_) => errors.push(format!("for-each source `{source}` is not a repeated child")),
+                    Err(e) => errors.push(e),
+                }
+            }
+        }
+    }
+}
+
+fn check_str_lookups(raw: &str, shapes: &ShapeMap, loops: &[(&str, &Shape)], errors: &mut Vec<String>) {
+    for part in parse_str_parts(raw) {
+        if let StrPart::Interp(lk) = part {
+            expect_scalar(&lk.0, shapes, loops, errors);
+        }
+    }
+}
+
 // ---- the declarative module: one Module impl carrying every KDL-defined module ----
 
 use crate::{Module, ModuleId};
@@ -562,6 +704,9 @@ impl DeclarativeModule {
         schema.summary = summary;
         let template =
             template.ok_or_else(|| LowerError::Other(format!("{}: module missing `emit`", where_())))?;
+
+        dry_check(&schema, &template)
+            .map_err(|e| LowerError::Other(format!("{}: {e}", where_())))?;
 
         Ok(DeclarativeModule { id: ModuleId { name, version }, node_name, schema, template })
     }
@@ -676,5 +821,23 @@ mod tests {
 
         // hardened absent => flag false => no extraConfig emitted
         assert!(find(&out, "services.nginx.virtualHosts.\"ex.com\".locations.\"/\".extraConfig").is_none());
+    }
+
+    #[test]
+    fn dry_check_rejects_a_non_scalar_lookup_in_value_position() {
+        // `acme` is a structured child (a Scope), so using {acme} as a value is an error
+        // that must surface at load, not at generate.
+        let manifest = "module name=\"bad\" version=\"0.1.0\" {\n    claims-node \"bad\"\n    schema {\n        arg \"host\" type=\"string\" required=#true\n        child \"acme\" {\n            prop \"email\" type=\"string\" required=#true\n        }\n    }\n    emit {\n        set \"services.x.{host}\" \"{acme}\"\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad")).err().unwrap();
+        assert!(format!("{err}").contains("not a scalar"), "got: {err}");
+    }
+
+    #[test]
+    fn dry_check_rejects_for_each_over_a_non_repeated_child() {
+        let manifest = "module name=\"bad\" version=\"0.1.0\" {\n    claims-node \"bad\"\n    schema {\n        child \"upstream\" type=\"string\"\n    }\n    emit {\n        for-each \"u\" in \"upstream\" {\n            set \"a.{u}\" #true\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad")).err().unwrap();
+        assert!(format!("{err}").contains("not a repeated child"), "got: {err}");
     }
 }

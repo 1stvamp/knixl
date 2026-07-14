@@ -32,11 +32,15 @@ pub enum AttrKey {
 pub struct AttrPath(pub Vec<AttrKey>);
 
 impl AttrPath {
-    /// Collapse dynamic quoted keys to "<name>" so the oracle can match option paths.
-    /// services.nginx.virtualHosts."example.com".forceSSL
-    ///   -> "services.nginx.virtualHosts.<name>.forceSSL"
     pub fn to_option_key(&self) -> String {
-        todo!("Ident -> literal, Quoted -> <name>, join with '.'")
+        self.0
+            .iter()
+            .map(|k| match k {
+                AttrKey::Ident(s) => s.clone(),
+                AttrKey::Quoted(_) => "<name>".to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(".")
     }
     pub fn push(mut self, k: AttrKey) -> Self { self.0.push(k); self }
 }

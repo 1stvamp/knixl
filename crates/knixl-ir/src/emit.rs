@@ -432,6 +432,18 @@ mod tests {
     }
 
     #[test]
+    fn attr_path_to_option_key_collapses_quoted_segments() {
+        let p = AttrPath(vec![
+            AttrKey::Ident("services".into()),
+            AttrKey::Ident("nginx".into()),
+            AttrKey::Ident("virtualHosts".into()),
+            AttrKey::Quoted("example.com".into()),
+            AttrKey::Ident("forceSSL".into()),
+        ]);
+        assert_eq!(p.to_option_key(), "services.nginx.virtualHosts.<name>.forceSSL");
+    }
+
+    #[test]
     fn emitting_twice_is_byte_identical() {
         let expr = NixExpr::List(vec![
             NixExpr::Int(1),
