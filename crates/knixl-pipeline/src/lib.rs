@@ -10,6 +10,7 @@
 //! so they stay `#[ignore]`d; the interpreter and reconcile logic are covered by unit tests.
 
 pub mod gather;
+pub mod install;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;

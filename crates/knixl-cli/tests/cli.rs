@@ -132,6 +132,89 @@ fn upgrade_prints_migration_notes_for_a_module_bump() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// A shim mimicking `nix-instantiate`: `--eval` prints a verdict, `--parse` exits 0.
+fn nix_shim(tag: &str, exists: bool) -> PathBuf {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let path = std::env::temp_dir().join(format!("knixl-cli-nixshim-{}-{tag}", std::process::id()));
+    let verdict = if exists { "true" } else { "false" };
+    let script = format!(
+        "#!/bin/sh\ncase \"$1\" in\n  --eval) echo \"{verdict}\" ;;\n  --parse) exit 0 ;;\nesac\n"
+    );
+    let mut f = fs::File::create(&path).unwrap();
+    f.write_all(script.as_bytes()).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[test]
+fn install_drafts_verifies_and_regenerates() {
+    let root = temp_project("install");
+    let shim = nix_shim("ok", true);
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "ripgrep", "--host", "web", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &shim)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    // The KDL gained the package, format otherwise intact.
+    let kdl = fs::read_to_string(root.join("hosts/web.kdl")).unwrap();
+    assert!(kdl.contains("package \"ripgrep\""), "kdl edited: {kdl}");
+    assert!(kdl.contains("web-service \"example.com\""), "existing content kept: {kdl}");
+
+    // The generated file has the package in systemPackages.
+    let nix = fs::read_to_string(root.join("generated/hosts/web.nix")).unwrap();
+    assert!(nix.contains("environment.systemPackages"), "systemPackages emitted: {nix}");
+    assert!(nix.contains("pkgs.ripgrep"), "package reference emitted: {nix}");
+
+    // And the project reconciles clean.
+    let check = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["check"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .output()
+        .expect("run check");
+    assert_eq!(check.status.code(), Some(0), "check after install: {}", String::from_utf8_lossy(&check.stdout));
+    let _ = fs::remove_file(&shim);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn install_refuses_a_nonexistent_package() {
+    let root = temp_project("install-bad");
+    let shim = nix_shim("bad", false); // package does not resolve
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "nnoopkg", "--host", "web", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &shim)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(out.status.code(), Some(5), "validation exit");
+    // The KDL is untouched (reverted / never written).
+    let kdl = fs::read_to_string(root.join("hosts/web.kdl")).unwrap();
+    assert!(!kdl.contains("nnoopkg"), "no draft left behind: {kdl}");
+    let _ = fs::remove_file(&shim);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn install_strict_errors_when_nix_absent() {
+    let root = temp_project("install-strict");
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "ripgrep", "--host", "web", "--yes", "--strict"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", "/nonexistent/knixl-no-nix")
+        .output()
+        .expect("run knixl install");
+    assert_eq!(out.status.code(), Some(5), "strict + no nix => validation exit");
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn generate_writes_files_then_check_is_clean() {
     let root = temp_project("gen");

@@ -1,6 +1,8 @@
 //! Formatter invocation (pinned nixfmt) and content hashing. Both sit on the
 //! reproducibility boundary. SPEC-GRADE SKETCH.
 
+pub mod nixeval;
+
 #[derive(Debug, Clone)]
 pub struct Formatter {
     pub name: String,     // "nixfmt-rfc-style"
