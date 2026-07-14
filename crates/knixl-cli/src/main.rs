@@ -100,7 +100,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                 println!("already up to date");
                 return Code::Clean;
             }
-            print_migration_notes(&plan); // per (module, version delta)
+            print_migration_notes(&plan, &ctx.registry); // per (module, version delta)
             print_plan(&plan, cli.json);
             if !yes { eprintln!("re-run with --yes to apply"); return Code::NeedsAck; }
             for f in &plan.files {
@@ -203,9 +203,28 @@ fn print_plan(p: &Plan, json: bool) {
         println!("{:>8}  {}", state_label(&f.state), f.path.display());
     }
 }
-fn print_migration_notes(_p: &Plan) {
-    // Per-module notes keyed by (module, version delta) arrive with `upgrade` proper.
-    println!("(no migration notes)");
+fn print_migration_notes(plan: &Plan, registry: &knixl_modules::Registry) {
+    // Module deltas are identical across files; read them from the first skew present.
+    let Some(skew) = plan.files.iter().find_map(|f| f.skew.as_ref()) else {
+        println!("(no migration notes)");
+        return;
+    };
+    let mut printed = false;
+    for (name, delta) in &skew.modules {
+        let Some(module) = registry.get(name) else { continue };
+        let notes = module.migration_notes(&delta.locked, &delta.running);
+        if notes.is_empty() {
+            continue;
+        }
+        println!("{name} {} -> {}:", delta.locked, delta.running);
+        for n in &notes {
+            println!("  - {n}");
+        }
+        printed = true;
+    }
+    if !printed {
+        println!("(no migration notes)");
+    }
 }
 
 fn print_doc(ctx: &Ctx, node: &str, _json: bool) {

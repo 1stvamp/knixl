@@ -86,3 +86,20 @@ services.nginx.virtualHosts."example.com".locations."/metrics".proxyPass = "http
 ```
 
 `collect` gives the flat list, `for-each` gives one dynamic-keyed path per item. Both iterate in KDL source order, so the output hash is a pure function of the input, which is the property the lock depends on.
+
+## Migration notes (optional)
+
+A module may declare notes that `knixl upgrade` prints when it moves the module across a version. They live in a `migrations` block alongside `schema` and `emit`, keyed by the target version:
+
+```kdl
+migrations {
+    to "1.1.0" {
+        note "enableACME now defaults on; drop any manual security.acme.certs entry per host."
+    }
+    to "1.2.0" {
+        note "serverAliases is generated from the repeated `alias` children; remove any hand-written list."
+    }
+}
+```
+
+A step applies when its `to` version lands in the half-open range `(recorded, running]`, so an upgrade from 1.0.0 to 1.2.0 shows both notes (ascending), while 1.1.0 to 1.2.0 shows only the last. The block is metadata: it does not affect emitted Nix or the output hash. Built-in modules provide the same notes through `Module::migration_notes`.
