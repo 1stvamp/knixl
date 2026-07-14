@@ -63,6 +63,20 @@ fn collapses_dynamic_keys_to_name_for_lookup() {
 }
 
 #[test]
+fn accepts_a_submodule_root_that_has_known_children() {
+    let oracle = fixture();
+    // services.nginx.virtualHosts.<name> is not a leaf, but it is the root of a submodule
+    // whose children (forceSSL, serverAliases) are known options.
+    let path = AttrPath(vec![
+        AttrKey::Ident("services".into()),
+        AttrKey::Ident("nginx".into()),
+        AttrKey::Ident("virtualHosts".into()),
+        AttrKey::Quoted("example.com".into()),
+    ]);
+    assert!(oracle.check(&path, &NixExpr::AttrSet(Default::default())).is_ok());
+}
+
+#[test]
 fn real_options_json_loads_when_provided() {
     let Ok(path) = std::env::var("KNIXL_OPTIONS_JSON") else {
         eprintln!("skipping: set KNIXL_OPTIONS_JSON to a real nixosOptionsDoc file");

@@ -41,7 +41,9 @@ impl Module for Backups {
                 AttrKey::Ident("services".into()),
                 AttrKey::Ident("restic".into()),
                 AttrKey::Ident("backups".into()),
-                AttrKey::Ident(host),
+                // The host name is a dynamic attribute (services.restic.backups.<name>),
+                // so it is a quoted key: to_option_key collapses it to <name> for the oracle.
+                AttrKey::Quoted(host),
             ]),
             value: NixExpr::AttrSet(set),
             priority: None,

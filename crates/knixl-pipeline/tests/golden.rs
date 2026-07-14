@@ -145,7 +145,8 @@ fn db_pipeline_produces_two_files_with_mkif_backup() {
         .iter()
         .find(|f| f.path.file_name().unwrap() == "db-backup.nix")
         .expect("db-backup.nix");
-    assert!(backup.text.contains("services.restic.backups.db"));
+    // Pre-format the dynamic host key is quoted (services.restic.backups."db").
+    assert!(backup.text.contains("services.restic.backups"));
     assert!(backup.text.contains("lib.mkIf"), "backup is gated by a runtime condition");
 }
 

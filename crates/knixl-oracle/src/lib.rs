@@ -61,12 +61,23 @@ impl Oracle {
     pub fn check(&self, path: &AttrPath, value: &NixExpr) -> Result<(), TypeMismatch> {
         let key = path.to_option_key(); // dynamic keys collapsed to <name>
         match self.options.get(&key) {
+            // Not a leaf option: accept if it is the root of a submodule (an attrset whose
+            // children are known options, e.g. services.restic.backups.<name>); the interior
+            // is left unchecked. A genuine typo has no known children and is still rejected.
+            None if self.is_option_prefix(&key) => Ok(()),
             None => Err(TypeMismatch::UnknownOption { key }),
             Some(info) if info.read_only => Err(TypeMismatch::ReadOnly { key }),
             Some(info) => info.ty.accepts(value).map_err(|expected| TypeMismatch::WrongType {
                 key, expected, got: value_kind(value),
             }),
         }
+    }
+
+    /// True if `key` is a strict prefix of some known option path (so `key` names an
+    /// intermediate attribute set that contains real options).
+    fn is_option_prefix(&self, key: &str) -> bool {
+        let prefix = format!("{key}.");
+        self.options.keys().any(|k| k.starts_with(&prefix))
     }
 }
 

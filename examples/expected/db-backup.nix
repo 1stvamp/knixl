@@ -8,7 +8,7 @@
   ...
 }:
 {
-  services.restic.backups.db = lib.mkIf (config.services.postgresql.enable) {
+  services.restic.backups."db" = lib.mkIf (config.services.postgresql.enable) {
     initialize = true;
     pruneOpts = [
       "--keep-daily 7"

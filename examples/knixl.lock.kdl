@@ -13,7 +13,7 @@ lock version=1 {
     module "web-service" version="1.2.0"
 
     output "generated/hosts/db-backup.nix" {
-        hash "blake3:77ffe248d0b242b102928763b67fbfe10dab2ff3f03d05095608cdec25f69d98"
+        hash "blake3:bab3983869ff7881803b3278288ed0303fafc1d15b4baa46dc44febd342c4016"
         from "hosts/db.kdl"
         modules "host"
     }
