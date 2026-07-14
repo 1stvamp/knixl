@@ -66,3 +66,25 @@ fn plan_defaults_to_exit_zero() {
     assert_eq!(out.status.code(), Some(0));
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn generate_writes_files_then_check_is_clean() {
+    let root = temp_project("gen");
+
+    let gen = knixl(&root, &["generate"]);
+    assert_eq!(gen.status.code(), Some(0), "generate: {}", String::from_utf8_lossy(&gen.stderr));
+
+    for f in ["web.nix", "db.nix", "db-backup.nix"] {
+        assert!(root.join("generated/hosts").join(f).exists(), "{f} was written");
+    }
+
+    // After a clean apply the lock matches disk, so check is Clean (exit 0).
+    let check = knixl(&root, &["check"]);
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "check after generate: {}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+    let _ = fs::remove_dir_all(&root);
+}

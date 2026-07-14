@@ -17,13 +17,16 @@ use semver::Version;
 
 use crate::{generate, GenerateError, HostSource};
 
-/// Everything `Plan::compute` needs to reconcile a project, plus the registry (for `doc`).
+/// Everything `Plan::compute` needs to reconcile a project, plus the registry (for `doc`),
+/// the project root, and the freshly generated file text (for the apply path to write).
 pub struct Project {
     pub inputs: Inputs,
     pub disk: DiskState,
     pub lock: Lock,
     pub versions: Versions,
     pub registry: Registry,
+    pub root: PathBuf,
+    pub generated: BTreeMap<PathBuf, String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -44,19 +47,23 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
 
     // Generate expected output. A schema/validation error is not fatal to planning: it
     // becomes the plan's validation_errors, which the verdict maps to the Validation code.
+    let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
     let (expected, validation_errors) = match generate(&hosts, &registry, formatter, &tool) {
-        Ok(files) => (
-            files
+        Ok(files) => {
+            let expected = files
                 .into_iter()
-                .map(|f| ExpectedFile {
-                    path: f.path,
-                    hash: hash(f.text.as_bytes()),
-                    from: f.from,
-                    modules: f.modules,
+                .map(|f| {
+                    generated.insert(f.path.clone(), f.text.clone());
+                    ExpectedFile {
+                        path: f.path,
+                        hash: hash(f.text.as_bytes()),
+                        from: f.from,
+                        modules: f.modules,
+                    }
                 })
-                .collect(),
-            Vec::new(),
-        ),
+                .collect();
+            (expected, Vec::new())
+        }
         Err(GenerateError::Validation(errs)) => (Vec::new(), errs),
         Err(other) => return Err(other.into()),
     };
@@ -78,6 +85,8 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         lock,
         versions,
         registry,
+        root: root.to_path_buf(),
+        generated,
     })
 }
 
