@@ -25,6 +25,23 @@ pub trait Module: Send + Sync {
     /// Lower a node into bucketed assignments. The node is schema-valid here (the generator
     /// runs schema().validate() first), so lower() may assume presence.
     fn lower(&self, node: &KdlNode, ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError>;
+    /// Human-readable notes for a version move, shown by `upgrade`. `from` is the recorded
+    /// version, `to` the running one; a note applies when its target lands in `(from, to]`.
+    /// Default: none.
+    fn migration_notes(&self, _from: &Version, _to: &Version) -> Vec<String> { Vec::new() }
+}
+
+/// One declared migration step: notes shown when an upgrade crosses up to `to`.
+#[derive(Debug, Clone)]
+pub struct MigrationNote { pub to: Version, pub notes: Vec<String> }
+
+/// Select the notes that apply to a move from `from` to `to`: every step whose target
+/// lands in the half-open range `(from, to]`, in ascending version order.
+pub fn notes_in_range(steps: &[MigrationNote], from: &Version, to: &Version) -> Vec<String> {
+    let mut hits: Vec<&MigrationNote> =
+        steps.iter().filter(|s| &s.to > from && &s.to <= to).collect();
+    hits.sort_by(|a, b| a.to.cmp(&b.to));
+    hits.into_iter().flat_map(|s| s.notes.iter().cloned()).collect()
 }
 
 // ---- schema: validates INPUT shape (distinct from the oracle, which validates OUTPUT) ----
@@ -303,6 +320,21 @@ mod tests {
 
     fn node(src: &str) -> KdlNode {
         src.parse::<kdl::KdlDocument>().unwrap().nodes().first().unwrap().clone()
+    }
+
+    #[test]
+    fn notes_in_range_selects_crossed_steps_in_order() {
+        let v = |s: &str| s.parse::<Version>().unwrap();
+        let steps = vec![
+            MigrationNote { to: v("0.4.0"), notes: vec!["b".into()] },
+            MigrationNote { to: v("0.2.0"), notes: vec!["a".into()] },
+            MigrationNote { to: v("0.9.0"), notes: vec!["c".into()] },
+        ];
+        // (0.1.0, 0.4.0] crosses 0.2.0 and 0.4.0, ascending; 0.9.0 is beyond `to`.
+        assert_eq!(notes_in_range(&steps, &v("0.1.0"), &v("0.4.0")), vec!["a", "b"]);
+        // Boundary: `from` is exclusive, `to` inclusive.
+        assert_eq!(notes_in_range(&steps, &v("0.2.0"), &v("0.4.0")), vec!["b"]);
+        assert!(notes_in_range(&steps, &v("0.9.0"), &v("0.9.0")).is_empty());
     }
 
     fn host_like_schema() -> NodeSchema {

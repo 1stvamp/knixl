@@ -20,6 +20,15 @@ module name="web-service" version="1.2.0" {
         }
     }
 
+    migrations {
+        to "1.1.0" {
+            note "enableACME now defaults on; a manual security.acme.certs entry per host is no longer needed."
+        }
+        to "1.2.0" {
+            note "serverAliases is generated from the repeated `alias` children; remove any hand-written aliases list."
+        }
+    }
+
     emit {
         set "services.nginx.enable" #true
         set "services.nginx.recommendedTlsSettings" #true

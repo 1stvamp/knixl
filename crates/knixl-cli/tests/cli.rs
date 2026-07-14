@@ -109,6 +109,30 @@ fn prune_deletes_orphaned_files() {
 }
 
 #[test]
+fn upgrade_prints_migration_notes_for_a_module_bump() {
+    let root = temp_project("upgrade");
+    assert_eq!(knixl(&root, &["generate"]).status.code(), Some(0));
+
+    // Record an older web-service in the lock: the manifest is 1.2.0, so this is version skew.
+    let lock_path = root.join("knixl.lock.kdl");
+    let lock = fs::read_to_string(&lock_path)
+        .unwrap()
+        .replace("module \"web-service\" version=\"1.2.0\"", "module \"web-service\" version=\"1.0.0\"");
+    fs::write(&lock_path, lock).unwrap();
+    // Make one output Missing so the skew forces the ack path (upgrade, not "up to date").
+    fs::remove_file(root.join("generated/hosts/web.nix")).unwrap();
+
+    let out = knixl(&root, &["upgrade"]);
+    // No --yes: skew needs a human, exit 4 (NeedsAck).
+    assert_eq!(out.status.code(), Some(4), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("web-service 1.0.0 -> 1.2.0"), "notes header: {stdout}");
+    assert!(stdout.contains("enableACME"), "1.1.0 note shown: {stdout}");
+    assert!(stdout.contains("serverAliases"), "1.2.0 note shown: {stdout}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn generate_writes_files_then_check_is_clean() {
     let root = temp_project("gen");
 

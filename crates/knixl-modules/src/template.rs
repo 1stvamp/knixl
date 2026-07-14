@@ -658,6 +658,7 @@ pub struct DeclarativeModule {
     node_name: String,
     schema: NodeSchema,
     template: EmitTemplate,
+    migrations: Vec<crate::MigrationNote>,
 }
 
 impl DeclarativeModule {
@@ -685,12 +686,14 @@ impl DeclarativeModule {
         let mut node_name = None;
         let mut schema = None;
         let mut template = None;
+        let mut migrations = Vec::new();
         for child in body.nodes() {
             match child.name().value() {
                 "summary" => summary = arg_str(child, 0).unwrap_or_default(),
                 "claims-node" => node_name = arg_str(child, 0),
                 "schema" => schema = Some(parse_schema_block(child)?),
                 "emit" => template = Some(EmitTemplate { stmts: parse_stmts(child.children())? }),
+                "migrations" => migrations = parse_migrations(child, &where_)?,
                 other => {
                     return Err(LowerError::Other(format!("{}: unexpected `{other}` in module", where_())))
                 }
@@ -708,8 +711,43 @@ impl DeclarativeModule {
         dry_check(&schema, &template)
             .map_err(|e| LowerError::Other(format!("{}: {e}", where_())))?;
 
-        Ok(DeclarativeModule { id: ModuleId { name, version }, node_name, schema, template })
+        Ok(DeclarativeModule { id: ModuleId { name, version }, node_name, schema, template, migrations })
     }
+}
+
+/// Parse a `migrations` block: each `to "<version>"` child holds one or more `note` lines.
+fn parse_migrations(
+    node: &kdl::KdlNode,
+    where_: &impl Fn() -> String,
+) -> Result<Vec<crate::MigrationNote>, LowerError> {
+    let mut steps = Vec::new();
+    let Some(body) = node.children() else { return Ok(steps) };
+    for step in body.nodes() {
+        if step.name().value() != "to" {
+            return Err(LowerError::Other(format!(
+                "{}: unexpected `{}` in migrations (expected `to`)",
+                where_(),
+                step.name().value()
+            )));
+        }
+        let ver_str = arg_str(step, 0)
+            .ok_or_else(|| LowerError::Other(format!("{}: migration `to` needs a version", where_())))?;
+        let to = ver_str
+            .parse()
+            .map_err(|e| LowerError::Other(format!("{}: bad migration version `{ver_str}`: {e}", where_())))?;
+        let notes = step
+            .children()
+            .map(|b| {
+                b.nodes()
+                    .iter()
+                    .filter(|n| n.name().value() == "note")
+                    .filter_map(|n| arg_str(n, 0))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        steps.push(crate::MigrationNote { to, notes });
+    }
+    Ok(steps)
 }
 
 impl Module for DeclarativeModule {
@@ -719,6 +757,9 @@ impl Module for DeclarativeModule {
     fn lower(&self, node: &kdl::KdlNode, _ctx: &mut crate::LowerCtx) -> Result<LowerOutput, LowerError> {
         let bindings = EmitTemplate::build_bindings(&self.schema, node);
         self.template.interpret(&bindings)
+    }
+    fn migration_notes(&self, from: &semver::Version, to: &semver::Version) -> Vec<String> {
+        crate::notes_in_range(&self.migrations, from, to)
     }
 }
 
@@ -738,6 +779,26 @@ mod tests {
 
     fn node(src: &str) -> kdl::KdlNode {
         src.parse::<kdl::KdlDocument>().unwrap().nodes().first().unwrap().clone()
+    }
+
+    #[test]
+    fn migration_notes_apply_only_to_crossed_steps() {
+        use crate::Module;
+        let m = load_web_service();
+        let v = |s: &str| s.parse::<semver::Version>().unwrap();
+
+        // Fresh install crossing both steps: both notes, in ascending order.
+        let all = m.migration_notes(&v("1.0.0"), &v("1.2.0"));
+        assert_eq!(all.len(), 2, "1.0.0 -> 1.2.0 crosses both steps: {all:?}");
+        assert!(all[0].contains("enableACME"), "1.1.0 note first: {all:?}");
+        assert!(all[1].contains("serverAliases"), "1.2.0 note second: {all:?}");
+
+        // Only the final step is crossed.
+        let one = m.migration_notes(&v("1.1.0"), &v("1.2.0"));
+        assert_eq!(one, vec![all[1].clone()]);
+
+        // No move, no notes.
+        assert!(m.migration_notes(&v("1.2.0"), &v("1.2.0")).is_empty());
     }
 
     fn lower(module: &DeclarativeModule, n: &kdl::KdlNode) -> LowerOutput {
