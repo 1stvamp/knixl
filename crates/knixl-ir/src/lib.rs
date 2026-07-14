@@ -9,6 +9,7 @@
 pub mod expr;
 pub mod module;
 pub mod emit;
+pub mod hoist;
 
 pub use expr::{AttrKey, AttrPath, Binding, Formals, NixExpr, Priority, RawNix};
 pub use module::{Assignment, ModuleRef, NixModule, Provenance};

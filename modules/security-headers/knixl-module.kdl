@@ -1,0 +1,25 @@
+// A declarative module that applies one shared security-headers block to several
+// nginx virtual hosts. The same block is emitted at each vhost's extraConfig, so the
+// generator's let-hoisting pass binds it once (see docs/04, docs/superpowers/specs).
+
+module name="security-headers" version="1.0.0" {
+    summary "Apply one shared security-headers block to several nginx virtual hosts."
+    claims-node "security-headers"
+
+    schema {
+        child "vhost" repeated=#true doc="A virtual host to receive the shared headers." {
+            arg "name" type="string" required=#true doc="Virtual host name."
+        }
+    }
+
+    emit {
+        for-each "v" in "vhost" {
+            set "services.nginx.virtualHosts.{v.name}.extraConfig" \
+                (indent-str)#"""
+                    add_header X-Frame-Options "SAMEORIGIN" always;
+                    add_header X-Content-Type-Options "nosniff" always;
+                    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+                """#
+        }
+    }
+}

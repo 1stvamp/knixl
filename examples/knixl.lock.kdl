@@ -4,12 +4,14 @@ lock version=1 {
     oracle nixpkgs-rev="" options-hash=""
 
     input "hosts/db.kdl" hash="blake3:29d3880498a82621ef4632a73e710b565f50f2244e8da4bb502407dc31b4ea5e"
+    input "hosts/shared.kdl" hash="blake3:e5134351b7d12ed90c8b6448e30cc9af6c707144db2adb9b47ee182eebea1498"
     input "hosts/web.kdl" hash="blake3:e918d383ea5e11cb6ac86a7ee17c71848e4d2521dcd1586c4942f5d189e7261b"
 
     module "backups" version="0.2.1"
     module "host" version="1.0.0"
     module "postgres" version="0.4.0"
     module "raw-nix" version="1.0.0"
+    module "security-headers" version="1.0.0"
     module "web-service" version="1.2.0"
 
     output "generated/hosts/db-backup.nix" {
@@ -22,6 +24,12 @@ lock version=1 {
         hash "blake3:12c7897b92f08620e72d8a09ce976eae41b79084771b5eecf832c5ddfdc8ffb4"
         from "hosts/db.kdl"
         modules "host" "postgres"
+    }
+
+    output "generated/hosts/shared.nix" {
+        hash "blake3:983861285c2c2209c1fb2446578043e723aa244cac2147c1a0627e928d1011b1"
+        from "hosts/shared.kdl"
+        modules "host" "security-headers"
     }
 
     output "generated/hosts/web.nix" {
