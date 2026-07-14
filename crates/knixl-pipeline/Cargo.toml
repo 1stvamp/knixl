@@ -11,6 +11,7 @@ knixl-kdl = { path = "../knixl-kdl" }
 knixl-modules = { path = "../knixl-modules" }
 knixl-nix = { path = "../knixl-nix" }
 knixl-lock = { path = "../knixl-lock" }
+knixl-oracle = { path = "../knixl-oracle" }
 kdl.workspace = true
 semver.workspace = true
 thiserror.workspace = true

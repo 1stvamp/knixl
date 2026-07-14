@@ -47,8 +47,14 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
 
     // Generate expected output. A schema/validation error is not fatal to planning: it
     // becomes the plan's validation_errors, which the verdict maps to the Validation code.
+    // The oracle checks emitted option paths against a cached nixosOptionsDoc file, if one
+    // is configured (KNIXL_OPTIONS_JSON). Absent it, generation runs without option checks.
+    let oracle = std::env::var("KNIXL_OPTIONS_JSON")
+        .ok()
+        .and_then(|p| knixl_oracle::Oracle::from_options_json(Path::new(&p)).ok());
+
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
-    let (expected, validation_errors) = match generate(&hosts, &registry, formatter, &tool) {
+    let (expected, validation_errors) = match generate(&hosts, &registry, formatter, &tool, oracle.as_ref()) {
         Ok(files) => {
             let expected = files
                 .into_iter()

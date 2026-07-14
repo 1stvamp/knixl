@@ -49,16 +49,18 @@ pub enum GenerateError {
     Format(#[from] FormatError),
 }
 
-/// Generate every output file for the given hosts, deterministically.
+/// Generate every output file for the given hosts, deterministically. When `oracle` is
+/// Some, every emitted option path is validated against the real NixOS option set.
 pub fn generate(
     hosts: &[HostSource],
     registry: &Registry,
     formatter: &Formatter,
     tool: &Version,
+    oracle: Option<&knixl_oracle::Oracle>,
 ) -> Result<Vec<GeneratedFile>, GenerateError> {
     let mut out = Vec::new();
     for host in hosts {
-        out.extend(generate_one(host, registry, formatter, tool)?);
+        out.extend(generate_one(host, registry, formatter, tool, oracle)?);
     }
     Ok(out)
 }
@@ -68,6 +70,7 @@ fn generate_one(
     registry: &Registry,
     formatter: &Formatter,
     tool: &Version,
+    oracle: Option<&knixl_oracle::Oracle>,
 ) -> Result<Vec<GeneratedFile>, GenerateError> {
     let doc: KdlDocument = parse(&host.src)?;
     let host_name = first_arg_str(doc.nodes().first().ok_or_else(|| {
@@ -110,6 +113,21 @@ fn generate_one(
         for r in output.raw {
             let key = bucket_key(&r.bucket, &host_name);
             raw_files.entry(key).or_default().push(r.raw);
+        }
+    }
+
+    // Oracle: validate every emitted option path against the real NixOS option set.
+    if let Some(oracle) = oracle {
+        let mut errors = Vec::new();
+        for body in files.values() {
+            for a in body {
+                if let Err(mismatch) = oracle.check(&a.path, &a.value) {
+                    errors.push(format!("{mismatch:?}"));
+                }
+            }
+        }
+        if !errors.is_empty() {
+            return Err(GenerateError::Validation(errors));
         }
     }
 

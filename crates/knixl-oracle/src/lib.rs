@@ -70,4 +70,18 @@ impl Oracle {
     }
 }
 
-fn value_kind(_v: &NixExpr) -> String { todo!("short type name for error messages") }
+fn value_kind(v: &NixExpr) -> String {
+    use NixExpr::*;
+    match v {
+        Bool(_) => "boolean",
+        Int(_) => "integer",
+        Float(_) => "floating point number",
+        Str(_) | IndentStr(_) => "string",
+        Path(_) => "path",
+        Null => "null",
+        List(_) => "list",
+        AttrSet(_) => "attribute set",
+        _ => "expression",
+    }
+    .to_string()
+}

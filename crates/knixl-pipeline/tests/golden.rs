@@ -65,7 +65,7 @@ fn generate_host(host_file: &str) -> Vec<knixl_pipeline::GeneratedFile> {
     let path = PathBuf::from("hosts").join(host_file);
     let src = fs::read_to_string(examples.join(&path)).expect("read host kdl");
     let tool = "0.3.1".parse().unwrap();
-    generate(&[HostSource { path, src }], &build_registry(), &identity_formatter(), &tool)
+    generate(&[HostSource { path, src }], &build_registry(), &identity_formatter(), &tool, None)
         .expect("generate")
 }
 
@@ -164,7 +164,7 @@ fn assert_host_matches(host_file: &str) {
 
     let registry = build_registry();
     let tool = "0.3.1".parse().unwrap();
-    let files = generate(&[HostSource { path, src }], &registry, &formatter(), &tool)
+    let files = generate(&[HostSource { path, src }], &registry, &formatter(), &tool, None)
         .expect("generate");
 
     assert!(!files.is_empty(), "generate produced no files for {host_file}");
@@ -212,6 +212,7 @@ fn generate_is_byte_identical_across_runs() {
             &build_registry(),
             &formatter(),
             &tool,
+            None,
         )
         .expect("generate")
         .into_iter()

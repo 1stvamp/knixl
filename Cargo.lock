@@ -346,6 +346,7 @@ dependencies = [
  "knixl-lock",
  "knixl-modules",
  "knixl-nix",
+ "knixl-oracle",
  "semver",
  "thiserror",
 ]
