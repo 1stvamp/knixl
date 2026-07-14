@@ -154,7 +154,7 @@ impl EmitTemplate {
                         value: value.interpret(b, loops)?, // Collect => NixExpr::List
                         priority: None, condition: None, doc: None,
                     };
-                    out.push(Unit { bucket: Bucket::Default, assignment: a });
+                    out.push(Unit { bucket: Bucket::Default, assignment: a, module: String::new() });
                 }
                 Stmt::WhenFlag { flag, body } => {
                     if resolve_flag(flag, b, loops)? { self.run(body, b, loops, out)?; }

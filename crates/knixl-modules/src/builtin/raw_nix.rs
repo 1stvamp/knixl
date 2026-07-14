@@ -19,7 +19,11 @@ impl Module for RawNixModule {
         if let Some(doc) = node.children() {
             for child in doc.nodes() {
                 let src = child.name().value().trim().to_string();
-                raw.push(RawUnit { bucket: Bucket::Default, raw: RawNix { src, span: None } });
+                raw.push(RawUnit {
+                    bucket: Bucket::Default,
+                    raw: RawNix { src, span: None },
+                    module: String::new(),
+                });
             }
         }
         Ok(LowerOutput { units: Vec::new(), raw })

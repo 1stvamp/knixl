@@ -114,6 +114,30 @@ fn gather_and_plan_report_missing_when_disk_is_empty() {
 }
 
 #[test]
+fn unknown_child_node_surfaces_as_a_warning_not_an_error() {
+    // `host` has open_children, so an unclaimed child passes schema validation and is
+    // linted during lowering. That lint must reach the generated file as a warning
+    // rather than being silently dropped.
+    let src = "host \"web\" {\n    system \"x86_64-linux\"\n    mystery-service\n}".to_string();
+    let tool = "0.3.1".parse().unwrap();
+    let files = generate(
+        &[HostSource { path: PathBuf::from("hosts/web.kdl"), src }],
+        &build_registry(),
+        &identity_formatter(),
+        &tool,
+        None,
+    )
+    .expect("generate");
+
+    assert_eq!(files.len(), 1);
+    assert!(
+        files[0].warnings.iter().any(|w| w.contains("mystery-service")),
+        "unknown child should surface as a warning, got {:?}",
+        files[0].warnings
+    );
+}
+
+#[test]
 fn web_pipeline_produces_expected_structure() {
     let files = generate_host("web.kdl");
     assert_eq!(files.len(), 1, "web has no side-files");
@@ -148,6 +172,38 @@ fn db_pipeline_produces_two_files_with_mkif_backup() {
     // Pre-format the dynamic host key is quoted (services.restic.backups."db").
     assert!(backup.text.contains("services.restic.backups"));
     assert!(backup.text.contains("lib.mkIf"), "backup is gated by a runtime condition");
+}
+
+#[test]
+fn lock_records_only_the_modules_that_contributed_to_each_file() {
+    let files = generate_host("db.kdl");
+    let db = files.iter().find(|f| f.path.file_name().unwrap() == "db.nix").expect("db.nix");
+    let backup = files
+        .iter()
+        .find(|f| f.path.file_name().unwrap() == "db-backup.nix")
+        .expect("db-backup.nix");
+
+    assert!(db.modules.contains(&"host".to_string()), "db.nix modules: {:?}", db.modules);
+    assert!(db.modules.contains(&"postgres".to_string()), "db.nix modules: {:?}", db.modules);
+    assert!(
+        !db.modules.contains(&"backups".to_string()),
+        "backups belongs to the side-file, not db.nix: {:?}",
+        db.modules
+    );
+    assert_eq!(backup.modules, vec!["backups".to_string()], "db-backup.nix is backups only");
+}
+
+#[test]
+fn web_file_attributes_every_contributing_module() {
+    let files = generate_host("web.kdl");
+    let web = &files[0];
+    for m in ["host", "web-service", "raw-nix"] {
+        assert!(
+            web.modules.contains(&m.to_string()),
+            "web.nix should list {m}, got {:?}",
+            web.modules
+        );
+    }
 }
 
 /// True if the configured formatter actually runs. The byte-for-byte goldens need a real
