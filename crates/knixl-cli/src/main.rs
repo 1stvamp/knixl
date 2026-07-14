@@ -132,13 +132,76 @@ struct Ctx {
 }
 impl Ctx {
     fn load() -> Ctx {
-        todo!("discover project root; parse *.kdl inputs; build registry (builtins + modules/); \
-               run pipeline to expected output; read on-disk generated + hashes; parse lock; \
-               gather running versions")
+        let root = discover_root();
+        let tool = env!("CARGO_PKG_VERSION").parse().expect("tool version parses");
+        let project = knixl_pipeline::gather::gather(&root, &default_formatter(), tool)
+            .unwrap_or_else(|e| {
+                eprintln!("knixl: {e}");
+                std::process::exit(Code::Internal as i32);
+            });
+        Ctx {
+            inputs: project.inputs,
+            disk: project.disk,
+            lock: project.lock,
+            running: project.versions,
+            registry: project.registry,
+        }
     }
 }
 
-fn print_plan(_p: &Plan, _json: bool) { todo!() }
+/// Walk up from the working directory to the first dir holding a lock or a `hosts/`.
+fn discover_root() -> std::path::PathBuf {
+    let start = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut dir = start.as_path();
+    loop {
+        if dir.join("knixl.lock.kdl").exists() || dir.join("hosts").is_dir() {
+            return dir.to_path_buf();
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => return start,
+        }
+    }
+}
+
+/// The pinned formatter. `KNIXL_FORMATTER` overrides the binary (e.g. `cat` in tests).
+fn default_formatter() -> knixl_nix::Formatter {
+    let bin = std::env::var("KNIXL_FORMATTER").unwrap_or_else(|_| "nixfmt-rfc-style".into());
+    knixl_nix::Formatter {
+        name: "nixfmt-rfc-style".into(),
+        version: "0.6.0".into(),
+        bin: bin.into(),
+    }
+}
+
+fn state_label(state: &FileState) -> &'static str {
+    match state {
+        FileState::Clean => "clean",
+        FileState::Stale { .. } => "stale",
+        FileState::Drifted { .. } => "drifted",
+        FileState::Missing { .. } => "missing",
+        FileState::Orphaned => "orphaned",
+    }
+}
+
+fn print_plan(p: &Plan, json: bool) {
+    if json {
+        let files: Vec<String> = p
+            .files
+            .iter()
+            .map(|f| format!("{{\"path\":{:?},\"state\":{:?}}}", f.path.display().to_string(), state_label(&f.state)))
+            .collect();
+        println!("{{\"files\":[{}]}}", files.join(","));
+        return;
+    }
+    if p.files.is_empty() {
+        println!("no generated files tracked");
+        return;
+    }
+    for f in &p.files {
+        println!("{:>8}  {}", state_label(&f.state), f.path.display());
+    }
+}
 fn print_migration_notes(_p: &Plan) { todo!() }
 fn print_doc(ctx: &Ctx, node: &str, _json: bool) {
     match ctx.registry.get(node) {

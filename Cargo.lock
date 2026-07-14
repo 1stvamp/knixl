@@ -274,6 +274,7 @@ dependencies = [
  "knixl-modules",
  "knixl-nix",
  "knixl-oracle",
+ "knixl-pipeline",
  "miette",
 ]
 

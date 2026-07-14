@@ -9,6 +9,8 @@
 //! golden tests additionally need `nixfmt` on PATH and regenerated `examples/expected/`,
 //! so they stay `#[ignore]`d; the interpreter and reconcile logic are covered by unit tests.
 
+pub mod gather;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 

@@ -72,6 +72,50 @@ fn generate_host(host_file: &str) -> Vec<knixl_pipeline::GeneratedFile> {
         .expect("generate")
 }
 
+/// Assemble a realistic project root in a temp dir: hosts + lock from examples/, and the
+/// module library from the repo's modules/. Returns the root.
+fn temp_project(tag: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("knixl-proj-{}-{tag}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("hosts")).unwrap();
+    fs::create_dir_all(root.join("modules/web-service")).unwrap();
+
+    let examples = examples_dir();
+    for host in ["web.kdl", "db.kdl"] {
+        fs::copy(examples.join("hosts").join(host), root.join("hosts").join(host)).unwrap();
+    }
+    fs::copy(examples.join("knixl.lock.kdl"), root.join("knixl.lock.kdl")).unwrap();
+    fs::copy(
+        examples.join("../modules/web-service/knixl-module.kdl"),
+        root.join("modules/web-service/knixl-module.kdl"),
+    )
+    .unwrap();
+    root
+}
+
+#[test]
+fn gather_and_plan_report_missing_when_disk_is_empty() {
+    use knixl_lock::{FileState, Plan};
+    use knixl_pipeline::gather::gather;
+
+    let root = temp_project("missing");
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    // The project has hosts + modules + a lock, but no generated/ dir, so nothing is on disk.
+    let plan = Plan::compute(&project.inputs, &project.disk, &project.lock, &project.versions);
+
+    assert!(!plan.has_validation_errors());
+    assert_eq!(plan.files.len(), 3, "web.nix, db.nix, db-backup.nix");
+    assert!(
+        plan.files.iter().all(|f| matches!(f.state, FileState::Missing { .. })),
+        "every output is Missing when nothing is generated on disk"
+    );
+    // the declarative module was discovered and registered alongside the built-ins
+    assert!(project.registry.get("web-service").is_some());
+    assert!(project.registry.get("postgres").is_some());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn web_pipeline_produces_expected_structure() {
     let files = generate_host("web.kdl");

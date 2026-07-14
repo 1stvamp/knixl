@@ -16,5 +16,6 @@ knixl-oracle = { path = "../knixl-oracle" }
 knixl-modules = { path = "../knixl-modules" }
 knixl-lock = { path = "../knixl-lock" }
 knixl-nix = { path = "../knixl-nix" }
+knixl-pipeline = { path = "../knixl-pipeline" }
 clap.workspace = true
 miette.workspace = true
