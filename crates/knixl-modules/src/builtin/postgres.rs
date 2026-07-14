@@ -61,6 +61,8 @@ fn schema() -> NodeSchema {
                 repeated: false,
                 delegate: false,
                 doc: "Listen on TCP/IP, forcing past the base preset's enableTCPIP = false.".into(),
+                args: vec![],
+                props: vec![],
             },
             Child {
                 name: "database".into(),
@@ -69,6 +71,8 @@ fn schema() -> NodeSchema {
                 repeated: true,
                 delegate: false,
                 doc: "A database to ensure exists. Repeatable.".into(),
+                args: vec![],
+                props: vec![],
             },
         ],
         open_children: false,

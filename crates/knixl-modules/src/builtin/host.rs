@@ -41,6 +41,8 @@ fn schema() -> NodeSchema {
             repeated: false,
             delegate: false,
             doc: "The Nix system double, e.g. x86_64-linux.".into(),
+            args: vec![],
+            props: vec![],
         }],
         // Everything other than `system` is a service, delegated to its own module.
         open_children: true,

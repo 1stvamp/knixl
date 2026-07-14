@@ -48,6 +48,11 @@ pub struct Child {
     pub repeated: bool,   // `database "app"; database "metrics"` => repeated
     pub delegate: bool,   // true => another module's node, dispatched, not read here
     pub doc: String,
+    /// Sub-fields of a structured child (ty == Node): positional sub-args and key=value
+    /// sub-props. Empty for scalar/flag children. These build the `Scope` bindings that a
+    /// `{child.field}` lookup resolves against.
+    pub args: Vec<Field>,
+    pub props: Vec<Field>,
 }
 
 /// KDL-side INPUT types. Not oracle NixType (which is OUTPUT option types).
@@ -243,6 +248,8 @@ mod tests {
                 repeated: false,
                 delegate: false,
                 doc: String::new(),
+                args: vec![],
+                props: vec![],
             }],
             open_children: true,
         }
@@ -307,6 +314,8 @@ mod tests {
                 repeated: false,
                 delegate: false,
                 doc: String::new(),
+                args: vec![],
+                props: vec![],
             }],
             open_children: false,
         };
