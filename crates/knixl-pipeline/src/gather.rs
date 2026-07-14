@@ -45,13 +45,31 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     let hosts = read_hosts(root)?;
     let registry = build_registry(root)?;
 
-    // Generate expected output. A schema/validation error is not fatal to planning: it
-    // becomes the plan's validation_errors, which the verdict maps to the Validation code.
-    // The oracle checks emitted option paths against a cached nixosOptionsDoc file, if one
-    // is configured (KNIXL_OPTIONS_JSON). Absent it, generation runs without option checks.
-    let oracle = std::env::var("KNIXL_OPTIONS_JSON")
-        .ok()
-        .and_then(|p| knixl_oracle::Oracle::from_options_json(Path::new(&p)).ok());
+    let formatter_pin =
+        FormatterPin { name: formatter.name.clone(), version: formatter.version.clone() };
+    // No lockfile means a fresh project: seed the baseline from the running versions so
+    // there is no phantom skew (skew only means a recorded version actually moved).
+    let lock = match read_lock(root)? {
+        Some(l) => l,
+        None => Lock {
+            version: 1,
+            tool: tool.clone(),
+            formatter: formatter_pin.clone(),
+            oracle: OraclePin { nixpkgs_rev: String::new(), options_hash: String::new() },
+            inputs: BTreeMap::new(),
+            modules: registry.module_versions(),
+            outputs: Vec::new(),
+        },
+    };
+
+    // Resolve the oracle option set. KNIXL_OPTIONS_JSON wins (explicit override, and the
+    // path tests use). Otherwise fall back to the set cached for the lock's pinned nixpkgs
+    // rev, so a `check` validates against the locked options without a manual env var. If
+    // neither is present, generation proceeds without option checks (best-effort).
+    let oracle = match std::env::var("KNIXL_OPTIONS_JSON") {
+        Ok(p) => knixl_oracle::Oracle::from_options_json(Path::new(&p)).ok(),
+        Err(_) => knixl_oracle::Oracle::from_rev_cache(&lock.oracle.nixpkgs_rev).ok().flatten(),
+    };
 
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
     let (expected, validation_errors) = match generate(&hosts, &registry, formatter, &tool, oracle.as_ref()) {
@@ -77,22 +95,6 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     let input_hashes: BTreeMap<PathBuf, String> =
         hosts.iter().map(|h| (h.path.clone(), hash(h.src.as_bytes()))).collect();
 
-    let formatter_pin =
-        FormatterPin { name: formatter.name.clone(), version: formatter.version.clone() };
-    // No lockfile means a fresh project: seed the baseline from the running versions so
-    // there is no phantom skew (skew only means a recorded version actually moved).
-    let lock = match read_lock(root)? {
-        Some(l) => l,
-        None => Lock {
-            version: 1,
-            tool: tool.clone(),
-            formatter: formatter_pin.clone(),
-            oracle: OraclePin { nixpkgs_rev: String::new(), options_hash: String::new() },
-            inputs: BTreeMap::new(),
-            modules: registry.module_versions(),
-            outputs: Vec::new(),
-        },
-    };
     let versions = Versions {
         tool,
         formatter: formatter_pin,

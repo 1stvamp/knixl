@@ -57,6 +57,16 @@ impl Oracle {
         Ok(Self { options })
     }
 
+    /// Load the options set cached for a pinned nixpkgs rev, if it has been fetched. Returns
+    /// `Ok(None)` when the rev is empty or nothing is cached for it, so generation proceeds
+    /// without option checks (best-effort, same as an absent options file).
+    pub fn from_rev_cache(rev: &str) -> Result<Option<Self>, OracleError> {
+        match cache_path(rev) {
+            Some(p) if p.is_file() => Self::from_options_json(&p).map(Some),
+            _ => Ok(None),
+        }
+    }
+
     /// Check one emitted assignment. Submodule interiors are left unchecked (Ok).
     pub fn check(&self, path: &AttrPath, value: &NixExpr) -> Result<(), TypeMismatch> {
         let key = path.to_option_key(); // dynamic keys collapsed to <name>
@@ -79,6 +89,19 @@ impl Oracle {
         let prefix = format!("{key}.");
         self.options.keys().any(|k| k.starts_with(&prefix))
     }
+}
+
+/// Where a fetched options.json lives for a given nixpkgs rev:
+/// `$XDG_CACHE_HOME/knixl/options-<rev>.json` (falling back to `$HOME/.cache`). Returns
+/// None for an empty rev or when no cache/home directory can be determined.
+pub fn cache_path(rev: &str) -> Option<std::path::PathBuf> {
+    if rev.is_empty() {
+        return None;
+    }
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
+    Some(base.join("knixl").join(format!("options-{rev}.json")))
 }
 
 fn value_kind(v: &NixExpr) -> String {
