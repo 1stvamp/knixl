@@ -1,0 +1,43 @@
+# mise tasks for knixl. The Rust toolchain itself is pinned in rust-toolchain.toml
+# (1.85.1, honoured by rustup), so mise only drives the workflow here.
+
+[env]
+# Put both build outputs on PATH so `knixl` is callable directly after a build,
+# e.g. `mise run build && knixl check`. Debug first, release as a fallback.
+_.path = ["target/debug", "target/release"]
+
+[tasks.build]
+description = "Build the whole workspace (debug)"
+run = "cargo build"
+
+[tasks."build:release"]
+description = "Build the whole workspace (release, LTO)"
+run = "cargo build --release"
+
+[tasks.test]
+description = "Run all tests"
+run = "cargo test"
+
+[tasks.lint]
+description = "Clippy across the workspace, warnings as errors"
+run = "cargo clippy --all-targets -- -D warnings"
+
+[tasks.fmt]
+description = "Format all crates"
+run = "cargo fmt --all"
+
+[tasks."fmt:check"]
+description = "Check formatting without writing"
+run = "cargo fmt --all --check"
+
+[tasks.check]
+description = "Type-check without producing binaries"
+run = "cargo check --workspace"
+
+[tasks.run]
+description = "Run the knixl CLI (args pass through, e.g. `mise run run -- check`)"
+run = "cargo run --quiet -p knixl-cli --"
+
+[tasks."run:release"]
+description = "Run the release knixl CLI (args pass through)"
+run = "cargo run --quiet --release -p knixl-cli --"
