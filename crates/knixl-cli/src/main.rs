@@ -172,11 +172,7 @@ fn discover_root() -> std::path::PathBuf {
 /// The pinned formatter. `KNIXL_FORMATTER` overrides the binary (e.g. `cat` in tests).
 fn default_formatter() -> knixl_nix::Formatter {
     let bin = std::env::var("KNIXL_FORMATTER").unwrap_or_else(|_| "nixfmt-rfc-style".into());
-    knixl_nix::Formatter {
-        name: "nixfmt-rfc-style".into(),
-        version: "0.6.0".into(),
-        bin: bin.into(),
-    }
+    knixl_nix::Formatter::detect("nixfmt-rfc-style", bin.into(), "0.6.0")
 }
 
 fn state_label(state: &FileState) -> &'static str {

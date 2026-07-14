@@ -47,14 +47,11 @@ fn build_registry() -> Registry {
     reg
 }
 
-/// A formatter handle. `format()` is not invoked until it is implemented, so the binary
-/// path only needs to be right once Phase 1's formatter integration lands.
+/// The real formatter, honouring `KNIXL_FORMATTER` (point it at a nixfmt wrapper). Records
+/// the binary's actual version.
 fn formatter() -> Formatter {
-    Formatter {
-        name: "nixfmt-rfc-style".into(),
-        version: "0.6.0".into(),
-        bin: PathBuf::from("nixfmt-rfc-style"),
-    }
+    let bin = std::env::var("KNIXL_FORMATTER").unwrap_or_else(|_| "nixfmt-rfc-style".into());
+    Formatter::detect("nixfmt-rfc-style", PathBuf::from(bin), "0.6.0")
 }
 
 /// An identity "formatter" (`cat`), so the full pipeline can be exercised end to end even
@@ -152,6 +149,13 @@ fn db_pipeline_produces_two_files_with_mkif_backup() {
     assert!(backup.text.contains("lib.mkIf"), "backup is gated by a runtime condition");
 }
 
+/// True if the configured formatter actually runs. The byte-for-byte goldens need a real
+/// nixfmt (set `KNIXL_FORMATTER` to one, e.g. a wrapper); without it they skip rather than
+/// fail, so `cargo test` is green on hosts without nixfmt.
+fn formatter_available() -> bool {
+    formatter().format("{ }\n").is_ok()
+}
+
 /// Generate `host_file` and assert every produced file matches `expected/<basename>`.
 fn assert_host_matches(host_file: &str) {
     let examples = examples_dir();
@@ -174,20 +178,29 @@ fn assert_host_matches(host_file: &str) {
 }
 
 #[test]
-#[ignore = "pipeline stubbed until Phase 1; run with --ignored to drive it green"]
 fn web_matches_golden() {
+    if !formatter_available() {
+        eprintln!("skipping web_matches_golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
     assert_host_matches("web.kdl");
 }
 
 #[test]
-#[ignore = "pipeline stubbed until Phase 1; run with --ignored to drive it green"]
 fn db_matches_golden() {
+    if !formatter_available() {
+        eprintln!("skipping db_matches_golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
     assert_host_matches("db.kdl");
 }
 
 #[test]
-#[ignore = "pipeline stubbed until Phase 1; run with --ignored to drive it green"]
 fn generate_is_byte_identical_across_runs() {
+    if !formatter_available() {
+        eprintln!("skipping determinism golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
     let examples = examples_dir();
     let path = PathBuf::from("hosts/web.kdl");
     let src = fs::read_to_string(examples.join(&path)).expect("read host kdl");

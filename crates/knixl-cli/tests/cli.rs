@@ -18,7 +18,8 @@ fn temp_project(tag: &str) -> PathBuf {
     for host in ["web.kdl", "db.kdl"] {
         fs::copy(ex.join("hosts").join(host), root.join("hosts").join(host)).unwrap();
     }
-    fs::copy(ex.join("knixl.lock.kdl"), root.join("knixl.lock.kdl")).unwrap();
+    // No lockfile: a fresh project, so the baseline versions match the running tool
+    // (the copied examples lock pins nixfmt 1.3.1, which would skew against `cat`).
     fs::copy(
         ex.join("../modules/web-service/knixl-module.kdl"),
         root.join("modules/web-service/knixl-module.kdl"),

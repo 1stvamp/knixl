@@ -71,10 +71,25 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     let input_hashes: BTreeMap<PathBuf, String> =
         hosts.iter().map(|h| (h.path.clone(), hash(h.src.as_bytes()))).collect();
 
-    let lock = read_lock(root)?;
+    let formatter_pin =
+        FormatterPin { name: formatter.name.clone(), version: formatter.version.clone() };
+    // No lockfile means a fresh project: seed the baseline from the running versions so
+    // there is no phantom skew (skew only means a recorded version actually moved).
+    let lock = match read_lock(root)? {
+        Some(l) => l,
+        None => Lock {
+            version: 1,
+            tool: tool.clone(),
+            formatter: formatter_pin.clone(),
+            oracle: OraclePin { nixpkgs_rev: String::new(), options_hash: String::new() },
+            inputs: BTreeMap::new(),
+            modules: registry.module_versions(),
+            outputs: Vec::new(),
+        },
+    };
     let versions = Versions {
         tool,
-        formatter: FormatterPin { name: formatter.name.clone(), version: formatter.version.clone() },
+        formatter: formatter_pin,
         oracle: lock.oracle.clone(),
         modules: registry.module_versions(),
     };
@@ -164,23 +179,11 @@ fn collect_generated(
     Ok(())
 }
 
-fn read_lock(root: &Path) -> Result<Lock, GatherError> {
+fn read_lock(root: &Path) -> Result<Option<Lock>, GatherError> {
     let path = root.join("knixl.lock.kdl");
     if !path.exists() {
-        return Ok(empty_lock());
+        return Ok(None);
     }
     let src = std::fs::read_to_string(&path)?;
-    Lock::parse(&src).map_err(|e| GatherError::Lock(e.to_string()))
-}
-
-fn empty_lock() -> Lock {
-    Lock {
-        version: 1,
-        tool: Version::new(0, 0, 0),
-        formatter: FormatterPin { name: String::new(), version: String::new() },
-        oracle: OraclePin { nixpkgs_rev: String::new(), options_hash: String::new() },
-        inputs: BTreeMap::new(),
-        modules: BTreeMap::new(),
-        outputs: Vec::new(),
-    }
+    Lock::parse(&src).map(Some).map_err(|e| GatherError::Lock(e.to_string()))
 }

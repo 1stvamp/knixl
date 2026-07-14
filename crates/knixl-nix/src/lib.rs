@@ -21,13 +21,35 @@ pub enum FormatError {
 }
 
 impl Formatter {
+    /// Build a formatter, recording the binary's actual reported version (so the lock is
+    /// honest). Falls back to `fallback` if the binary cannot be queried. The version token
+    /// is the last whitespace-separated word of the first `--version` line (e.g. the
+    /// `1.3.1` in `nixfmt 1.3.1`).
+    pub fn detect(name: &str, bin: std::path::PathBuf, fallback: &str) -> Formatter {
+        let version = std::process::Command::new(&bin)
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().last().map(str::to_string))
+            })
+            .unwrap_or_else(|| fallback.to_string());
+        Formatter { name: name.to_string(), version, bin }
+    }
+
     /// Pipe emitted (structurally-correct-but-ugly) Nix through the pinned formatter.
     /// Only the returned, formatted text is ever hashed or written.
     pub fn format(&self, emitted: &str) -> Result<String, FormatError> {
         use std::io::Write;
         use std::process::{Command, Stdio};
 
+        // `-` = format anonymous stdin (bare stdin is deprecated in nixfmt 1.x).
         let mut child = Command::new(&self.bin)
+            .arg("-")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
