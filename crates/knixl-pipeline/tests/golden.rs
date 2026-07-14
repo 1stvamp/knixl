@@ -206,6 +206,19 @@ fn web_file_attributes_every_contributing_module() {
     }
 }
 
+#[test]
+fn repeated_block_is_hoisted_into_a_let() {
+    // shared.kdl applies the same security-headers block to two vhosts, so the block
+    // is bound once and referenced twice (structure visible pre-nixfmt).
+    let files = generate_host("shared.kdl");
+    assert_eq!(files.len(), 1);
+    let text = &files[0].text;
+    assert!(text.contains("let"), "a let block is emitted:\n{text}");
+    assert!(text.contains("_knixl0 ="), "the shared block is bound:\n{text}");
+    let refs = text.matches("= _knixl0;").count();
+    assert_eq!(refs, 2, "both vhosts reference the binding:\n{text}");
+}
+
 /// True if the configured formatter actually runs. The byte-for-byte goldens need a real
 /// nixfmt (set `KNIXL_FORMATTER` to one, e.g. a wrapper); without it they skip rather than
 /// fail, so `cargo test` is green on hosts without nixfmt.
@@ -250,6 +263,17 @@ fn db_matches_golden() {
         return;
     }
     assert_host_matches("db.kdl");
+}
+
+#[test]
+fn shared_matches_golden() {
+    // Exercises let-hoisting through the full pipeline and the pinned nixfmt: the shared
+    // security-headers block is bound once and referenced at both vhosts.
+    if !formatter_available() {
+        eprintln!("skipping shared_matches_golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
+    assert_host_matches("shared.kdl");
 }
 
 #[test]

@@ -1,0 +1,12 @@
+// Demonstrates let-hoisting: the same security-headers block is applied to two
+// virtual hosts, so the generated file binds it once as _knixl0 and references it
+// at both vhosts.
+
+host "shared" {
+    system "x86_64-linux"
+
+    security-headers {
+        vhost "a.example.com"
+        vhost "b.example.com"
+    }
+}

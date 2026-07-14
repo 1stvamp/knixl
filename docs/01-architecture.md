@@ -18,6 +18,8 @@ KDL inputs
 
 The whole thing is a pure function from (KDL, tool version, module versions, formatter version, oracle rev) to output bytes. `Plan::compute` runs everything up to "write" and produces a diff; the commands decide whether to write.
 
+The "hoist lets" step is `knixl-ir::hoist`: within a file, a compound value (attrset, list, or indented string) that appears two or more times is bound once at the top as `let _knixl0 = ...; in { ... }` and referenced at each use. It is a pure IR-to-IR pass, deterministic, and a no-op on files with no repetition, so it never changes output unless there is genuine duplication. The `_knixlN` names seen in generated files come from here. The rule is defined in `docs/superpowers/specs/2026-07-14-let-hoisting-design.md`.
+
 ## Crate layout and dependency direction
 
 Strictly one direction. No crate imports `knixl-cli`.

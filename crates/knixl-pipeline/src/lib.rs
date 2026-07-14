@@ -153,7 +153,7 @@ fn generate_one(
 
     let mut generated = Vec::new();
     for key in &keys {
-        let body = files.remove(key).unwrap_or_default();
+        let mut body = files.remove(key).unwrap_or_default();
         let raw = raw_files.remove(key).unwrap_or_default();
 
         // Value-conflict lint is per file; the host-level lints attach to the host's file.
@@ -161,6 +161,9 @@ fn generate_one(
         if *key == host_name {
             warnings.append(&mut host_lints);
         }
+
+        // let-hoisting: dedupe repeated compound values into top-level bindings.
+        let lets = knixl_ir::hoist::hoist(&mut body);
         let imports = if *key == host_name {
             side_files
                 .iter()
@@ -187,7 +190,7 @@ fn generate_one(
         let module = NixModule {
             header: module_header(),
             imports,
-            lets: Vec::new(), // let-hoisting is a later pass (Phase 5)
+            lets,
             body,
             raw,
             provenance: Provenance {
