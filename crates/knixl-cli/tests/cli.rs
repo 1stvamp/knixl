@@ -68,6 +68,30 @@ fn plan_defaults_to_exit_zero() {
 }
 
 #[test]
+fn drift_is_detected_and_refused_without_accept_drift() {
+    let root = temp_project("drift");
+    assert_eq!(knixl(&root, &["generate"]).status.code(), Some(0));
+
+    // Hand-edit a generated file: disk now diverges from the lock (tainted).
+    let web = root.join("generated/hosts/web.nix");
+    let edited = format!("{}\n# hand edit\n", fs::read_to_string(&web).unwrap());
+    fs::write(&web, edited).unwrap();
+
+    // check => Drift (exit 3).
+    assert_eq!(knixl(&root, &["check"]).status.code(), Some(3));
+
+    // generate refuses to clobber the edit (exit 3), leaving it in place.
+    assert_eq!(knixl(&root, &["generate"]).status.code(), Some(3));
+    assert!(fs::read_to_string(&web).unwrap().contains("# hand edit"));
+
+    // --accept-drift knowingly overwrites (exit 0), discarding the edit.
+    assert_eq!(knixl(&root, &["generate", "--accept-drift"]).status.code(), Some(0));
+    assert!(!fs::read_to_string(&web).unwrap().contains("# hand edit"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn generate_writes_files_then_check_is_clean() {
     let root = temp_project("gen");
 

@@ -147,6 +147,14 @@ impl Plan {
             || (f.skew.is_some()
                 && matches!(f.state, FileState::Stale { .. } | FileState::Missing { .. })))
     }
+
+    /// A version skew that would change a still-generated file. `generate` refuses this
+    /// (points at `upgrade`); it is distinct from drift, which is handled per file as exit 3.
+    pub fn skew_needs_ack(&self) -> bool {
+        self.files.iter().any(|f| {
+            f.skew.is_some() && matches!(f.state, FileState::Stale { .. } | FileState::Missing { .. })
+        })
+    }
 }
 
 fn compute_skew(lock: &Lock, running: &Versions) -> Option<VersionSkew> {
