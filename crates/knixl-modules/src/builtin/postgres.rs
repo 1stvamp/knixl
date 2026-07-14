@@ -5,7 +5,7 @@ use kdl::KdlNode;
 use knixl_ir::{NixExpr, Priority};
 use knixl_kdl::{child_flag, children_named};
 use crate::builtin::host::{assign, unit_default};
-use crate::{LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema};
+use crate::{Child, Field, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, ValueTy};
 
 pub struct Postgres { schema: NodeSchema }
 impl Postgres { pub fn new() -> Self { Self { schema: schema() } } }
@@ -43,4 +43,72 @@ impl Module for Postgres {
     }
 }
 
-fn schema() -> NodeSchema { todo!("postgres schema: prop version:int; child listen-tcp flag; repeated child database:string") }
+fn schema() -> NodeSchema {
+    NodeSchema {
+        summary: "A PostgreSQL server with the base hardening preset.".into(),
+        args: vec![],
+        props: vec![Field {
+            name: "version".into(),
+            ty: ValueTy::Int,
+            required: false,
+            doc: "Major version, e.g. 16. Defaults to 16.".into(),
+        }],
+        children: vec![
+            Child {
+                name: "listen-tcp".into(),
+                ty: ValueTy::Bool,
+                required: false,
+                repeated: false,
+                delegate: false,
+                doc: "Listen on TCP/IP, forcing past the base preset's enableTCPIP = false.".into(),
+            },
+            Child {
+                name: "database".into(),
+                ty: ValueTy::Str,
+                required: false,
+                repeated: true,
+                delegate: false,
+                doc: "A database to ensure exists. Repeatable.".into(),
+            },
+        ],
+        open_children: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Registry, Scope};
+
+    fn node(src: &str) -> KdlNode {
+        src.parse::<kdl::KdlDocument>().unwrap().nodes().first().unwrap().clone()
+    }
+
+    #[test]
+    fn postgres_forces_tcp_only_when_requested_and_lists_databases() {
+        let pg = Postgres::new();
+        let n = node("postgres version=16 {\n    listen-tcp #true\n    database \"app\"\n    database \"metrics\"\n}");
+        let reg = Registry::new();
+        let mut diags = Vec::new();
+        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags);
+
+        let out = pg.lower(&n, &mut ctx).unwrap();
+        // enable, package, ensureDatabases, and the forced enableTCPIP
+        assert_eq!(out.units.len(), 4);
+        let forced = out.units.last().unwrap();
+        assert!(matches!(forced.assignment.priority, Some(Priority::Force)));
+    }
+
+    #[test]
+    fn postgres_without_listen_tcp_omits_the_forced_override() {
+        let pg = Postgres::new();
+        let n = node("postgres {\n    database \"app\"\n}");
+        let reg = Registry::new();
+        let mut diags = Vec::new();
+        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags);
+
+        let out = pg.lower(&n, &mut ctx).unwrap();
+        assert_eq!(out.units.len(), 3);
+        assert!(out.units.iter().all(|u| u.assignment.priority.is_none()));
+    }
+}
