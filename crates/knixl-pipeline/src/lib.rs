@@ -124,6 +124,11 @@ fn generate_one(
     for key in keys {
         let body = files.remove(&key).unwrap_or_default();
         let raw = raw_files.remove(&key).unwrap_or_default();
+
+        // Value-conflict lint per file; joins the diagnostics the Ctx/Plan layer surfaces.
+        for warning in detect_conflicts(&body) {
+            diags.push(knixl_modules::Diagnostic { span: None, message: warning });
+        }
         let imports = if key == host_name {
             side_files
                 .iter()
@@ -162,6 +167,41 @@ fn generate_one(
     Ok(generated)
 }
 
+/// Plan-time lint (docs/02): two assignments to the same option path in one file, neither
+/// disambiguated by a priority, is a value conflict Nix rejects at eval and the oracle
+/// cannot see. Returns one warning per offending path.
+fn detect_conflicts(assignments: &[Assignment]) -> Vec<String> {
+    let mut groups: BTreeMap<String, Vec<&Assignment>> = BTreeMap::new();
+    for a in assignments {
+        groups.entry(exact_path_key(&a.path)).or_default().push(a);
+    }
+    let mut warnings = Vec::new();
+    for (path, group) in groups {
+        let unprioritised = group.iter().filter(|a| a.priority.is_none()).count();
+        if unprioritised >= 2 {
+            warnings.push(format!(
+                "option `{path}` is assigned {} times without a disambiguating priority",
+                group.len()
+            ));
+        }
+    }
+    warnings
+}
+
+/// Exact path key (quoted segments kept distinct, unlike to_option_key's `<name>`), so a
+/// conflict is only flagged for genuinely the same path.
+fn exact_path_key(path: &knixl_ir::AttrPath) -> String {
+    use knixl_ir::AttrKey;
+    path.0
+        .iter()
+        .map(|k| match k {
+            AttrKey::Ident(s) => s.clone(),
+            AttrKey::Quoted(s) => format!("{s:?}"),
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 fn bucket_key(bucket: &Bucket, host_name: &str) -> String {
     match bucket {
         Bucket::Default => host_name.to_string(),
@@ -185,4 +225,43 @@ fn first_arg_str(node: &KdlNode) -> Option<String> {
         .find(|e| e.name().is_none())
         .and_then(|e| e.value().as_string())
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use knixl_ir::{AttrKey, AttrPath, Priority};
+
+    fn assign(path: &[&str], priority: Option<Priority>) -> Assignment {
+        Assignment {
+            path: AttrPath(path.iter().map(|s| AttrKey::Ident((*s).into())).collect()),
+            value: NixExpr::Bool(true),
+            priority,
+            condition: None,
+            doc: None,
+        }
+    }
+
+    #[test]
+    fn conflict_flagged_when_two_unprioritised_assignments_share_a_path() {
+        let a = [assign(&["services", "x"], None), assign(&["services", "x"], None)];
+        let w = detect_conflicts(&a);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("services.x"));
+    }
+
+    #[test]
+    fn priority_disambiguates_a_shared_path() {
+        let a = [
+            assign(&["services", "x"], None),
+            assign(&["services", "x"], Some(Priority::Force)),
+        ];
+        assert!(detect_conflicts(&a).is_empty());
+    }
+
+    #[test]
+    fn distinct_paths_do_not_conflict() {
+        let a = [assign(&["services", "x"], None), assign(&["services", "y"], None)];
+        assert!(detect_conflicts(&a).is_empty());
+    }
 }
