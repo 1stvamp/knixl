@@ -77,6 +77,35 @@ fn accepts_a_submodule_root_that_has_known_children() {
 }
 
 #[test]
+fn from_rev_cache_loads_options_keyed_by_rev() {
+    let tmp = std::env::temp_dir().join(format!("knixl-oracle-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::env::set_var("XDG_CACHE_HOME", &tmp);
+
+    // Nothing cached yet, and an empty rev, both resolve to None (best-effort skip).
+    assert!(knixl_oracle::Oracle::from_rev_cache("").expect("empty rev").is_none());
+    let rev = "deadbeefcafef00d";
+    assert!(knixl_oracle::Oracle::from_rev_cache(rev).expect("miss").is_none());
+
+    // Populate the cache at the rev's path, then it loads and checks.
+    let dest = knixl_oracle::cache_path(rev).expect("cache path under XDG_CACHE_HOME");
+    std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/options.json"),
+        &dest,
+    )
+    .unwrap();
+
+    let oracle = knixl_oracle::Oracle::from_rev_cache(rev).expect("load").expect("cached present");
+    assert!(oracle
+        .check(&ident_path(&["services", "nginx", "enable"]), &NixExpr::Bool(true))
+        .is_ok());
+
+    std::env::remove_var("XDG_CACHE_HOME");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
 fn real_options_json_loads_when_provided() {
     let Ok(path) = std::env::var("KNIXL_OPTIONS_JSON") else {
         eprintln!("skipping: set KNIXL_OPTIONS_JSON to a real nixosOptionsDoc file");

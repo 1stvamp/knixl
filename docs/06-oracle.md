@@ -8,7 +8,24 @@ Hand-written per-module output schemas would force a recompile per module and du
 
 ## Extraction
 
-Use `nixosOptionsDoc`, the same mechanism behind search.nixos.org and the manual. It produces an `options.json` mapping each option path to a type description, default, and declaration site. The caller pins the nixpkgs rev, so the oracle is reproducible, and that rev goes in the lock (`oracle nixpkgs-rev=... options-hash=...`). Cache `options.json` keyed by rev under `.knixl-cache/`.
+Use `nixosOptionsDoc`, the same mechanism behind search.nixos.org and the manual. It produces an `options.json` mapping each option path to a type description, default, and declaration site. The caller pins the nixpkgs rev, so the oracle is reproducible, and that rev goes in the lock (`oracle nixpkgs-rev=... options-hash=...`).
+
+## Rev cache
+
+`options.json` is cached keyed by rev at `$XDG_CACHE_HOME/knixl/options-<rev>.json` (falling back to `$HOME/.cache/knixl/`). The set for a given rev is identical across projects, so a user-level cache is fetched once and reused. Resolution order when planning:
+
+1. `KNIXL_OPTIONS_JSON` if set: an explicit path, and what the tests use. Wins over everything.
+2. Otherwise the file cached for the lock's `oracle nixpkgs-rev`, loaded automatically so a `check` validates against the locked options with no env var.
+3. Otherwise no options file: generation proceeds without option checks (best-effort, the same as an unknown rev).
+
+Populate the cache for a rev with `nixosOptionsDoc`, e.g. build the doc against the pinned nixpkgs and copy the result:
+
+```
+nix-build '<nixpkgs>' -A nixosOptionsDoc ...   # or an equivalent flake attr
+cp result/share/doc/nixos/options.json "$HOME/.cache/knixl/options-<rev>.json"
+```
+
+Fetching by rev is not yet automated inside knixl (it needs a nix evaluation); the lookup is. `knixl_oracle::cache_path(rev)` returns the exact path to write.
 
 ## The honest limit, and how to live with it
 
