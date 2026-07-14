@@ -1,0 +1,52 @@
+// A declarative knixl module. Straight-line substitution only: no conditional priorities,
+// no runtime lib.mkIf, only Bucket::Default. If it ever needs those, it becomes a built-in.
+// The `emit` grammar is specified in docs/04-template-grammar.md.
+
+module name="web-service" version="1.2.0" {
+    summary "Hardened nginx reverse-proxy virtual host."
+    claims-node "web-service"
+
+    schema {
+        arg "host" type="string" required=#true doc="Virtual host name."
+        child "upstream" type="string" required=#true doc="Proxy target URL."
+        child "acme" {
+            prop "email" type="string" required=#true doc="ACME contact email."
+        }
+        child "hardened" type="bool" doc="Add recommended security headers."
+        child "alias" type="string" repeated=#true doc="Additional server name."
+        child "location" repeated=#true doc="Extra proxied path." {
+            arg  "match"    type="string" required=#true doc="Location match."
+            prop "upstream" type="string" required=#true doc="Proxy target for this path."
+        }
+    }
+
+    emit {
+        set "services.nginx.enable" #true
+        set "services.nginx.recommendedTlsSettings" #true
+        set "services.nginx.recommendedProxySettings" #true
+        set "services.nginx.recommendedOptimisation" #true
+
+        set "services.nginx.virtualHosts.{host}.forceSSL" #true
+        set "services.nginx.virtualHosts.{host}.enableACME" #true
+        set "services.nginx.virtualHosts.{host}.locations.\"/\".proxyPass" "{upstream}"
+
+        set "services.nginx.virtualHosts.{host}.serverAliases" (collect "alias")
+
+        for-each "loc" in "location" {
+            set "services.nginx.virtualHosts.{host}.locations.{loc.match}.proxyPass" "{loc.upstream}"
+        }
+
+        set "security.acme.acceptTerms" #true
+        set "security.acme.certs.{host}.email" "{acme.email}"
+
+        // generation-time gate on an input flag: include these lines or not.
+        when-flag "hardened" {
+            set "services.nginx.virtualHosts.{host}.locations.\"/\".extraConfig" \
+                (indent-str #"""
+                    add_header X-Frame-Options "SAMEORIGIN" always;
+                    add_header X-Content-Type-Options "nosniff" always;
+                    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+                """#)
+        }
+    }
+}

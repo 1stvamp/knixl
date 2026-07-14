@@ -1,0 +1,61 @@
+# 03: Module system
+
+## The trait's job
+
+Make a hand-written Rust module and a runtime-loaded KDL module indistinguishable to the generator. The declarative loader is itself one `Module` impl that interprets KDL, so everything downstream (validation, dispatch, the lock, doc generation) sees only the trait.
+
+See `crates/knixl-modules/src/lib.rs` for the trait, `registry.rs` for dispatch, `builtin/` for Rust modules, and `template.rs` for the declarative interpreter.
+
+## The trait
+
+```rust
+pub trait Module: Send + Sync {
+    fn id(&self) -> ModuleId;              // name + version, goes in the lock
+    fn node_name(&self) -> &str;           // the KDL node it claims, e.g. "postgres"
+    fn schema(&self) -> &NodeSchema;       // validates input AND drives `knixl doc`
+    fn lower(&self, node: &KdlNode, ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError>;
+}
+```
+
+Four deliberate exclusions from the trait:
+
+- **Oracle check** is central, run once by the generator over every emitted `Assignment`. No module re-implements it.
+- **Filenames** are not a module concern. Modules emit into abstract `Bucket`s; the generator maps buckets to paths.
+- **`imports`** are wired by the generator when a named bucket becomes its own file. Modules never learn filenames.
+- **`let` hoisting** is a generator pass, not a module concern.
+
+## Two validation systems, kept separate
+
+- `NodeSchema` validates the *input* shape (args, props, children, required-ness, arity, value types). Fails with a KDL span. "Your KDL is well-formed."
+- The oracle validates the *output* (option paths exist and are correctly typed against real NixOS options). "The Nix you would produce is valid."
+
+They fail at different layers with different spans. Do not merge them.
+
+## Composition lives in the container, not the leaf
+
+`host` consumes its own scalar fields and delegates the rest via `ctx.lower_children(node, &["system"])`, which dispatches each un-consumed child to its registered module and collects the outputs. Leaf modules (`postgres`, `web-service`) read their own subtree directly. Only container modules call `lower_children`.
+
+## Buckets and multi-file output
+
+A module says only "main file" (`Bucket::Default`) or "a named side-file" (`Bucket::Named("backup")`). The generator resolves `Default` to `generated/hosts/<host>.nix` and `Named("backup")` to `generated/hosts/<host>-backup.nix`, and auto-wires the `imports = [ ./<host>-backup.nix ];` line into the main file. Multi-file is a generator decision driven by bucket names, not something a module hard-codes.
+
+## Built-in vs declarative: the honest boundary
+
+- **Built-in (Rust)** when the module needs logic a template cannot express. `postgres` is the canonical case: "force the override only if the user's input conflicts with the base preset" is conditional priority computation. See `builtin/postgres.rs`.
+- **Declarative (KDL)** when it is straight-line substitution. `web-service` qualifies; its whole definition is data in `modules/web-service/knixl-module.kdl`, interpreted by one `DeclarativeModule` that impls the same trait.
+
+State the boundary in contributor docs on day one, or declarative modules will quietly reach for logic the interpreter keeps having to grow to meet. A declarative module can only:
+
+- substitute inputs into paths and values,
+- repeat a child into a list (`collect`) or into structure (`for-each`),
+- gate a block on an input flag (`when-flag`, generation-time).
+
+It cannot compute priorities from cross-module conflicts, cannot emit a runtime `lib.mkIf` off `config.*` (that needs the Rust-only `condition=` form), and only writes `Bucket::Default`. The moment a module needs any of those, it becomes a built-in.
+
+## Registration
+
+Startup registers built-ins, then scans `modules/` for `knixl-module.kdl` files and registers each as a `DeclarativeModule`. Two modules claiming the same node name is a hard error, not last-wins. A third party ships a module by dropping a file in: no recompile, no fork. That is the whole ecosystem argument.
+
+## Payoff of a structured `schema()`
+
+Because `schema()` is structured data rather than prose, `knixl doc <node>` renders a typed reference (args, props, children, required-ness, docs) with zero extra bookkeeping, and the same data validates inputs, so the docs cannot drift from what the module accepts.

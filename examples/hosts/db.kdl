@@ -1,0 +1,15 @@
+host "db" {
+    system "x86_64-linux"
+
+    postgres version=16 {
+        listen-tcp #true              // override the base preset's enableTCPIP = false
+        database "app"
+        database "metrics"
+    }
+
+    backups {
+        repo "s3:https://s3.example.com/backups/db"
+        schedule "daily"
+        when "config.services.postgresql.enable"   // emitted as lib.mkIf <raw cond>
+    }
+}

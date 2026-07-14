@@ -1,0 +1,33 @@
+// Behaviour contract. Hashes here are PLACEHOLDERS (blake3:...): recompute them once the
+// emitter and the pinned formatter are real. The point is the shape and which facts are
+// on the reproducibility boundary (tool, formatter, oracle rev, per-file hashes).
+
+lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle nixpkgs-rev="a1b2c3d" options-hash="blake3:77de…"
+
+    input "hosts/web.kdl" hash="blake3:9f2c…"
+    input "hosts/db.kdl" hash="blake3:1b90…"
+
+    module "host" version="1.0.0"
+    module "web-service" version="1.2.0"
+    module "postgres" version="0.4.0"
+    module "backups" version="0.2.1"
+
+    output "generated/hosts/web.nix" {
+        hash "blake3:4a71…"
+        from "hosts/web.kdl"
+        modules "host" "web-service"
+    }
+    output "generated/hosts/db.nix" {
+        hash "blake3:c3f8…"
+        from "hosts/db.kdl"
+        modules "host" "postgres"
+    }
+    output "generated/hosts/db-backup.nix" {
+        hash "blake3:9a04…"
+        from "hosts/db.kdl"
+        modules "backups"
+    }
+}

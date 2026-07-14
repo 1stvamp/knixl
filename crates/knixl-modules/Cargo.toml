@@ -1,0 +1,15 @@
+[package]
+name = "knixl-modules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+knixl-ir = { path = "../knixl-ir" }
+knixl-oracle = { path = "../knixl-oracle" }
+knixl-kdl = { path = "../knixl-kdl" }
+kdl.workspace = true
+miette.workspace = true
+semver.workspace = true
+thiserror.workspace = true

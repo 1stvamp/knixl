@@ -1,0 +1,12 @@
+[package]
+name = "knixl-lock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+knixl-nix = { path = "../knixl-nix" }
+kdl.workspace = true
+semver.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "knixl-pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+knixl-ir = { path = "../knixl-ir" }
+knixl-kdl = { path = "../knixl-kdl" }
+knixl-modules = { path = "../knixl-modules" }
+knixl-nix = { path = "../knixl-nix" }
+kdl.workspace = true
+semver.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+knixl-lock = { path = "../knixl-lock" }

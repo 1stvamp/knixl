@@ -1,0 +1,15 @@
+host "web" {
+    system "x86_64-linux"
+
+    web-service "example.com" {
+        upstream "http://127.0.0.1:3000"
+        acme email="ops@example.com"
+        hardened #true
+    }
+
+    raw-nix {
+        #"""
+        systemd.services.nginx.serviceConfig.MemoryMax = "512M";
+        """#
+    }
+}

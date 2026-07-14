@@ -1,0 +1,4 @@
+/target
+# generated Nix IS committed (that is the whole point), so it is NOT ignored.
+# The oracle options.json cache is derived and rev-keyed:
+/.knixl-cache/

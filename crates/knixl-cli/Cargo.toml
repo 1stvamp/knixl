@@ -1,0 +1,20 @@
+[package]
+name = "knixl-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "knixl"
+path = "src/main.rs"
+
+[dependencies]
+knixl-ir = { path = "../knixl-ir" }
+knixl-kdl = { path = "../knixl-kdl" }
+knixl-oracle = { path = "../knixl-oracle" }
+knixl-modules = { path = "../knixl-modules" }
+knixl-lock = { path = "../knixl-lock" }
+knixl-nix = { path = "../knixl-nix" }
+clap.workspace = true
+miette.workspace = true

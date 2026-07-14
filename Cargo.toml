@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/knixl-ir",
+    "crates/knixl-kdl",
+    "crates/knixl-oracle",
+    "crates/knixl-modules",
+    "crates/knixl-lock",
+    "crates/knixl-nix",
+    "crates/knixl-pipeline",
+    "crates/knixl-cli",
+]
+
+[workspace.package]
+version = "0.3.1"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/1stvamp/knixl"
+
+# Pinned deliberately. The kdl crate is the reference impl, formatting-preserving,
+# KDL v2 by default. miette gives span diagnostics that kdl-rs already integrates with.
+[workspace.dependencies]
+kdl = "6"
+miette = { version = "7", features = ["fancy"] }
+semver = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+blake3 = "1"
+camino = "1"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+
+[profile.release]
+lto = "thin"
