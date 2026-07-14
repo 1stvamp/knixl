@@ -27,6 +27,9 @@ pub struct Project {
     pub registry: Registry,
     pub root: PathBuf,
     pub generated: BTreeMap<PathBuf, String>,
+    /// Non-fatal lints from generation (unclaimed nodes, value conflicts), each prefixed
+    /// with the host source it came from. Reported but not gated on.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -54,12 +57,16 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         .and_then(|p| knixl_oracle::Oracle::from_options_json(Path::new(&p)).ok());
 
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
+    let mut warnings: Vec<String> = Vec::new();
     let (expected, validation_errors) = match generate(&hosts, &registry, formatter, &tool, oracle.as_ref()) {
         Ok(files) => {
             let expected = files
                 .into_iter()
                 .map(|f| {
                     generated.insert(f.path.clone(), f.text.clone());
+                    warnings.extend(
+                        f.warnings.iter().map(|w| format!("{}: {w}", f.from.display())),
+                    );
                     ExpectedFile {
                         path: f.path,
                         hash: hash(f.text.as_bytes()),
@@ -108,6 +115,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         registry,
         root: root.to_path_buf(),
         generated,
+        warnings,
     })
 }
 

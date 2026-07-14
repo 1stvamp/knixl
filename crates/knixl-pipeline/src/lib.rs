@@ -29,10 +29,11 @@ pub struct HostSource {
 
 /// One generated output file, post-format. Not written yet; that is the caller's job.
 pub struct GeneratedFile {
-    pub path: PathBuf,        // e.g. generated/hosts/web.nix
-    pub text: String,         // formatted Nix, the thing that gets hashed
-    pub from: PathBuf,        // the KDL input it derived from
-    pub modules: Vec<String>, // modules that contributed (drives the lock entry)
+    pub path: PathBuf,         // e.g. generated/hosts/web.nix
+    pub text: String,          // formatted Nix, the thing that gets hashed
+    pub from: PathBuf,         // the KDL input it derived from
+    pub modules: Vec<String>,  // modules that contributed (drives the lock entry)
+    pub warnings: Vec<String>, // non-fatal lints: unclaimed nodes, value conflicts
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -83,7 +84,9 @@ fn generate_one(
     // so the top level is usually a single `host` node.
     let mut files: BTreeMap<String, Vec<Assignment>> = BTreeMap::new();
     let mut raw_files: BTreeMap<String, Vec<RawNix>> = BTreeMap::new();
-    let mut modules: Vec<ModuleRef> = Vec::new();
+    // Distinct modules that contributed to each output file, so the lock records honest
+    // per-file attribution rather than every module on every file.
+    let mut file_modules: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut diags: Vec<knixl_modules::Diagnostic> = Vec::new();
 
     for node in doc.nodes() {
@@ -96,25 +99,30 @@ fn generate_one(
             GenerateError::Validation(ds.into_iter().map(|d| d.message).collect())
         })?;
 
-        let id = module.id();
-        modules.push(ModuleRef { name: id.name, version: id.version });
+        let module_name = module.id().name;
 
         let mut ctx = LowerCtx::new(
             Scope { host: host_name.clone() },
             registry,
             &mut diags,
         );
-        let output = module.lower(node, &mut ctx)?;
+        let mut output = module.lower(node, &mut ctx)?;
+        // The top-level module claims any unit its delegates did not already attribute.
+        output.attribute(&module_name);
 
         for unit in output.units {
             let key = bucket_key(&unit.bucket, &host_name);
+            file_modules.entry(key.clone()).or_default().insert(unit.module);
             files.entry(key).or_default().push(unit.assignment);
         }
         for r in output.raw {
             let key = bucket_key(&r.bucket, &host_name);
+            file_modules.entry(key.clone()).or_default().insert(r.module);
             raw_files.entry(key).or_default().push(r.raw);
         }
     }
+
+    let module_versions = registry.module_versions();
 
     // Oracle: validate every emitted option path against the real NixOS option set.
     if let Some(oracle) = oracle {
@@ -138,18 +146,22 @@ fn generate_one(
     // Named side-files (anything not the host's own file). The host file imports them.
     let side_files: Vec<String> = keys.iter().filter(|k| *k != &host_name).cloned().collect();
 
-    let module_names: Vec<String> = modules.iter().map(|m| m.name.clone()).collect();
+    // Host-level lints (e.g. an unclaimed child node) are not tied to one output file.
+    // They ride on the host's own file; if the host emits only side-files, the first
+    // generated file carries them instead so they are never dropped.
+    let mut host_lints: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
 
     let mut generated = Vec::new();
-    for key in keys {
-        let body = files.remove(&key).unwrap_or_default();
-        let raw = raw_files.remove(&key).unwrap_or_default();
+    for key in &keys {
+        let body = files.remove(key).unwrap_or_default();
+        let raw = raw_files.remove(key).unwrap_or_default();
 
-        // Value-conflict lint per file; joins the diagnostics the Ctx/Plan layer surfaces.
-        for warning in detect_conflicts(&body) {
-            diags.push(knixl_modules::Diagnostic { span: None, message: warning });
+        // Value-conflict lint is per file; the host-level lints attach to the host's file.
+        let mut warnings = detect_conflicts(&body);
+        if *key == host_name {
+            warnings.append(&mut host_lints);
         }
-        let imports = if key == host_name {
+        let imports = if *key == host_name {
             side_files
                 .iter()
                 .map(|n| NixExpr::Path(PathBuf::from(format!("./{n}.nix"))))
@@ -157,6 +169,20 @@ fn generate_one(
         } else {
             Vec::new()
         };
+
+        // Only the modules that actually contributed to this file, resolved to their
+        // pinned versions for the header provenance and the lock record.
+        let file_module_names: Vec<String> = file_modules
+            .get(key)
+            .map(|s| s.iter().filter(|n| !n.is_empty()).cloned().collect())
+            .unwrap_or_default();
+        let module_refs: Vec<ModuleRef> = file_module_names
+            .iter()
+            .map(|n| ModuleRef {
+                name: n.clone(),
+                version: module_versions.get(n).cloned().unwrap_or_else(|| Version::new(0, 0, 0)),
+            })
+            .collect();
 
         let module = NixModule {
             header: module_header(),
@@ -166,9 +192,7 @@ fn generate_one(
             raw,
             provenance: Provenance {
                 tool_version: tool.clone(),
-                // TODO(phase-2): per-file module attribution needs lower() to report which
-                // module produced each unit; for now we record every module on every file.
-                modules: modules.clone(),
+                modules: module_refs,
                 sources: vec![host.path.clone()],
             },
         };
@@ -181,9 +205,18 @@ fn generate_one(
             path: PathBuf::from(format!("generated/hosts/{key}.nix")),
             text,
             from: host.path.clone(),
-            modules: module_names.clone(),
+            modules: file_module_names,
+            warnings,
         });
     }
+
+    // A host that emits only side-files still gets its lints reported.
+    if !host_lints.is_empty() {
+        if let Some(first) = generated.first_mut() {
+            first.warnings.append(&mut host_lints);
+        }
+    }
+
     Ok(generated)
 }
 

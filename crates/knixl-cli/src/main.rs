@@ -63,6 +63,12 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
         return Code::Validation;
     }
 
+    // Non-fatal generation lints. Reported for every command that acts on the plan; `doc`
+    // does not reconcile a project, so it stays quiet.
+    if !matches!(cli.cmd, Cmd::Doc { .. }) {
+        report_warnings(&ctx.warnings);
+    }
+
     match cli.cmd {
         Cmd::Plan { detailed_exitcode } => {
             print_plan(&plan, cli.json);
@@ -132,6 +138,7 @@ struct Ctx {
     registry: knixl_modules::Registry,
     root: std::path::PathBuf,
     generated: std::collections::BTreeMap<std::path::PathBuf, String>,
+    warnings: Vec<String>,
 }
 impl Ctx {
     fn load() -> Ctx {
@@ -150,6 +157,7 @@ impl Ctx {
             registry: project.registry,
             root: project.root,
             generated: project.generated,
+            warnings: project.warnings,
         }
     }
 }
@@ -218,6 +226,12 @@ fn print_doc(ctx: &Ctx, node: &str, _json: bool) {
 fn report_validation(errors: &[String], _json: bool) {
     for e in errors {
         eprintln!("validation: {e}");
+    }
+}
+
+fn report_warnings(warnings: &[String]) {
+    for w in warnings {
+        eprintln!("warning: {w}");
     }
 }
 

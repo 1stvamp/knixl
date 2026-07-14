@@ -15,18 +15,18 @@ lock version=1 {
     output "generated/hosts/db-backup.nix" {
         hash "blake3:bab3983869ff7881803b3278288ed0303fafc1d15b4baa46dc44febd342c4016"
         from "hosts/db.kdl"
-        modules "host"
+        modules "backups"
     }
 
     output "generated/hosts/db.nix" {
         hash "blake3:12c7897b92f08620e72d8a09ce976eae41b79084771b5eecf832c5ddfdc8ffb4"
         from "hosts/db.kdl"
-        modules "host"
+        modules "host" "postgres"
     }
 
     output "generated/hosts/web.nix" {
         hash "blake3:4b4d00fcd0466d470461a1bf71728adefc8f7236c792fadf7c111d604bf0b33f"
         from "hosts/web.kdl"
-        modules "host"
+        modules "host" "raw-nix" "web-service"
     }
 }

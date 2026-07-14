@@ -240,7 +240,10 @@ impl<'a> LowerCtx<'a> {
                             self.diags.extend(diags);
                             continue;
                         }
-                        outputs.push(module.lower(child, self)?);
+                        let module_name = module.id().name;
+                        let mut out = module.lower(child, self)?;
+                        out.attribute(&module_name);
+                        outputs.push(out);
                     }
                     None => self.lint(child.span(), format!("no module claims node `{name}`")),
                 }
@@ -255,14 +258,27 @@ impl<'a> LowerCtx<'a> {
 }
 
 pub struct LowerOutput { pub units: Vec<Unit>, pub raw: Vec<RawUnit> }
-pub struct Unit { pub bucket: Bucket, pub assignment: Assignment }
+/// `module` names the module that produced this unit (for per-file lock attribution).
+/// Modules leave it empty; the framework stamps it at the dispatch boundary.
+pub struct Unit { pub bucket: Bucket, pub assignment: Assignment, pub module: String }
 /// A verbatim raw-nix passthrough statement, bucketed like a Unit.
-pub struct RawUnit { pub bucket: Bucket, pub raw: RawNix }
+pub struct RawUnit { pub bucket: Bucket, pub raw: RawNix, pub module: String }
 
 impl LowerOutput {
     pub fn new() -> Self { Self { units: Vec::new(), raw: Vec::new() } }
     /// Convenience for the common case of assignments with no raw passthrough.
     pub fn units(units: Vec<Unit>) -> Self { Self { units, raw: Vec::new() } }
+
+    /// Stamp the producing module on any unit that has not already been attributed, so a
+    /// container's own units keep its name while delegated units keep the child's.
+    pub fn attribute(&mut self, module: &str) {
+        for u in &mut self.units {
+            if u.module.is_empty() { u.module = module.to_string(); }
+        }
+        for r in &mut self.raw {
+            if r.module.is_empty() { r.module = module.to_string(); }
+        }
+    }
 }
 impl Default for LowerOutput { fn default() -> Self { Self::new() } }
 

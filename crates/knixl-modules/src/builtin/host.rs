@@ -61,7 +61,9 @@ pub(crate) fn assign(path: &[&str], value: NixExpr) -> Assignment {
         value, priority: None, condition: None, doc: None,
     }
 }
-pub(crate) fn unit_default(a: Assignment) -> Unit { Unit { bucket: Bucket::Default, assignment: a } }
+pub(crate) fn unit_default(a: Assignment) -> Unit {
+    Unit { bucket: Bucket::Default, assignment: a, module: String::new() }
+}
 
 #[cfg(test)]
 mod tests {
