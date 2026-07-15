@@ -167,27 +167,33 @@ impl BrowseModel {
             return self.view_pick();
         }
 
-        // The module list is the focused pane (pink border); the doc pane is violet.
+        // Both panes are given a fixed width and height so the boxes never resize as the
+        // selection (and thus the content's max line width) changes.
+        let (w, h) = (self.dims.0 as i32, self.dims.1 as i32);
         let list_box = Style::new()
             .border(rounded_border())
             .border_foreground(theme::border(true))
+            .width(w)
+            .height(h)
             .render(&self.list.view());
         let doc_box = Style::new()
             .border(rounded_border())
             .border_foreground(theme::border(false))
+            .width(w)
+            .height(h)
             .render(&self.doc.view());
         let panes = join_horizontal(TOP, &[list_box.as_str(), "  ", doc_box.as_str()]);
-        format!(
-            "{}\n{}\n{}",
-            theme::chip(" browse "),
-            panes,
+        let footer = if self.hosts.is_empty() {
+            theme::amber().render("no hosts under hosts/ \u{2013} nothing to insert into")
+        } else {
             widgets::footer(&[
                 ("\u{2191}/\u{2193}", "select"),
                 ("i", "insert"),
                 ("pgup/pgdn", "scroll"),
                 ("esc", "back"),
-            ]),
-        )
+            ])
+        };
+        format!("{}\n{}\n{}", theme::chip(" browse "), panes, footer)
     }
 
     fn view_pick(&self) -> String {

@@ -17,6 +17,9 @@ const ITEMS: &[(&str, &str)] = &[
     ("Quit", "quit"),
 ];
 
+/// Fixed menu width so the panel border does not shrink or grow with the selected row.
+const MENU_WIDTH: usize = 22;
+
 pub struct HomeModel {
     list: List<DefaultItem>,
 }
@@ -24,7 +27,9 @@ pub struct HomeModel {
 impl HomeModel {
     pub fn new() -> Self {
         let items = ITEMS.iter().map(|(label, _)| DefaultItem::new(label, "")).collect();
-        Self { list: widgets::styled_list(items, 28, ITEMS.len()) }
+        // Height comfortably exceeds the item count so the list never paginates or scrolls
+        // (all entries stay visible; up/down just clamp at the ends).
+        Self { list: widgets::styled_list(items, MENU_WIDTH, 12) }
     }
 
     fn route_for(label: &str) -> &'static str {
@@ -60,7 +65,7 @@ impl HomeModel {
         let panel = Style::new()
             .border(rounded_border())
             .border_foreground(theme::border(false))
-            .padding_2(0, 1)
+            .width(MENU_WIDTH as i32)
             .render(&self.list.view());
         let header = if size.0 >= 46 { theme::wordmark() } else { theme::chip(" knixl ") };
         format!(
