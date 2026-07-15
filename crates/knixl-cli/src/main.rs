@@ -2,6 +2,7 @@
 //! thing that inspects the world. Exit codes are stable so CI can branch on them.
 //! SPEC-GRADE SKETCH: Ctx::load and the write/report helpers are not written.
 
+mod hub;
 mod tui;
 
 use std::io::IsTerminal;
@@ -43,6 +44,8 @@ enum Cmd {
         #[arg(long)]
         strict: bool,
     },
+    /// Open the interactive TUI (install, browse modules, scaffold a module).
+    Tui,
 }
 
 #[repr(i32)]
@@ -135,6 +138,8 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
         Cmd::Doc { node } => { print_doc(ctx, &node, cli.json); Code::Clean }
 
         Cmd::Install { pkg, host, yes, strict } => install(ctx, &pkg, host.as_deref(), yes, strict),
+
+        Cmd::Tui => unreachable!("tui is dispatched before Ctx::load"),
     }
 }
 
@@ -388,9 +393,21 @@ fn confirm(prompt: &str) -> bool {
 fn main() {
     // A panic anywhere in planning or applying maps to the Internal exit code (docs/05),
     // so callers get a stable code instead of a raw abort.
-    let code = std::panic::catch_unwind(|| run(Cli::parse(), &Ctx::load()))
-        .unwrap_or(Code::Internal);
+    let code = std::panic::catch_unwind(dispatch).unwrap_or(Code::Internal);
     std::process::exit(code as i32);
+}
+
+fn dispatch() -> Code {
+    let cli = Cli::parse();
+    // The TUI does not reconcile a project up front (Home works anywhere), so it skips
+    // Ctx::load and its formatter requirement.
+    if matches!(cli.cmd, Cmd::Tui) {
+        return match hub::run(discover_root()) {
+            Ok(()) => Code::Clean,
+            Err(e) => { eprintln!("knixl: {e}"); Code::Internal }
+        };
+    }
+    run(cli, &Ctx::load())
 }
 
 // ---- everything below: NOT written. Wiring for the next session. ----
