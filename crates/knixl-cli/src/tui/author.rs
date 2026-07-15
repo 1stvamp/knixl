@@ -13,7 +13,7 @@ use lipgloss::{join_vertical, rounded_border, Style, LEFT};
 
 use knixl_modules::template::{scaffold_manifest, ModuleScaffold};
 
-use super::{theme, Nav, Step};
+use super::{theme, widgets, Nav, Step};
 
 const TYPES: [&str; 3] = ["string", "bool", "int"];
 
@@ -232,7 +232,7 @@ impl AuthorModel {
             "{}{}{} required",
             marker(self.focus == Focus::Required),
             theme::dim().render("req     "),
-            if self.required { theme::accent().render("[x]") } else { theme::dim().render("[ ]") },
+            theme::toggle(self.required),
         ));
 
         let create = self.button("create", self.focus == Focus::Create, self.can_create());
@@ -241,19 +241,23 @@ impl AuthorModel {
         let body = join_vertical(LEFT, &lines.iter().map(String::as_str).collect::<Vec<_>>());
         let panel = Style::new()
             .border(rounded_border())
-            .border_foreground(theme::color("6"))
+            .border_foreground(theme::border(false))
             .padding_2(0, 1)
             .render(&body);
 
         format!(
             "{}\n{}\n{}  {}\n{}",
-            theme::accent().render(" new module "),
+            theme::chip(" new module "),
             panel,
             create,
             cancel,
-            theme::dim().render(
-                "tab move \u{00b7} \u{2190}/\u{2192} type \u{00b7} space required \u{00b7} enter create \u{00b7} esc back",
-            ),
+            widgets::footer(&[
+                ("tab", "move"),
+                ("\u{2190}/\u{2192}", "type"),
+                ("space", "required"),
+                ("enter", "create"),
+                ("esc", "back"),
+            ]),
         )
     }
 

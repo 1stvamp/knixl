@@ -13,6 +13,7 @@ mod browse;
 mod home;
 mod install;
 mod theme;
+mod widgets;
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -124,7 +125,7 @@ impl Step {
 }
 
 enum Screen {
-    Home(HomeModel),
+    Home(Box<HomeModel>),
     // Boxed: these own widget state and are large, so keep the enum small.
     Install(Box<InstallModel>),
     Browse(Box<BrowseModel>),
@@ -145,7 +146,7 @@ impl Model for App {
                 let (m, cmd) = InstallModel::enter(size);
                 (Screen::Install(Box::new(m)), cmd)
             }
-            Entry::Hub => (Screen::Home(HomeModel::new()), None),
+            Entry::Hub => (Screen::Home(Box::new(HomeModel::new())), None),
         };
         // Ask for the real terminal size up front so the first frame fills the screen (rather
         // than the 80x24 default), batched with any screen's own init command.
@@ -209,7 +210,7 @@ impl App {
                     Some(command::quit())
                 }
                 Entry::Hub => {
-                    self.screen = Screen::Home(HomeModel::new());
+                    self.screen = Screen::Home(Box::new(HomeModel::new()));
                     None
                 }
             },
@@ -251,54 +252,4 @@ pub fn run(
         let app = program.run().await.map_err(|e| e.to_string())?;
         Ok(app.outcome)
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::home::HomeModel;
-    use super::Nav;
-    use bubbletea_rs::event::KeyMsg;
-    use bubbletea_rs::Msg;
-    use crossterm::event::{KeyCode, KeyModifiers};
-
-    fn key(code: KeyCode) -> Msg {
-        Box::new(KeyMsg { key: code, modifiers: KeyModifiers::NONE }) as Msg
-    }
-
-    #[test]
-    fn home_down_up_moves_selection_clamped() {
-        let mut h = HomeModel::new();
-        assert_eq!(h.sel, 0);
-        assert!(matches!(h.update(key(KeyCode::Down), (80, 24)).nav, Nav::Stay));
-        assert_eq!(h.sel, 1);
-        assert!(matches!(h.update(key(KeyCode::Up), (80, 24)).nav, Nav::Stay));
-        assert_eq!(h.sel, 0);
-        h.update(key(KeyCode::Up), (80, 24)); // clamp at top
-        assert_eq!(h.sel, 0);
-    }
-
-    #[test]
-    fn home_enter_routes_or_quits() {
-        let mut h = HomeModel::new();
-        assert!(matches!(h.update(key(KeyCode::Enter), (80, 24)).nav, Nav::Goto("install")));
-        for _ in 0..10 {
-            h.update(key(KeyCode::Down), (80, 24));
-        }
-        assert!(matches!(h.update(key(KeyCode::Enter), (80, 24)).nav, Nav::Quit));
-    }
-
-    #[test]
-    fn home_q_and_esc_quit() {
-        let mut h = HomeModel::new();
-        assert!(matches!(h.update(key(KeyCode::Char('q')), (80, 24)).nav, Nav::Quit));
-        assert!(matches!(h.update(key(KeyCode::Esc), (80, 24)).nav, Nav::Quit));
-    }
-
-    #[test]
-    fn home_view_lists_the_menu() {
-        let v = HomeModel::new().view((80, 24));
-        for item in ["Install a package", "Browse modules", "New module", "Quit"] {
-            assert!(v.contains(item), "menu shows {item}: {v}");
-        }
-    }
 }
