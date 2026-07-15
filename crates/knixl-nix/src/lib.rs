@@ -18,8 +18,21 @@ pub enum FormatError {
     Utf8,
     #[error("formatter version mismatch: expected {expected}, found {found}")]
     VersionMismatch { expected: String, found: String },
+    #[error("formatter `{0}` not found; install nixfmt-rfc-style or set KNIXL_FORMATTER")]
+    NotFound(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+impl FormatError {
+    /// Turn a spawn/exec io error into a clear `NotFound` when the binary is missing.
+    fn from_spawn(bin: &std::path::Path, e: std::io::Error) -> Self {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            FormatError::NotFound(bin.display().to_string())
+        } else {
+            FormatError::Io(e)
+        }
+    }
 }
 
 impl Formatter {
@@ -55,7 +68,8 @@ impl Formatter {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()?;
+            .spawn()
+            .map_err(|e| FormatError::from_spawn(&self.bin, e))?;
 
         // Write the whole input, then drop stdin to signal EOF before reading stdout.
         // Emitted modules are small (well under a pipe buffer), so this cannot deadlock.
@@ -80,7 +94,8 @@ impl Formatter {
             let mut c = Command::new(&self.bin);
             c.arg("--version");
             c
-        })?;
+        })
+        .map_err(|e| FormatError::from_spawn(&self.bin, e))?;
         if !output.status.success() {
             return Err(FormatError::NonZero(output.status.code().unwrap_or(-1)));
         }
@@ -132,6 +147,15 @@ mod tests {
             name: "nixfmt-rfc-style".into(),
             version: "0.6.0".into(),
             bin: PathBuf::from(bin),
+        }
+    }
+
+    #[test]
+    fn missing_formatter_is_a_clear_error_not_a_bare_io_error() {
+        let f = formatter_with_bin("knixl-definitely-no-such-formatter-xyz");
+        match f.format("{ }\n").unwrap_err() {
+            FormatError::NotFound(name) => assert!(name.contains("knixl-definitely-no-such-formatter-xyz")),
+            other => panic!("expected NotFound, got {other:?}"),
         }
     }
 

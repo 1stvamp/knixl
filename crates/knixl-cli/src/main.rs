@@ -2,6 +2,10 @@
 //! thing that inspects the world. Exit codes are stable so CI can branch on them.
 //! SPEC-GRADE SKETCH: Ctx::load and the write/report helpers are not written.
 
+mod tui;
+
+use std::io::IsTerminal;
+
 use clap::{Parser, Subcommand};
 use knixl_lock::{FileState, Plan};
 
@@ -137,38 +141,76 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
 /// `knixl install <pkg>`: resolve a host, draft the KDL edit, verify under nix, preview,
 /// confirm, and regenerate. The host KDL is reverted on any failure or a declined confirm.
 fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool) -> Code {
-    use knixl_pipeline::install::{add_package, list_hosts, select_host};
+    use knixl_pipeline::install::{list_hosts, select_host};
 
     let hosts = match list_hosts(&ctx.root) {
         Ok(h) => h,
         Err(e) => { eprintln!("knixl: {e}"); return Code::Internal; }
     };
-    let target = match select_host(&hosts, host) {
+    let initial = match select_host(&hosts, host) {
         Ok(t) => t.clone(),
         Err(e) => { eprintln!("knixl: {e}"); return Code::Usage; }
     };
+    let initial_idx = hosts.iter().position(|h| h.name == initial.name).unwrap_or(0);
 
-    let original = match std::fs::read_to_string(&target.path) {
+    // `pkgs.<pkg>` existence is host-independent; resolve it once.
+    let resolves = resolve_package(ctx, pkg);
+
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let chosen_idx = if interactive && !yes {
+        match run_install_tui(ctx, pkg, &hosts, initial_idx, strict, resolves) {
+            Ok(tui::Decision::Apply(i)) => i,
+            Ok(tui::Decision::Cancel) => { println!("cancelled"); return Code::Clean; }
+            Err(e) => { eprintln!("knixl: tui: {e}"); return Code::Internal; }
+        }
+    } else {
+        // Non-interactive / --yes: the plain path. Hard-check the package here (the TUI
+        // gates apply instead), then confirm unless --yes.
+        match resolves {
+            tui::Resolve::No => {
+                eprintln!("knixl: no nixpkgs package named `{pkg}`");
+                return Code::Validation;
+            }
+            tui::Resolve::Skipped if strict => {
+                eprintln!("knixl: --strict: nix unavailable, cannot verify `{pkg}`");
+                return Code::Validation;
+            }
+            tui::Resolve::Skipped => {
+                eprintln!("warning: nix unavailable, skipping package check for `{pkg}`");
+            }
+            tui::Resolve::Yes => {}
+        }
+        if !yes && !confirm(&format!("install {pkg} on {}?", initial.name)) {
+            println!("cancelled");
+            return Code::Clean;
+        }
+        initial_idx
+    };
+
+    commit_install(&hosts[chosen_idx], pkg, strict)
+}
+
+/// Write the drafted package into the chosen host, verify it generates and parses, then
+/// regenerate. Reverts the KDL on any failure. Shared by the TUI (after Apply) and the
+/// plain path (after confirm).
+fn commit_install(chosen: &knixl_pipeline::install::HostInfo, pkg: &str, strict: bool) -> Code {
+    use knixl_pipeline::install::add_package;
+
+    let original = match std::fs::read_to_string(&chosen.path) {
         Ok(s) => s,
-        Err(e) => { eprintln!("knixl: {}: {e}", target.path.display()); return Code::Internal; }
+        Err(e) => { eprintln!("knixl: {}: {e}", chosen.path.display()); return Code::Internal; }
     };
     let draft = match add_package(&original, pkg) {
         Ok(Some(d)) => d,
-        Ok(None) => { println!("{pkg} is already installed on {}", target.name); return Code::Clean; }
-        Err(e) => { eprintln!("knixl: cannot edit {}: {e}", target.path.display()); return Code::Internal; }
+        Ok(None) => { println!("{pkg} is already installed on {}", chosen.name); return Code::Clean; }
+        Err(e) => { eprintln!("knixl: cannot edit {}: {e}", chosen.path.display()); return Code::Internal; }
     };
 
-    // Package existence first, before touching any file.
-    if let Some(code) = verify_package(ctx, pkg, strict) {
-        return code;
-    }
-
-    // Write the draft, then verify it generates and parses; revert on any failure.
-    if let Err(e) = std::fs::write(&target.path, &draft) {
-        eprintln!("knixl: {}: {e}", target.path.display());
+    if let Err(e) = std::fs::write(&chosen.path, &draft) {
+        eprintln!("knixl: {}: {e}", chosen.path.display());
         return Code::Internal;
     }
-    let revert = || { let _ = std::fs::write(&target.path, &original); };
+    let revert = || { let _ = std::fs::write(&chosen.path, &original); };
 
     let drafted = Ctx::load();
     let plan = Plan::compute(&drafted.inputs, &drafted.disk, &drafted.lock, &drafted.running);
@@ -182,18 +224,6 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool) ->
         return code;
     }
 
-    // Preview.
-    println!("\n{}", target.path.display());
-    println!("+   package \"{pkg}\"\n");
-    print_plan(&plan, false);
-
-    if !yes && !confirm(&format!("install {pkg} on {}?", target.name)) {
-        revert();
-        println!("cancelled");
-        return Code::Clean;
-    }
-
-    // Apply: regenerate changed outputs and commit the lock.
     let mut worst = Code::Clean;
     for f in &plan.files {
         match &f.state {
@@ -204,31 +234,122 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool) ->
     }
     if worst == Code::Clean {
         write_lock(&drafted, &plan.lock_next);
-        println!("installed {pkg} on {}", target.name);
+        println!("installed {pkg} on {}", chosen.name);
     } else {
         revert();
     }
     worst
 }
 
-/// Check `pkgs.<pkg>` resolves against the lock's pinned rev (ambient fallback). Returns
-/// `Some(code)` to stop, `None` to proceed. A missing nix is a warning unless `--strict`.
-fn verify_package(ctx: &Ctx, pkg: &str, strict: bool) -> Option<Code> {
+/// Build the TUI state (initial preview for the selected host), run the loop, and return
+/// the user's decision.
+fn run_install_tui(
+    ctx: &Ctx,
+    pkg: &str,
+    hosts: &[knixl_pipeline::install::HostInfo],
+    initial_idx: usize,
+    strict: bool,
+    resolves: tui::Resolve,
+) -> std::io::Result<tui::Decision> {
+    let formatter = default_formatter();
+    let tool: semver::Version = env!("CARGO_PKG_VERSION").parse().expect("tool version parses");
+
+    let (nix0, parse0) = preview_host(&ctx.registry, &formatter, &tool, &hosts[initial_idx], pkg);
+    let state = tui::InstallState {
+        pkg: pkg.to_string(),
+        hosts: hosts.to_vec(),
+        selected: initial_idx,
+        strict,
+        resolves,
+        parses: parse0,
+        nix_preview: nix0,
+    };
+    let mut recompute = |s: &mut tui::InstallState| {
+        let host = s.hosts[s.selected].clone();
+        let (nix, parse) = preview_host(&ctx.registry, &formatter, &tool, &host, pkg);
+        s.nix_preview = nix;
+        s.parses = parse;
+    };
+    tui::run(state, &mut recompute)
+}
+
+/// Generate the drafted host in memory (no disk writes) and parse it, for the TUI preview.
+fn preview_host(
+    registry: &knixl_modules::Registry,
+    formatter: &knixl_nix::Formatter,
+    tool: &semver::Version,
+    host: &knixl_pipeline::install::HostInfo,
+    pkg: &str,
+) -> (String, tui::Parse) {
+    use knixl_pipeline::{generate, install::add_package, HostSource};
+    let src = std::fs::read_to_string(&host.path).unwrap_or_default();
+    let drafted = match add_package(&src, pkg) {
+        Ok(Some(d)) => d,
+        _ => src,
+    };
+    let nix = generate(
+        &[HostSource { path: host.path.clone(), src: drafted }],
+        registry,
+        formatter,
+        tool,
+        None,
+    )
+    .ok()
+    .and_then(|files| files.into_iter().map(|f| f.text).find(|t| t.contains("systemPackages")))
+    .unwrap_or_else(|| "(preview unavailable)".to_string());
+
+    let snippet = systempackages_snippet(&nix);
+    (snippet, parse_text(&nix))
+}
+
+/// The `environment.systemPackages = [ ... ];` block, for a compact preview.
+fn systempackages_snippet(nix: &str) -> String {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for line in nix.lines() {
+        if line.contains("systemPackages") {
+            in_block = true;
+        }
+        if in_block {
+            out.push(line.trim_end());
+            if line.contains("];") || (line.contains(';') && !line.contains('[')) {
+                break;
+            }
+        }
+    }
+    if out.is_empty() {
+        "(no packages)".to_string()
+    } else {
+        out.join("\n")
+    }
+}
+
+/// Parse a generated file's text with nix, mapping to the TUI's `Parse` status.
+fn parse_text(nix: &str) -> tui::Parse {
+    use knixl_nix::nixeval::{NixError, NixEval};
+    let tmp = std::env::temp_dir().join(format!("knixl-tui-parse-{}.nix", std::process::id()));
+    if std::fs::write(&tmp, nix).is_err() {
+        return tui::Parse::Skipped;
+    }
+    let verdict = NixEval::resolve().parses(&tmp);
+    let _ = std::fs::remove_file(&tmp);
+    match verdict {
+        Ok(()) => tui::Parse::Ok,
+        Err(NixError::Unavailable(_)) => tui::Parse::Skipped,
+        Err(NixError::Failed(m)) => tui::Parse::Failed(m),
+    }
+}
+
+/// `pkgs.<pkg>` existence against the lock's pinned rev (ambient fallback), as a `Resolve`.
+fn resolve_package(ctx: &Ctx, pkg: &str) -> tui::Resolve {
     use knixl_nix::nixeval::{NixError, NixEval, Nixpkgs};
     let rev = &ctx.lock.oracle.nixpkgs_rev;
     let src = if rev.is_empty() { Nixpkgs::Ambient } else { Nixpkgs::PinnedRev(rev.clone()) };
     match NixEval::resolve().package_exists(&src, pkg) {
-        Ok(true) => None,
-        Ok(false) => { eprintln!("knixl: no nixpkgs package named `{pkg}`"); Some(Code::Validation) }
-        Err(NixError::Unavailable(_)) if strict => {
-            eprintln!("knixl: --strict: nix unavailable, cannot verify `{pkg}`");
-            Some(Code::Validation)
-        }
-        Err(NixError::Unavailable(_)) => {
-            eprintln!("warning: nix unavailable, skipping package check for `{pkg}`");
-            None
-        }
-        Err(NixError::Failed(m)) => { eprintln!("knixl: nix check failed: {m}"); Some(Code::Validation) }
+        Ok(true) => tui::Resolve::Yes,
+        Ok(false) => tui::Resolve::No,
+        Err(NixError::Unavailable(_)) => tui::Resolve::Skipped,
+        Err(NixError::Failed(_)) => tui::Resolve::No,
     }
 }
 

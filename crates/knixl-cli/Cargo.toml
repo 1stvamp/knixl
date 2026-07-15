@@ -19,3 +19,8 @@ knixl-nix = { path = "../knixl-nix" }
 knixl-pipeline = { path = "../knixl-pipeline" }
 clap.workspace = true
 miette.workspace = true
+semver.workspace = true
+# TUI for `install` (knixl-cli only; the libraries stay TUI-free). lipgloss renders the
+# styled panel; crossterm drives raw-mode input.
+lipgloss = "0.1.1"
+crossterm = "0.28"
