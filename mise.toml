@@ -41,3 +41,24 @@ run = "cargo run --quiet -p knixl-cli --"
 [tasks."run:release"]
 description = "Run the release knixl CLI (args pass through)"
 run = "cargo run --quiet --release -p knixl-cli --"
+
+[tasks.install]
+description = "Build release and install `knixl` to ~/.local/bin (override with KNIXL_INSTALL_DIR)"
+depends = ["build:release"]
+run = """
+dir="${KNIXL_INSTALL_DIR:-$HOME/.local/bin}"
+mkdir -p "$dir"
+install -m 0755 target/release/knixl "$dir/knixl"
+echo "installed knixl -> $dir/knixl"
+case ":$PATH:" in
+  *":$dir:"*) ;;
+  *) echo "note: $dir is not on your PATH" ;;
+esac
+"""
+
+[tasks.uninstall]
+description = "Remove the installed `knixl` from ~/.local/bin (override with KNIXL_INSTALL_DIR)"
+run = """
+dir="${KNIXL_INSTALL_DIR:-$HOME/.local/bin}"
+rm -f "$dir/knixl" && echo "removed $dir/knixl"
+"""
