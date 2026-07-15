@@ -5,17 +5,15 @@
 //! verify-result handling) is pure and unit-tested, while the parts that spawn async `Cmd`s
 //! (the nix verify, the spinner tick) read the injected `config()` and stay as thin glue.
 
-use std::time::Duration;
-
 use bubbletea_rs::event::{KeyMsg, WindowSizeMsg};
 use bubbletea_rs::{command, Cmd, Model as BubbleTeaModel, Msg};
-use bubbletea_widgets::{textinput, viewport};
+use bubbletea_widgets::{spinner, textinput, viewport};
 use crossterm::event::{KeyCode, KeyModifiers};
 use lipgloss::{join_vertical, rounded_border, Style, LEFT};
 
 use knixl_pipeline::install::HostInfo;
 
-use super::{config, theme, Entry, Nav, Step, Verified};
+use super::{config, theme, widgets, Entry, Nav, Step, Verified};
 
 /// Does `pkgs.<pkg>` resolve. Host-independent, recomputed when the package changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,12 +37,6 @@ struct VerifyDone {
     seq: u64,
     verified: Verified,
 }
-
-/// Advances the spinner while a verify is in flight.
-struct SpinnerTick;
-
-const SPINNER: [&str; 10] =
-    ["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Focus {
@@ -71,8 +63,16 @@ pub struct InstallModel {
     preview_text: String,
     verifying: bool,
     seq: u64,
-    spin: usize,
+    spinner: spinner::Model,
     dims: (usize, usize),
+}
+
+/// An amber dot spinner for the in-flight verify.
+fn new_spinner() -> spinner::Model {
+    spinner::new(&[
+        spinner::with_spinner(spinner::DOT.clone()),
+        spinner::with_style(theme::amber()),
+    ])
 }
 
 /// Viewport dimensions for a given terminal size: a padded inner box, clamped.
@@ -122,7 +122,7 @@ impl InstallModel {
             preview_text: String::new(),
             verifying: false,
             seq: 0,
-            spin: 0,
+            spinner: new_spinner(),
             dims: (w, h),
         };
         let cmd = model.begin_verify();
@@ -202,7 +202,6 @@ impl InstallModel {
         self.seq += 1;
         self.verifying = true;
         self.parses = Parse::Running;
-        self.spin = 0;
         self.seq
     }
 
@@ -227,7 +226,7 @@ impl InstallModel {
         let seq = self.mark_verifying();
         let pkg = self.pkg.value();
         let host = self.hosts[self.host_sel].clone();
-        Some(command::batch(vec![verify_cmd(seq, pkg, host), spin_cmd()]))
+        Some(command::batch(vec![verify_cmd(seq, pkg, host), spin_start(self.spinner.tick_msg())]))
     }
 
     pub fn update(&mut self, msg: Msg, size: (u16, u16)) -> Step {
@@ -239,9 +238,11 @@ impl InstallModel {
             self.on_verify_done(done.seq, done.verified.clone());
             return Step::stay();
         }
-        if msg.downcast_ref::<SpinnerTick>().is_some() {
-            self.spin = (self.spin + 1) % SPINNER.len();
-            return Step { nav: Nav::Stay, cmd: self.verifying.then(spin_cmd) };
+        if msg.downcast_ref::<spinner::TickMsg>().is_some() {
+            // Advance the spinner and re-arm only while a verify is in flight, so the
+            // animation stops once the result lands.
+            let cmd = self.spinner.update(msg);
+            return Step { nav: Nav::Stay, cmd: if self.verifying { cmd } else { None } };
         }
         let Some((code, mods)) = key_of(&msg) else { return Step::stay() };
 
@@ -367,9 +368,13 @@ impl InstallModel {
         let cancel = self.button("cancel", self.focus == Focus::Cancel, true);
         let buttons = format!("{apply}  {cancel}");
 
-        let hint = theme::dim().render(
-            "tab move \u{00b7} enter act \u{00b7} \u{2190}/\u{2192} host \u{00b7} space strict \u{00b7} esc back",
-        );
+        let hint = widgets::footer(&[
+            ("tab", "move"),
+            ("enter", "act"),
+            ("\u{2190}/\u{2192}", "host"),
+            ("space", "strict"),
+            ("esc", "back"),
+        ]);
 
         let lines = [
             theme::chip(" install "),
@@ -393,7 +398,7 @@ impl InstallModel {
             Resolve::Skipped => ("\u{00b7} resolve skipped", theme::amber()),
         };
         if self.verifying {
-            return format!("{} verifying", theme::amber().render(SPINNER[self.spin]));
+            return format!("{} verifying", self.spinner.view());
         }
         let (p_txt, p) = match &self.parses {
             Parse::Ok => ("\u{2713} parses", theme::good()),
@@ -442,8 +447,9 @@ fn verify_cmd(seq: u64, pkg: String, host: HostInfo) -> Cmd {
     })
 }
 
-fn spin_cmd() -> Cmd {
-    command::tick(Duration::from_millis(120), |_| Box::new(SpinnerTick) as Msg)
+/// Kick the spinner by emitting its first tick; the spinner's own `update` re-arms after that.
+fn spin_start(tick: spinner::TickMsg) -> Cmd {
+    Box::pin(async move { Some(Box::new(tick) as Msg) })
 }
 
 #[cfg(test)]
@@ -471,7 +477,7 @@ mod tests {
             preview_text: String::new(),
             verifying: false,
             seq: 0,
-            spin: 0,
+            spinner: new_spinner(),
             dims: (40, 5),
         }
     }

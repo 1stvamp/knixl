@@ -1,20 +1,17 @@
-//! Browse screen: a list of available modules (built-in and declarative, tagged by kind) on
-//! the left, the selected module's schema doc in a scrollable viewport on the right, and an
-//! `insert` action that scaffolds the module's node into a chosen host.
-//!
-//! Like the other screens the decision logic (selection, doc switching, the host-pick
-//! sub-mode, and what an insert commits) is pure and unit tested; the viewport widget carries
-//! the scrolling.
+//! Browse screen: a Bubbles `list` of modules (tagged by kind) on the left, the selected
+//! module's schema doc in a `viewport` on the right, and an `insert` action that opens a
+//! second `list` to pick a host and scaffolds the module's node into it.
 
 use bubbletea_rs::event::{KeyMsg, WindowSizeMsg};
 use bubbletea_rs::{Model as BubbleTeaModel, Msg};
+use bubbletea_widgets::list::{DefaultItem, Model as List};
 use bubbletea_widgets::viewport;
 use crossterm::event::{KeyCode, KeyModifiers};
-use lipgloss::{join_horizontal, join_vertical, rounded_border, Style, LEFT, TOP};
+use lipgloss::{join_horizontal, rounded_border, Style, TOP};
 
 use knixl_pipeline::install::HostInfo;
 
-use super::{config, theme, BrowseModule, Nav, Step};
+use super::{config, theme, widgets, BrowseModule, Nav, Step};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
@@ -25,8 +22,8 @@ enum Mode {
 pub struct BrowseModel {
     modules: Vec<BrowseModule>,
     hosts: Vec<HostInfo>,
-    sel: usize,
-    host_pick: usize,
+    list: List<DefaultItem>,
+    host_list: List<DefaultItem>,
     mode: Mode,
     doc: viewport::Model,
     dims: (usize, usize),
@@ -46,11 +43,13 @@ impl BrowseModel {
     pub fn enter(size: (u16, u16)) -> BrowseModel {
         let cfg = config();
         let (w, h) = view_dims(size);
+        let items = cfg.modules.iter().map(|m| DefaultItem::new(&m.node, &m.kind)).collect();
+        let host_items = cfg.hosts.iter().map(|h| DefaultItem::new(&h.name, "")).collect();
         let mut model = BrowseModel {
             modules: cfg.modules.clone(),
             hosts: cfg.hosts.clone(),
-            sel: 0,
-            host_pick: 0,
+            list: widgets::styled_list(items, w, h),
+            host_list: widgets::styled_list(host_items, w, h),
             mode: Mode::List,
             doc: viewport::new(w, h),
             dims: (w, h),
@@ -59,32 +58,38 @@ impl BrowseModel {
         model
     }
 
-    // ---- pure decision logic (unit tested) ----
+    // ---- selection lookups (filter-safe: by the selected item's title) ----
 
-    fn sync_doc(&mut self) {
-        let text = self.modules.get(self.sel).map(|m| m.doc.clone()).unwrap_or_default();
-        self.doc.set_content(&text);
+    fn selected_module(&self) -> Option<&BrowseModule> {
+        let node = self.list.selected_item()?.title.clone();
+        self.modules.iter().find(|m| m.node == node)
     }
 
-    fn select(&mut self, idx: usize) {
-        if idx < self.modules.len() && idx != self.sel {
-            self.sel = idx;
-            self.doc.goto_top();
-            self.sync_doc();
-        }
+    fn selected_host(&self) -> Option<&HostInfo> {
+        let name = self.host_list.selected_item()?.title.clone();
+        self.hosts.iter().find(|h| h.name == name)
+    }
+
+    fn sync_doc(&mut self) {
+        let text = self.selected_module().map(|m| m.doc.clone()).unwrap_or_default();
+        self.doc.goto_top();
+        self.doc.set_content(&text);
     }
 
     fn resize(&mut self, size: (u16, u16)) {
         let dims = view_dims(size);
         if dims != self.dims {
             self.dims = dims;
+            self.list.set_size(dims.0, dims.1);
+            self.host_list.set_size(dims.0, dims.1);
+            let text = self.selected_module().map(|m| m.doc.clone()).unwrap_or_default();
             self.doc = viewport::new(dims.0, dims.1);
-            self.sync_doc();
+            self.doc.set_content(&text);
         }
     }
 
-    /// The navigation intent for the currently focused action. In list mode `insert` opens
-    /// the host picker (unless there are no modules or hosts); in pick mode it commits.
+    /// The navigation intent for the focused action. In list mode `insert` opens the host
+    /// picker (unless there are no modules or hosts); in pick mode it commits.
     fn activate(&mut self) -> Nav {
         match self.mode {
             Mode::List => {
@@ -92,15 +97,16 @@ impl BrowseModel {
                     return Nav::Stay;
                 }
                 self.mode = Mode::PickHost;
-                self.host_pick = 0;
                 Nav::Stay
             }
             Mode::PickHost => {
-                let module = &self.modules[self.sel];
-                Nav::Insert {
-                    host: self.hosts[self.host_pick].clone(),
-                    node: module.node.clone(),
-                    skeleton: module.skeleton.clone(),
+                match (self.selected_module(), self.selected_host()) {
+                    (Some(m), Some(h)) => Nav::Insert {
+                        host: h.clone(),
+                        node: m.node.clone(),
+                        skeleton: m.skeleton.clone(),
+                    },
+                    _ => Nav::Stay,
                 }
             }
         }
@@ -120,18 +126,15 @@ impl BrowseModel {
         match self.mode {
             Mode::List => match code {
                 KeyCode::Esc | KeyCode::Char('q') => Step::nav(Nav::Back),
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.select(self.sel.saturating_sub(1));
-                    Step::stay()
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.select(self.sel + 1);
-                    Step::stay()
-                }
                 KeyCode::Enter | KeyCode::Char('i') => Step::nav(self.activate()),
-                // Everything else (PageUp/PageDown/Home/End) scrolls the doc.
-                _ => {
+                // PgUp/PgDn scroll the doc; everything else drives the module list.
+                KeyCode::PageUp | KeyCode::PageDown => {
                     let cmd = self.doc.update(msg);
+                    Step { nav: Nav::Stay, cmd }
+                }
+                _ => {
+                    let cmd = self.list.update(msg);
+                    self.sync_doc();
                     Step { nav: Nav::Stay, cmd }
                 }
             },
@@ -140,16 +143,11 @@ impl BrowseModel {
                     self.mode = Mode::List;
                     Step::stay()
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.host_pick = self.host_pick.saturating_sub(1);
-                    Step::stay()
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.host_pick = (self.host_pick + 1).min(self.hosts.len().saturating_sub(1));
-                    Step::stay()
-                }
                 KeyCode::Enter => Step::nav(self.activate()),
-                _ => Step::stay(),
+                _ => {
+                    let cmd = self.host_list.update(msg);
+                    Step { nav: Nav::Stay, cmd }
+                }
             },
         }
     }
@@ -169,54 +167,40 @@ impl BrowseModel {
             return self.view_pick();
         }
 
-        let mut items = Vec::new();
-        for (i, m) in self.modules.iter().enumerate() {
-            let tag = theme::dim().render(&format!(" ({})", m.kind));
-            let row = format!("{}{}", m.node, tag);
-            if i == self.sel {
-                items.push(theme::selected().render(&format!(" \u{25b8} {} ", m.node)) + &tag);
-            } else {
-                items.push(format!("   {row}"));
-            }
-        }
-        let list = join_vertical(LEFT, &items.iter().map(String::as_str).collect::<Vec<_>>());
         // The module list is the focused pane (pink border); the doc pane is violet.
         let list_box = Style::new()
             .border(rounded_border())
             .border_foreground(theme::border(true))
-            .render(&list);
+            .render(&self.list.view());
         let doc_box = Style::new()
             .border(rounded_border())
             .border_foreground(theme::border(false))
             .render(&self.doc.view());
         let panes = join_horizontal(TOP, &[list_box.as_str(), "  ", doc_box.as_str()]);
-
-        let hint = theme::dim().render(
-            "\u{2191}/\u{2193} select \u{00b7} i insert into host \u{00b7} pgup/pgdn scroll \u{00b7} esc back",
-        );
-        format!("{}\n{}\n{}", theme::chip(" browse "), panes, hint)
+        format!(
+            "{}\n{}\n{}",
+            theme::chip(" browse "),
+            panes,
+            widgets::footer(&[
+                ("\u{2191}/\u{2193}", "select"),
+                ("i", "insert"),
+                ("pgup/pgdn", "scroll"),
+                ("esc", "back"),
+            ]),
+        )
     }
 
     fn view_pick(&self) -> String {
-        let node = &self.modules[self.sel].node;
-        let mut rows = Vec::new();
-        for (i, h) in self.hosts.iter().enumerate() {
-            if i == self.host_pick {
-                rows.push(theme::selected().render(&format!(" \u{25b8} {} ", h.name)));
-            } else {
-                rows.push(theme::dim().render(&format!("   {}", h.name)));
-            }
-        }
-        let list = join_vertical(LEFT, &rows.iter().map(String::as_str).collect::<Vec<_>>());
+        let node = self.selected_module().map(|m| m.node.as_str()).unwrap_or("module");
         let boxed = Style::new()
             .border(rounded_border())
             .border_foreground(theme::border(true))
-            .render(&list);
+            .render(&self.host_list.view());
         format!(
             "{}\n{}\n{}",
             theme::chip(&format!(" insert {node} into ")),
             boxed,
-            theme::dim().render("\u{2191}/\u{2193} pick \u{00b7} enter insert \u{00b7} esc cancel"),
+            widgets::footer(&[("\u{2191}/\u{2193}", "pick"), ("enter", "insert"), ("esc", "cancel")]),
         )
     }
 }
@@ -244,11 +228,15 @@ mod tests {
     }
 
     fn model(mods: &[(&str, &str)], hosts: usize) -> BrowseModel {
+        let modules: Vec<BrowseModule> = mods.iter().map(|(n, k)| module(n, k)).collect();
+        let host_infos: Vec<HostInfo> = (0..hosts).map(|i| host(&format!("h{i}"))).collect();
+        let items = modules.iter().map(|m| DefaultItem::new(&m.node, &m.kind)).collect();
+        let host_items = host_infos.iter().map(|h| DefaultItem::new(&h.name, "")).collect();
         let mut m = BrowseModel {
-            modules: mods.iter().map(|(n, k)| module(n, k)).collect(),
-            hosts: (0..hosts).map(|i| host(&format!("h{i}"))).collect(),
-            sel: 0,
-            host_pick: 0,
+            modules,
+            hosts: host_infos,
+            list: widgets::styled_list(items, 40, 10),
+            host_list: widgets::styled_list(host_items, 40, 10),
             mode: Mode::List,
             doc: viewport::new(40, 10),
             dims: (40, 10),
@@ -257,26 +245,27 @@ mod tests {
         m
     }
 
+    fn key(code: KeyCode) -> Msg {
+        Box::new(KeyMsg { key: code, modifiers: KeyModifiers::NONE }) as Msg
+    }
+
     #[test]
     fn selecting_moves_and_updates_the_doc() {
         let mut m = model(&[("postgres", "built-in"), ("web-service", "declarative")], 1);
         assert!(m.doc.view().contains("postgres"));
-        m.select(1);
-        assert_eq!(m.sel, 1);
+        m.update(key(KeyCode::Down), (120, 30));
+        assert_eq!(m.list.cursor(), 1);
         assert!(m.doc.view().contains("web-service"), "doc follows selection");
-        m.select(9);
-        assert_eq!(m.sel, 1, "out-of-range selection is refused");
     }
 
     #[test]
     fn insert_opens_the_host_picker_then_commits() {
         let mut m = model(&[("postgres", "built-in")], 2);
-        // First activate: enter the host picker.
-        assert!(matches!(m.activate(), Nav::Stay));
+        assert!(matches!(m.update(key(KeyCode::Char('i')), (120, 30)).nav, Nav::Stay));
         assert_eq!(m.mode, Mode::PickHost);
-        // Pick the second host and commit.
-        m.host_pick = 1;
-        match m.activate() {
+        m.update(key(KeyCode::Down), (120, 30)); // pick the second host
+        assert_eq!(m.host_list.cursor(), 1);
+        match m.update(key(KeyCode::Enter), (120, 30)).nav {
             Nav::Insert { host, node, skeleton } => {
                 assert_eq!(host.name, "h1");
                 assert_eq!(node, "postgres");

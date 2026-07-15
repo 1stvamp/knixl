@@ -13,7 +13,7 @@ use lipgloss::{join_vertical, rounded_border, Style, LEFT};
 
 use knixl_modules::template::{scaffold_manifest, ModuleScaffold};
 
-use super::{theme, Nav, Step};
+use super::{theme, widgets, Nav, Step};
 
 const TYPES: [&str; 3] = ["string", "bool", "int"];
 
@@ -251,9 +251,13 @@ impl AuthorModel {
             panel,
             create,
             cancel,
-            theme::dim().render(
-                "tab move \u{00b7} \u{2190}/\u{2192} type \u{00b7} space required \u{00b7} enter create \u{00b7} esc back",
-            ),
+            widgets::footer(&[
+                ("tab", "move"),
+                ("\u{2190}/\u{2192}", "type"),
+                ("space", "required"),
+                ("enter", "create"),
+                ("esc", "back"),
+            ]),
         )
     }
 
