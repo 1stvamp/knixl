@@ -24,6 +24,12 @@ impl Registry {
         self.by_node.get(node_name).map(|b| b.as_ref())
     }
 
+    /// Every registered module, keyed by node name, in node order. For listing (e.g. the TUI
+    /// browser and future `knixl doc` index).
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &dyn Module)> {
+        self.by_node.iter().map(|(k, v)| (k.as_str(), v.as_ref()))
+    }
+
     /// Every registered module's name and version, for the lock's `module` entries.
     pub fn module_versions(&self) -> BTreeMap<String, semver::Version> {
         self.by_node

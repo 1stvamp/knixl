@@ -5,6 +5,7 @@
 mod tui;
 
 use std::io::IsTerminal;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use knixl_lock::{FileState, Plan};
@@ -43,6 +44,8 @@ enum Cmd {
         #[arg(long)]
         strict: bool,
     },
+    /// Open the interactive TUI (install, browse modules, scaffold a module).
+    Tui,
 }
 
 #[repr(i32)]
@@ -135,11 +138,14 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
         Cmd::Doc { node } => { print_doc(ctx, &node, cli.json); Code::Clean }
 
         Cmd::Install { pkg, host, yes, strict } => install(ctx, &pkg, host.as_deref(), yes, strict),
+
+        Cmd::Tui => unreachable!("tui is dispatched before Ctx::load"),
     }
 }
 
-/// `knixl install <pkg>`: resolve a host, draft the KDL edit, verify under nix, preview,
-/// confirm, and regenerate. The host KDL is reverted on any failure or a declined confirm.
+/// `knixl install <pkg>`: resolve a host, then either open the interactive Install screen
+/// (TTY, no `--yes`) or take the plain path (verify, confirm, commit). The host KDL is
+/// reverted on any failure or a declined confirm.
 fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool) -> Code {
     use knixl_pipeline::install::{list_hosts, select_host};
 
@@ -151,43 +157,42 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool) ->
         Ok(t) => t.clone(),
         Err(e) => { eprintln!("knixl: {e}"); return Code::Usage; }
     };
-    let initial_idx = hosts.iter().position(|h| h.name == initial.name).unwrap_or(0);
-
-    // `pkgs.<pkg>` existence is host-independent; resolve it once.
-    let resolves = resolve_package(ctx, pkg);
 
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let chosen_idx = if interactive && !yes {
-        match run_install_tui(ctx, pkg, &hosts, initial_idx, strict, resolves) {
-            Ok(tui::Decision::Apply(i)) => i,
-            Ok(tui::Decision::Cancel) => { println!("cancelled"); return Code::Clean; }
-            Err(e) => { eprintln!("knixl: tui: {e}"); return Code::Internal; }
-        }
-    } else {
-        // Non-interactive / --yes: the plain path. Hard-check the package here (the TUI
-        // gates apply instead), then confirm unless --yes.
-        match resolves {
-            tui::Resolve::No => {
-                eprintln!("knixl: no nixpkgs package named `{pkg}`");
-                return Code::Validation;
-            }
-            tui::Resolve::Skipped if strict => {
-                eprintln!("knixl: --strict: nix unavailable, cannot verify `{pkg}`");
-                return Code::Validation;
-            }
-            tui::Resolve::Skipped => {
-                eprintln!("warning: nix unavailable, skipping package check for `{pkg}`");
-            }
-            tui::Resolve::Yes => {}
-        }
-        if !yes && !confirm(&format!("install {pkg} on {}?", initial.name)) {
-            println!("cancelled");
-            return Code::Clean;
-        }
-        initial_idx
-    };
+    if interactive && !yes {
+        let entry = tui::Entry::Install {
+            pkg: pkg.to_string(),
+            strict,
+            host: Some(initial.name.clone()),
+        };
+        return match open_tui(entry) {
+            Ok(tui::Outcome::Install { host, pkg, strict }) => commit_install(&host, &pkg, strict),
+            Ok(_) => { println!("cancelled"); Code::Clean }
+            Err(e) => { eprintln!("knixl: tui: {e}"); Code::Internal }
+        };
+    }
 
-    commit_install(&hosts[chosen_idx], pkg, strict)
+    // Non-interactive / --yes: the plain path. Hard-check the package, then confirm unless
+    // --yes.
+    match resolve_package(ctx, pkg) {
+        tui::Resolve::No => {
+            eprintln!("knixl: no nixpkgs package named `{pkg}`");
+            return Code::Validation;
+        }
+        tui::Resolve::Skipped if strict => {
+            eprintln!("knixl: --strict: nix unavailable, cannot verify `{pkg}`");
+            return Code::Validation;
+        }
+        tui::Resolve::Skipped => {
+            eprintln!("warning: nix unavailable, skipping package check for `{pkg}`");
+        }
+        tui::Resolve::Yes => {}
+    }
+    if !yes && !confirm(&format!("install {pkg} on {}?", initial.name)) {
+        println!("cancelled");
+        return Code::Clean;
+    }
+    commit_install(&initial, pkg, strict)
 }
 
 /// Write the drafted package into the chosen host, verify it generates and parses, then
@@ -241,36 +246,97 @@ fn commit_install(chosen: &knixl_pipeline::install::HostInfo, pkg: &str, strict:
     worst
 }
 
-/// Build the TUI state (initial preview for the selected host), run the loop, and return
-/// the user's decision.
-fn run_install_tui(
-    ctx: &Ctx,
-    pkg: &str,
-    hosts: &[knixl_pipeline::install::HostInfo],
-    initial_idx: usize,
-    strict: bool,
-    resolves: tui::Resolve,
-) -> std::io::Result<tui::Decision> {
-    let formatter = default_formatter();
-    let tool: semver::Version = env!("CARGO_PKG_VERSION").parse().expect("tool version parses");
+/// Open the TUI for the given entry: discover the project, list hosts, and inject a verify
+/// function that (off the event-loop thread) drafts the host and checks it under nix.
+fn open_tui(entry: tui::Entry) -> Result<tui::Outcome, String> {
+    use knixl_pipeline::install::list_hosts;
+    let root = discover_root();
+    let hosts = list_hosts(&root).map_err(|e| e.to_string())?;
+    let modules = browse_modules(&root);
+    tui::run(entry, root.clone(), hosts, make_verify(root), modules)
+}
 
-    let (nix0, parse0) = preview_host(&ctx.registry, &formatter, &tool, &hosts[initial_idx], pkg);
-    let state = tui::InstallState {
-        pkg: pkg.to_string(),
-        hosts: hosts.to_vec(),
-        selected: initial_idx,
-        strict,
-        resolves,
-        parses: parse0,
-        nix_preview: nix0,
+/// Enumerate registered modules for the Browse screen: node name, kind tag, rendered schema
+/// doc, and a host-insertion skeleton. Built here (not in the TUI) since the registry is not
+/// `Send`. An unreadable project yields an empty list rather than failing the whole TUI.
+fn browse_modules(root: &std::path::Path) -> Vec<tui::BrowseModule> {
+    use knixl_modules::ModuleKind;
+    let Ok(registry) = knixl_pipeline::gather::registry(root) else {
+        return Vec::new();
     };
-    let mut recompute = |s: &mut tui::InstallState| {
-        let host = s.hosts[s.selected].clone();
-        let (nix, parse) = preview_host(&ctx.registry, &formatter, &tool, &host, pkg);
-        s.nix_preview = nix;
-        s.parses = parse;
-    };
-    tui::run(state, &mut recompute)
+    registry
+        .entries()
+        .map(|(node, m)| {
+            let schema = m.schema();
+            tui::BrowseModule {
+                node: node.to_string(),
+                kind: match m.kind() {
+                    ModuleKind::Builtin => "built-in".to_string(),
+                    ModuleKind::Declarative => "declarative".to_string(),
+                },
+                doc: schema.render_doc(node),
+                skeleton: skeleton_for(node, schema),
+            }
+        })
+        .collect()
+}
+
+/// A starting skeleton for inserting a module node into a host: the node with placeholders
+/// for its required positional args and required props, and an empty `{ }` block if it takes
+/// children. A starting point the user then edits, not a guaranteed-valid node.
+fn skeleton_for(node: &str, schema: &knixl_modules::NodeSchema) -> String {
+    use knixl_modules::ValueTy;
+    fn placeholder(ty: &ValueTy) -> String {
+        match ty {
+            ValueTy::Bool => "#true".to_string(),
+            ValueTy::Int => "0".to_string(),
+            ValueTy::Str | ValueTy::Node => "\"\"".to_string(),
+            ValueTy::Enum(opts) => {
+                opts.first().map(|o| format!("\"{o}\"")).unwrap_or_else(|| "\"\"".to_string())
+            }
+        }
+    }
+
+    let mut head = node.to_string();
+    for arg in schema.args.iter().filter(|a| a.required) {
+        head.push(' ');
+        head.push_str(&placeholder(&arg.ty));
+    }
+    for prop in schema.props.iter().filter(|p| p.required) {
+        head.push_str(&format!(" {}={}", prop.name, placeholder(&prop.ty)));
+    }
+
+    let has_block = schema.open_children || schema.children.iter().any(|c| c.required);
+    if has_block {
+        format!("{head} {{\n}}")
+    } else {
+        head
+    }
+}
+
+/// The verify function handed to the Install screen. It closes over only `Send` data (the
+/// project root) and rebuilds the registry per call, so it stays `Send + Sync` for the async
+/// off-thread verify. Recomputes both `pkgs.<pkg>` existence and whether the drafted host
+/// parses.
+fn make_verify(root: std::path::PathBuf) -> tui::VerifyFn {
+    Arc::new(move |pkg: &str, host: &knixl_pipeline::install::HostInfo| {
+        let formatter = default_formatter();
+        let tool: semver::Version =
+            env!("CARGO_PKG_VERSION").parse().expect("tool version parses");
+        match knixl_pipeline::gather::gather(&root, &formatter, tool.clone()) {
+            Ok(project) => {
+                let (preview, parses) =
+                    preview_host(&project.registry, &formatter, &tool, host, pkg);
+                let resolves = resolve_package_rev(&project.lock.oracle.nixpkgs_rev, pkg);
+                tui::Verified { preview, resolves, parses }
+            }
+            Err(e) => tui::Verified {
+                preview: format!("(preview unavailable: {e})"),
+                resolves: tui::Resolve::Skipped,
+                parses: tui::Parse::Skipped,
+            },
+        }
+    })
 }
 
 /// Generate the drafted host in memory (no disk writes) and parse it, for the TUI preview.
@@ -342,9 +408,14 @@ fn parse_text(nix: &str) -> tui::Parse {
 
 /// `pkgs.<pkg>` existence against the lock's pinned rev (ambient fallback), as a `Resolve`.
 fn resolve_package(ctx: &Ctx, pkg: &str) -> tui::Resolve {
+    resolve_package_rev(&ctx.lock.oracle.nixpkgs_rev, pkg)
+}
+
+/// As `resolve_package`, but taking the pinned rev directly (for the TUI verify closure,
+/// which rebuilds its own project state).
+fn resolve_package_rev(rev: &str, pkg: &str) -> tui::Resolve {
     use knixl_nix::nixeval::{NixError, NixEval, Nixpkgs};
-    let rev = &ctx.lock.oracle.nixpkgs_rev;
-    let src = if rev.is_empty() { Nixpkgs::Ambient } else { Nixpkgs::PinnedRev(rev.clone()) };
+    let src = if rev.is_empty() { Nixpkgs::Ambient } else { Nixpkgs::PinnedRev(rev.to_string()) };
     match NixEval::resolve().package_exists(&src, pkg) {
         Ok(true) => tui::Resolve::Yes,
         Ok(false) => tui::Resolve::No,
@@ -388,9 +459,80 @@ fn confirm(prompt: &str) -> bool {
 fn main() {
     // A panic anywhere in planning or applying maps to the Internal exit code (docs/05),
     // so callers get a stable code instead of a raw abort.
-    let code = std::panic::catch_unwind(|| run(Cli::parse(), &Ctx::load()))
-        .unwrap_or(Code::Internal);
+    let code = std::panic::catch_unwind(dispatch).unwrap_or(Code::Internal);
     std::process::exit(code as i32);
+}
+
+fn dispatch() -> Code {
+    let cli = Cli::parse();
+    // The TUI does not reconcile a project up front (Home works anywhere), so it skips
+    // Ctx::load and its formatter requirement.
+    if matches!(cli.cmd, Cmd::Tui) {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            eprintln!("knixl: tui needs an interactive terminal");
+            return Code::Usage;
+        }
+        return match open_tui(tui::Entry::Hub) {
+            Ok(outcome) => finish_tui_outcome(outcome),
+            Err(e) => { eprintln!("knixl: {e}"); Code::Internal }
+        };
+    }
+    run(cli, &Ctx::load())
+}
+
+/// Act on what the hub session decided: an Install outcome commits the package; a plain quit
+/// or cancel does nothing.
+fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
+    match outcome {
+        tui::Outcome::Install { host, pkg, strict } => commit_install(&host, &pkg, strict),
+        tui::Outcome::Insert { host, node, skeleton } => commit_insert(&host, &node, &skeleton),
+        tui::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),
+        tui::Outcome::Cancelled | tui::Outcome::Quit => Code::Clean,
+    }
+}
+
+/// Write a scaffolded module manifest to `modules/<name>/knixl-module.kdl`, refusing to
+/// overwrite an existing module.
+fn commit_scaffold(name: &str, manifest: &str) -> Code {
+    let dir = discover_root().join("modules").join(name);
+    let path = dir.join("knixl-module.kdl");
+    if path.exists() {
+        eprintln!("knixl: module `{name}` already exists at {}", path.display());
+        return Code::Validation;
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("knixl: {}: {e}", dir.display());
+        return Code::Internal;
+    }
+    if let Err(e) = std::fs::write(&path, manifest) {
+        eprintln!("knixl: {}: {e}", path.display());
+        return Code::Internal;
+    }
+    println!("created module `{name}`: edit {} then declare it on a host", path.display());
+    Code::Clean
+}
+
+/// Scaffold a module node into a host's KDL: splice the skeleton and write the file. Unlike
+/// install this does not regenerate, since the skeleton is a starting point the user edits
+/// before running `knixl generate`.
+fn commit_insert(host: &knixl_pipeline::install::HostInfo, node: &str, skeleton: &str) -> Code {
+    use knixl_pipeline::install::add_node;
+    let original = match std::fs::read_to_string(&host.path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("knixl: {}: {e}", host.path.display()); return Code::Internal; }
+    };
+    match add_node(&original, node, skeleton) {
+        Ok(Some(draft)) => {
+            if let Err(e) = std::fs::write(&host.path, &draft) {
+                eprintln!("knixl: {}: {e}", host.path.display());
+                return Code::Internal;
+            }
+            println!("added {node} to {}: edit {} then run `knixl generate`", host.name, host.path.display());
+            Code::Clean
+        }
+        Ok(None) => { println!("{node} is already declared on {}", host.name); Code::Clean }
+        Err(e) => { eprintln!("knixl: cannot edit {}: {e}", host.path.display()); Code::Internal }
+    }
 }
 
 // ---- everything below: NOT written. Wiring for the next session. ----

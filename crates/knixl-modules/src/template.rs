@@ -750,9 +750,50 @@ fn parse_migrations(
     Ok(steps)
 }
 
+/// The inputs for scaffolding a new declarative module manifest (the TUI Author form).
+pub struct ModuleScaffold<'a> {
+    pub name: &'a str,
+    pub node: &'a str,
+    pub summary: &'a str,
+    pub field_name: &'a str,
+    /// `"bool"` / `"int"`; anything else is treated as a string (matching `ty_from`).
+    pub field_ty: &'a str,
+    pub required: bool,
+}
+
+/// Render a minimal, valid `knixl-module.kdl` from the Author form. It declares the one
+/// field and emits a single literal `set` (a starting point with no lookups, so it always
+/// loads and dry-type-checks); the author then fills in the real schema and emit.
+pub fn scaffold_manifest(s: &ModuleScaffold) -> String {
+    let ty = match s.field_ty {
+        "bool" => "bool",
+        "int" => "int",
+        _ => "string",
+    };
+    let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "module name=\"{name}\" version=\"0.1.0\" {{\n    \
+         summary \"{summary}\"\n    \
+         claims-node \"{node}\"\n\n    \
+         schema {{\n        \
+         arg \"{field}\" type=\"{ty}\" required=#{required} doc=\"\"\n    \
+         }}\n\n    \
+         emit {{\n        \
+         set \"services.{node}.enable\" #true\n    \
+         }}\n}}\n",
+        name = esc(s.name),
+        summary = esc(s.summary),
+        node = esc(s.node),
+        field = esc(s.field_name),
+        ty = ty,
+        required = s.required,
+    )
+}
+
 impl Module for DeclarativeModule {
     fn id(&self) -> ModuleId { self.id.clone() }
     fn node_name(&self) -> &str { &self.node_name }
+    fn kind(&self) -> crate::ModuleKind { crate::ModuleKind::Declarative }
     fn schema(&self) -> &NodeSchema { &self.schema }
     fn lower(&self, node: &kdl::KdlNode, _ctx: &mut crate::LowerCtx) -> Result<LowerOutput, LowerError> {
         let bindings = EmitTemplate::build_bindings(&self.schema, node);
@@ -779,6 +820,25 @@ mod tests {
 
     fn node(src: &str) -> kdl::KdlNode {
         src.parse::<kdl::KdlDocument>().unwrap().nodes().first().unwrap().clone()
+    }
+
+    #[test]
+    fn scaffold_manifest_loads_and_type_checks() {
+        use crate::Module;
+        for (ty, req) in [("string", true), ("bool", false), ("int", true)] {
+            let src = scaffold_manifest(&ModuleScaffold {
+                name: "my-mod",
+                node: "my-mod",
+                summary: "a fresh module",
+                field_name: "target",
+                field_ty: ty,
+                required: req,
+            });
+            let doc = src.parse::<kdl::KdlDocument>().expect("scaffold is valid kdl");
+            let m = DeclarativeModule::from_kdl(&doc, std::path::Path::new("my-mod"))
+                .expect("scaffold loads and dry-type-checks");
+            assert_eq!(m.node_name(), "my-mod");
+        }
     }
 
     #[test]

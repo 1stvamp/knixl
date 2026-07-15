@@ -87,6 +87,52 @@ pub fn add_package(src: &str, pkg: &str) -> Result<Option<String>, String> {
     Ok(Some(out))
 }
 
+/// Splice a module node `skeleton` as a child of the single top-level `host` node,
+/// preserving the rest of the file's formatting. Each non-empty skeleton line is prefixed
+/// with the file's indentation (so nested lines keep their own relative indent on top).
+/// Returns `None` if the host already declares a child with `node_name` (idempotent).
+pub fn add_node(src: &str, node_name: &str, skeleton: &str) -> Result<Option<String>, String> {
+    let doc: KdlDocument = src.parse().map_err(|e: kdl::KdlError| e.to_string())?;
+    let host = doc
+        .nodes()
+        .iter()
+        .find(|n| n.name().value() == "host")
+        .ok_or_else(|| "no `host` node to add a module to".to_string())?;
+
+    if let Some(kids) = host.children() {
+        if kids.nodes().iter().any(|n| n.name().value() == node_name) {
+            return Ok(None);
+        }
+    }
+
+    let start = host.span().offset();
+    let end = (start + host.span().len()).min(src.len());
+    let host_text = &src[start..end];
+    let close = start
+        + host_text
+            .rfind('}')
+            .ok_or_else(|| "host has no children block to extend".to_string())?;
+    let line_start = src[..close].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let indent = detect_indent(src);
+
+    let mut insertion = String::new();
+    for line in skeleton.lines() {
+        if line.is_empty() {
+            insertion.push('\n');
+        } else {
+            insertion.push_str(&indent);
+            insertion.push_str(line);
+            insertion.push('\n');
+        }
+    }
+
+    let mut out = String::with_capacity(src.len() + insertion.len());
+    out.push_str(&src[..line_start]);
+    out.push_str(&insertion);
+    out.push_str(&src[line_start..]);
+    Ok(Some(out))
+}
+
 /// The indentation of the first indented, non-empty line, defaulting to four spaces.
 fn detect_indent(src: &str) -> String {
     src.lines()
@@ -204,5 +250,29 @@ mod tests {
     fn add_package_is_idempotent() {
         let src = "host \"web\" {\n    system \"x86_64-linux\"\n    package \"ripgrep\"\n}\n";
         assert_eq!(add_package(src, "ripgrep").unwrap(), None, "already present is a no-op");
+    }
+
+    #[test]
+    fn add_node_splices_a_block_skeleton_indented() {
+        let src = "host \"web\" {\n    system \"x86_64-linux\"\n}\n";
+        let skeleton = "postgres {\n    version \"16\"\n}";
+        let out = add_node(src, "postgres", skeleton).unwrap().expect("edit produced");
+        assert!(out.contains("    postgres {"), "node indented to the file: {out}");
+        assert!(out.contains("        version \"16\""), "nested line indented further: {out}");
+        assert!(out.contains("system \"x86_64-linux\""), "existing content kept: {out}");
+        let doc: KdlDocument = out.parse().expect("valid kdl");
+        let host = doc.nodes().iter().find(|n| n.name().value() == "host").unwrap();
+        assert!(host.children().unwrap().nodes().iter().any(|n| n.name().value() == "postgres"));
+    }
+
+    #[test]
+    fn add_node_is_idempotent_by_node_name() {
+        let src = "host \"web\" {\n    postgres {\n        version \"16\"\n    }\n}\n";
+        assert_eq!(add_node(src, "postgres", "postgres").unwrap(), None, "already present is a no-op");
+    }
+
+    #[test]
+    fn add_node_errors_without_a_host() {
+        assert!(add_node("nothost \"x\" {}\n", "postgres", "postgres").is_err());
     }
 }
