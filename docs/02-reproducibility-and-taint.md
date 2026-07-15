@@ -63,4 +63,4 @@ Per-node taint needs sentinel markers in generated files and AST-diffing generat
 
 ## The one class of breakage the oracle cannot catch
 
-Two knixl modules can assign the same option path in one file. If exactly one uses a priority, fine. If two both `mkForce` the same path, Nix throws a conflict at eval time, and the oracle cannot see it (it is a value conflict, not a type error). A plan-time lint catches it: detect multiple assignments to the same `AttrPath` across modules in one file, warn unless priorities disambiguate. Cheap, and it closes the gap. Specified here, not yet built (see NEXT-STEPS phase 4).
+Two knixl modules can assign the same option path in one file. If exactly one uses a priority, fine. If two both `mkForce` the same path, Nix throws a conflict at eval time, and the oracle cannot see it (it is a value conflict, not a type error). A plan-time lint catches it: detect multiple assignments to the same `AttrPath` across modules in one file, warn unless priorities disambiguate. Cheap, and it closes the gap. Implemented in the pipeline (`detect_conflicts`), surfaced as a CLI warning.
