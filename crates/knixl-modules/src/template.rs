@@ -753,6 +753,7 @@ fn parse_migrations(
 impl Module for DeclarativeModule {
     fn id(&self) -> ModuleId { self.id.clone() }
     fn node_name(&self) -> &str { &self.node_name }
+    fn kind(&self) -> crate::ModuleKind { crate::ModuleKind::Declarative }
     fn schema(&self) -> &NodeSchema { &self.schema }
     fn lower(&self, node: &kdl::KdlNode, _ctx: &mut crate::LowerCtx) -> Result<LowerOutput, LowerError> {
         let bindings = EmitTemplate::build_bindings(&self.schema, node);

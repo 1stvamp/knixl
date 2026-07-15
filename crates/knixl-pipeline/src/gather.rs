@@ -141,6 +141,13 @@ fn read_hosts(root: &Path) -> Result<Vec<HostSource>, GatherError> {
     Ok(hosts)
 }
 
+/// Build just the module registry for `root` (built-ins plus declarative modules under
+/// `modules/`). Unlike `gather` this needs no formatter or oracle, so listing modules works
+/// even where nix/nixfmt are absent.
+pub fn registry(root: &Path) -> Result<Registry, GatherError> {
+    build_registry(root)
+}
+
 fn build_registry(root: &Path) -> Result<Registry, GatherError> {
     let mut registry = Registry::new();
     register_builtins(&mut registry);

@@ -8,6 +8,7 @@
 //! and turns a `Step` into a command. The pure decision logic inside each screen is unit
 //! tested; only the runtime glue (spawning the program, real key reads, async `Cmd`s) is not.
 
+mod browse;
 mod home;
 mod install;
 mod theme;
@@ -18,6 +19,7 @@ use std::sync::{Arc, OnceLock};
 use bubbletea_rs::event::{QuitMsg, WindowSizeMsg};
 use bubbletea_rs::{command, Cmd, Model, Msg, Program};
 
+use browse::BrowseModel;
 use home::HomeModel;
 use install::InstallModel;
 
@@ -39,6 +41,17 @@ pub struct Verified {
 /// supply their own; it is `Send + Sync` so the Install screen can run it off the event loop.
 pub type VerifyFn = Arc<dyn Fn(&str, &HostInfo) -> Verified + Send + Sync>;
 
+/// A registered module as the Browse screen sees it: its claimed node, a kind tag, the
+/// rendered schema doc, and a skeleton to splice into a host. Precomputed by the CLI so the
+/// TUI never touches the (non-`Send`) registry.
+#[derive(Debug, Clone)]
+pub struct BrowseModule {
+    pub node: String,
+    pub kind: String,
+    pub doc: String,
+    pub skeleton: String,
+}
+
 /// How the TUI was launched.
 pub enum Entry {
     /// `knixl tui`: start at Home.
@@ -55,6 +68,8 @@ pub enum Outcome {
     Cancelled,
     /// Apply this package to this host.
     Install { host: HostInfo, pkg: String, strict: bool },
+    /// Scaffold this module's node into this host's KDL.
+    Insert { host: HostInfo, node: String, skeleton: String },
 }
 
 /// Everything the screens read, injected before the program runs.
@@ -65,6 +80,7 @@ pub struct TuiConfig {
     pub hosts: Vec<HostInfo>,
     pub entry: Entry,
     pub verify: VerifyFn,
+    pub modules: Vec<BrowseModule>,
 }
 
 fn config() -> &'static TuiConfig {
@@ -81,6 +97,8 @@ pub enum Nav {
     Goto(&'static str),
     /// Commit the install and end the session.
     Apply { host: HostInfo, pkg: String, strict: bool },
+    /// Scaffold a module node into a host and end the session.
+    Insert { host: HostInfo, node: String, skeleton: String },
 }
 
 /// A reducer's result: a navigation intent plus an optional command to run.
@@ -100,8 +118,9 @@ impl Step {
 
 enum Screen {
     Home(HomeModel),
-    // Boxed: InstallModel is large (it owns widget state), so keep the enum small.
+    // Boxed: these own widget state and are large, so keep the enum small.
     Install(Box<InstallModel>),
+    Browse(Box<BrowseModel>),
 }
 
 pub struct App {
@@ -133,6 +152,7 @@ impl Model for App {
         let step = match &mut self.screen {
             Screen::Home(h) => h.update(msg, self.size),
             Screen::Install(i) => i.update(msg, self.size),
+            Screen::Browse(b) => b.update(msg, self.size),
         };
         self.apply(step)
     }
@@ -141,6 +161,7 @@ impl Model for App {
         match &self.screen {
             Screen::Home(h) => h.view(self.size),
             Screen::Install(i) => i.view(self.size),
+            Screen::Browse(b) => b.view(self.size),
         }
     }
 }
@@ -152,6 +173,10 @@ impl App {
             Nav::Quit => Some(command::quit()),
             Nav::Apply { host, pkg, strict } => {
                 self.outcome = Outcome::Install { host, pkg, strict };
+                Some(command::quit())
+            }
+            Nav::Insert { host, node, skeleton } => {
+                self.outcome = Outcome::Insert { host, node, skeleton };
                 Some(command::quit())
             }
             Nav::Back => match config().entry {
@@ -170,7 +195,11 @@ impl App {
                 self.screen = Screen::Install(Box::new(m));
                 cmd
             }
-            // Browse / Author land in later checkpoints.
+            Nav::Goto("browse") => {
+                self.screen = Screen::Browse(Box::new(BrowseModel::enter(self.size)));
+                None
+            }
+            // Author lands in a later checkpoint.
             Nav::Goto(_) => None,
         }
     }
@@ -183,8 +212,9 @@ pub fn run(
     root: PathBuf,
     hosts: Vec<HostInfo>,
     verify: VerifyFn,
+    modules: Vec<BrowseModule>,
 ) -> Result<Outcome, String> {
-    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify });
+    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify, modules });
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

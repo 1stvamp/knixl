@@ -16,10 +16,16 @@ pub use registry::{Registry, RegistryError};
 #[derive(Clone)]
 pub struct ModuleId { pub name: String, pub version: Version }
 
+/// Where a module came from: compiled into knixl, or loaded from a `knixl-module.kdl`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ModuleKind { Builtin, Declarative }
+
 pub trait Module: Send + Sync {
     fn id(&self) -> ModuleId;
     /// The KDL node name this module claims (e.g. "postgres"). The generator dispatches by it.
     fn node_name(&self) -> &str;
+    /// Built-in or declarative. Declarative modules override this; the default is built-in.
+    fn kind(&self) -> ModuleKind { ModuleKind::Builtin }
     /// Structured description of accepted args/props/children. Validates input AND drives `knixl doc`.
     fn schema(&self) -> &NodeSchema;
     /// Lower a node into bucketed assignments. The node is schema-valid here (the generator

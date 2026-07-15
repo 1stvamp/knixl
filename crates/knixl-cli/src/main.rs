@@ -252,7 +252,66 @@ fn open_tui(entry: hub::Entry) -> Result<hub::Outcome, String> {
     use knixl_pipeline::install::list_hosts;
     let root = discover_root();
     let hosts = list_hosts(&root).map_err(|e| e.to_string())?;
-    hub::run(entry, root.clone(), hosts, make_verify(root))
+    let modules = browse_modules(&root);
+    hub::run(entry, root.clone(), hosts, make_verify(root), modules)
+}
+
+/// Enumerate registered modules for the Browse screen: node name, kind tag, rendered schema
+/// doc, and a host-insertion skeleton. Built here (not in the TUI) since the registry is not
+/// `Send`. An unreadable project yields an empty list rather than failing the whole TUI.
+fn browse_modules(root: &std::path::Path) -> Vec<hub::BrowseModule> {
+    use knixl_modules::ModuleKind;
+    let Ok(registry) = knixl_pipeline::gather::registry(root) else {
+        return Vec::new();
+    };
+    registry
+        .entries()
+        .map(|(node, m)| {
+            let schema = m.schema();
+            hub::BrowseModule {
+                node: node.to_string(),
+                kind: match m.kind() {
+                    ModuleKind::Builtin => "built-in".to_string(),
+                    ModuleKind::Declarative => "declarative".to_string(),
+                },
+                doc: schema.render_doc(node),
+                skeleton: skeleton_for(node, schema),
+            }
+        })
+        .collect()
+}
+
+/// A starting skeleton for inserting a module node into a host: the node with placeholders
+/// for its required positional args and required props, and an empty `{ }` block if it takes
+/// children. A starting point the user then edits, not a guaranteed-valid node.
+fn skeleton_for(node: &str, schema: &knixl_modules::NodeSchema) -> String {
+    use knixl_modules::ValueTy;
+    fn placeholder(ty: &ValueTy) -> String {
+        match ty {
+            ValueTy::Bool => "#true".to_string(),
+            ValueTy::Int => "0".to_string(),
+            ValueTy::Str | ValueTy::Node => "\"\"".to_string(),
+            ValueTy::Enum(opts) => {
+                opts.first().map(|o| format!("\"{o}\"")).unwrap_or_else(|| "\"\"".to_string())
+            }
+        }
+    }
+
+    let mut head = node.to_string();
+    for arg in schema.args.iter().filter(|a| a.required) {
+        head.push(' ');
+        head.push_str(&placeholder(&arg.ty));
+    }
+    for prop in schema.props.iter().filter(|p| p.required) {
+        head.push_str(&format!(" {}={}", prop.name, placeholder(&prop.ty)));
+    }
+
+    let has_block = schema.open_children || schema.children.iter().any(|c| c.required);
+    if has_block {
+        format!("{head} {{\n}}")
+    } else {
+        head
+    }
 }
 
 /// The verify function handed to the Install screen. It closes over only `Send` data (the
@@ -426,7 +485,31 @@ fn dispatch() -> Code {
 fn finish_tui_outcome(outcome: hub::Outcome) -> Code {
     match outcome {
         hub::Outcome::Install { host, pkg, strict } => commit_install(&host, &pkg, strict),
+        hub::Outcome::Insert { host, node, skeleton } => commit_insert(&host, &node, &skeleton),
         hub::Outcome::Cancelled | hub::Outcome::Quit => Code::Clean,
+    }
+}
+
+/// Scaffold a module node into a host's KDL: splice the skeleton and write the file. Unlike
+/// install this does not regenerate, since the skeleton is a starting point the user edits
+/// before running `knixl generate`.
+fn commit_insert(host: &knixl_pipeline::install::HostInfo, node: &str, skeleton: &str) -> Code {
+    use knixl_pipeline::install::add_node;
+    let original = match std::fs::read_to_string(&host.path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("knixl: {}: {e}", host.path.display()); return Code::Internal; }
+    };
+    match add_node(&original, node, skeleton) {
+        Ok(Some(draft)) => {
+            if let Err(e) = std::fs::write(&host.path, &draft) {
+                eprintln!("knixl: {}: {e}", host.path.display());
+                return Code::Internal;
+            }
+            println!("added {node} to {}: edit {} then run `knixl generate`", host.name, host.path.display());
+            Code::Clean
+        }
+        Ok(None) => { println!("{node} is already declared on {}", host.name); Code::Clean }
+        Err(e) => { eprintln!("knixl: cannot edit {}: {e}", host.path.display()); Code::Internal }
     }
 }
 
