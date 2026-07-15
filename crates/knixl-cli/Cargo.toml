@@ -19,3 +19,7 @@ knixl-nix = { path = "../knixl-nix" }
 knixl-pipeline = { path = "../knixl-pipeline" }
 clap.workspace = true
 miette.workspace = true
+semver.workspace = true
+# TUI for `install` (knixl-cli only; the libraries stay TUI-free). crossterm is used
+# through ratatui's re-export to keep the versions in lockstep.
+ratatui = "0.29"
