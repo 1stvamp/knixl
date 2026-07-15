@@ -1,20 +1,16 @@
-//! The `install` TUI: a live preview with a host picker, verify status, and apply/cancel.
-//! The logic is pure (`update`, `render`) and the loop (`run_loop`) is generic over the
-//! ratatui backend and the event source, so all of it is testable without a real terminal.
-//! Only the production wiring in `run` (raw mode, the crossterm key reader) is untested glue.
+//! The `install` TUI: a lipgloss-styled preview with a host picker, verify status, and
+//! apply/cancel. `render` is a pure `&state -> String`, `update` is a pure reducer, and
+//! `run_loop` is generic over the output sink and the event source, so all of it is
+//! testable without a real terminal. Only the raw-mode/key-reader glue in `run` is untested.
 
-use std::io;
+use std::io::{self, Write};
 
-use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::{Frame, Terminal};
+use lipgloss::{join_vertical, rounded_border, Color, Style, LEFT};
 
 use knixl_pipeline::install::HostInfo;
 
@@ -25,7 +21,6 @@ pub enum Decision {
     Cancel,
 }
 
-/// One step's outcome from the reducer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
     Apply,
@@ -74,9 +69,8 @@ impl InstallState {
             Resolve::No => false,
         };
         let parse_ok = match &self.parses {
-            Parse::Ok => true,
+            Parse::Ok | Parse::Running => true,
             Parse::Skipped => !self.strict,
-            Parse::Running => true, // optimistic; the loop re-checks before applying
             Parse::Failed(_) => false,
         };
         resolve_ok && parse_ok
@@ -85,6 +79,62 @@ impl InstallState {
     fn selected_host(&self) -> Option<&HostInfo> {
         self.hosts.get(self.selected)
     }
+}
+
+fn color(code: &str) -> Color {
+    Color(code.to_string())
+}
+
+/// Draw the panel to a styled string (with ANSI). Pure over the state.
+pub fn render(state: &InstallState) -> String {
+    let dim = Style::new().foreground(color("8"));
+    let good = Style::new().foreground(color("2"));
+    let bad = Style::new().foreground(color("1"));
+    let amber = Style::new().foreground(color("3"));
+    let accent = Style::new().foreground(color("6"));
+    let bold = Style::new().bold(true);
+
+    let host = state.selected_host().map(|h| h.name.clone()).unwrap_or_else(|| "-".into());
+
+    let (r_txt, r_style) = match state.resolves {
+        Resolve::Yes => ("✓ resolves", &good),
+        Resolve::No => ("✗ no such package", &bad),
+        Resolve::Skipped => ("· resolves skipped", &amber),
+    };
+    let (p_txt, p_style) = match &state.parses {
+        Parse::Ok => ("✓ parses", &good),
+        Parse::Running => ("… verifying", &amber),
+        Parse::Failed(_) => ("✗ parse failed", &bad),
+        Parse::Skipped => ("· parses skipped", &amber),
+    };
+
+    let mut lines = vec![
+        format!(
+            "{}{}{}{}{}",
+            dim.render("host:  "),
+            amber.render("‹ "),
+            bold.render(&host),
+            amber.render(" ›"),
+            dim.render("   ←/→ to change"),
+        ),
+        good.render(&format!("+ package \"{}\"", state.pkg)),
+        format!("{}{}  {}", dim.render("verify: "), r_style.render(r_txt), p_style.render(p_txt)),
+        dim.render(&format!("{host}.nix")),
+    ];
+    for l in state.nix_preview.lines() {
+        lines.push(format!("  {l}"));
+    }
+    lines.push(String::new());
+    let apply = "[enter] apply";
+    let apply = if state.apply_allowed() { accent.render(apply) } else { dim.render(apply) };
+    lines.push(format!("{}{}", apply, dim.render("   [q] cancel")));
+
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let body = join_vertical(LEFT, &refs);
+
+    let panel =
+        Style::new().border(rounded_border()).border_foreground(color("6")).padding_2(0, 1);
+    format!("{}\n{}", accent.render(&format!(" install {} ", state.pkg)), panel.render(&body))
 }
 
 /// Pure reducer: fold a key press into the state and report what the loop should do.
@@ -119,93 +169,40 @@ fn update(state: &mut InstallState, key: KeyEvent) -> Action {
     }
 }
 
-/// Draw the panel. Pure over the state.
-pub fn render(state: &InstallState, frame: &mut Frame) {
-    let accent = Style::default().fg(Color::Cyan);
-    let dim = Style::default().fg(Color::DarkGray);
-    let good = Style::default().fg(Color::Green);
-    let bad = Style::default().fg(Color::Red);
-    let amber = Style::default().fg(Color::Yellow);
-    let host = state.selected_host().map(|h| h.name.clone()).unwrap_or_else(|| "-".into());
-
-    let (r_txt, r_style) = match state.resolves {
-        Resolve::Yes => ("✓ resolves", good),
-        Resolve::No => ("✗ no such package", bad),
-        Resolve::Skipped => ("· resolves skipped", amber),
-    };
-    let (p_txt, p_style) = match &state.parses {
-        Parse::Ok => ("✓ parses", good),
-        Parse::Running => ("… verifying", amber),
-        Parse::Failed(_) => ("✗ parse failed", bad),
-        Parse::Skipped => ("· parses skipped", amber),
-    };
-
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled("host:  ", dim),
-            Span::styled("‹ ", amber),
-            Span::styled(host.clone(), Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(" ›", amber),
-            Span::styled("   ←/→ to change", dim),
-        ]),
-        Line::from(Span::styled(format!("+ package \"{}\"", state.pkg), good)),
-        Line::from(vec![
-            Span::styled("verify: ", dim),
-            Span::styled(r_txt, r_style),
-            Span::raw("  "),
-            Span::styled(p_txt, p_style),
-        ]),
-        Line::from(Span::styled(format!("{host}.nix"), dim)),
-    ];
-    for l in state.nix_preview.lines() {
-        lines.push(Line::from(Span::raw(format!("  {l}"))));
-    }
-    lines.push(Line::from(""));
-    let apply_style = if state.apply_allowed() { accent } else { dim };
-    lines.push(Line::from(vec![
-        Span::styled("[enter] apply", apply_style),
-        Span::styled("   [q] cancel", dim),
-    ]));
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" install {} ", state.pkg))
-        .border_style(accent);
-    frame.render_widget(Paragraph::new(lines).block(block), frame.area());
+/// Clear the screen and write the current frame (raw mode needs CRLF line endings).
+fn draw<W: Write>(out: &mut W, state: &InstallState) -> io::Result<()> {
+    let frame = render(state).replace('\n', "\r\n");
+    write!(out, "\x1b[2J\x1b[H{frame}")?;
+    out.flush()
 }
 
-/// The loop, generic over backend and event source. Renders, reads a key, applies
-/// `update`, recomputes the per-host preview/verify on a switch (via `recompute`), and
-/// returns the decision. Event source exhaustion is treated as a cancel.
-pub fn run_loop<B: Backend>(
-    terminal: &mut Terminal<B>,
+/// The loop, generic over the output sink and the event source. Renders, reads a key,
+/// applies `update`, recomputes the per-host preview on a switch, and returns the decision.
+/// Event-source exhaustion is treated as a cancel.
+pub fn run_loop<W: Write>(
+    out: &mut W,
     events: impl IntoIterator<Item = io::Result<KeyEvent>>,
     mut state: InstallState,
     recompute: &mut dyn FnMut(&mut InstallState),
 ) -> io::Result<Decision> {
-    terminal.draw(|f| render(&state, f))?;
+    draw(out, &state)?;
     for ev in events {
         match update(&mut state, ev?) {
             Action::Apply => return Ok(Decision::Apply(state.selected)),
             Action::Cancel => return Ok(Decision::Cancel),
             Action::SwitchHost => {
-                // Show the new host's preview immediately, mark the parse in-flight, then
-                // recompute and redraw with the result.
                 state.parses = Parse::Running;
-                terminal.draw(|f| render(&state, f))?;
+                draw(out, &state)?;
                 recompute(&mut state);
-                terminal.draw(|f| render(&state, f))?;
+                draw(out, &state)?;
             }
-            Action::None => {
-                terminal.draw(|f| render(&state, f))?;
-            }
+            Action::None => draw(out, &state)?,
         }
     }
     Ok(Decision::Cancel)
 }
 
-/// Restores the terminal on drop, so raw mode / the alternate screen are always undone,
-/// including on error or panic.
+/// Restores the terminal on drop, so raw mode / the alternate screen are always undone.
 struct TermGuard;
 impl Drop for TermGuard {
     fn drop(&mut self) {
@@ -215,13 +212,12 @@ impl Drop for TermGuard {
 }
 
 /// Production entry: set up the terminal, drive `run_loop` against the real key reader, and
-/// restore on exit. This is the only untested glue; the logic lives in `run_loop`/`update`.
+/// restore on exit. The only untested glue; the logic lives in `run_loop`/`update`/`render`.
 pub fn run(state: InstallState, recompute: &mut dyn FnMut(&mut InstallState)) -> io::Result<Decision> {
     enable_raw_mode()?;
     let mut out = io::stdout();
     execute!(out, EnterAlternateScreen)?;
     let _guard = TermGuard;
-    let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
     let events = std::iter::from_fn(|| loop {
         match event::read() {
             Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => return Some(Ok(k)),
@@ -229,13 +225,14 @@ pub fn run(state: InstallState, recompute: &mut dyn FnMut(&mut InstallState)) ->
             Err(e) => return Some(Err(e)),
         }
     });
-    run_loop(&mut terminal, events, state, recompute)
+    run_loop(&mut out, events, state, recompute)
 }
+
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
     use std::path::PathBuf;
 
     fn host(name: &str) -> HostInfo {
@@ -267,7 +264,6 @@ mod tests {
         assert_eq!(s.selected, 1);
         assert_eq!(update(&mut s, key(KeyCode::Left)), Action::SwitchHost);
         assert_eq!(s.selected, 0);
-        // clamp at the low end
         assert_eq!(update(&mut s, key(KeyCode::Left)), Action::None);
         assert_eq!(s.selected, 0);
     }
@@ -304,88 +300,71 @@ mod tests {
         );
     }
 
-    // ---- run_loop end to end ----
-
-    fn term() -> Terminal<TestBackend> {
-        Terminal::new(TestBackend::new(60, 14)).unwrap()
-    }
+    // ---- run_loop end to end (over a Vec<u8> sink) ----
 
     #[test]
     fn loop_cancels_on_q() {
-        let mut t = term();
+        let mut out = Vec::new();
         let mut recompute = |_: &mut InstallState| {};
-        let decision =
-            run_loop(&mut t, vec![Ok(key(KeyCode::Char('q')))], state(2), &mut recompute).unwrap();
-        assert_eq!(decision, Decision::Cancel);
+        let d = run_loop(&mut out, vec![Ok(key(KeyCode::Char('q')))], state(2), &mut recompute).unwrap();
+        assert_eq!(d, Decision::Cancel);
     }
 
     #[test]
     fn loop_applies_immediately() {
-        let mut t = term();
+        let mut out = Vec::new();
         let mut recompute = |_: &mut InstallState| {};
-        let decision =
-            run_loop(&mut t, vec![Ok(key(KeyCode::Enter))], state(2), &mut recompute).unwrap();
-        assert_eq!(decision, Decision::Apply(0));
+        let d = run_loop(&mut out, vec![Ok(key(KeyCode::Enter))], state(2), &mut recompute).unwrap();
+        assert_eq!(d, Decision::Apply(0));
     }
 
     #[test]
     fn loop_switches_right_twice_then_applies_recomputing_each_time() {
-        let mut t = term();
+        let mut out = Vec::new();
         let mut recomputes = 0;
         let mut recompute = |_: &mut InstallState| recomputes += 1;
-        let events = vec![
-            Ok(key(KeyCode::Right)),
-            Ok(key(KeyCode::Right)),
-            Ok(key(KeyCode::Enter)),
-        ];
-        let decision = run_loop(&mut t, events, state(3), &mut recompute).unwrap();
-        assert_eq!(decision, Decision::Apply(2), "settled on the third host");
+        let events =
+            vec![Ok(key(KeyCode::Right)), Ok(key(KeyCode::Right)), Ok(key(KeyCode::Enter))];
+        let d = run_loop(&mut out, events, state(3), &mut recompute).unwrap();
+        assert_eq!(d, Decision::Apply(2), "settled on the third host");
         assert_eq!(recomputes, 2, "re-verified on each of the two switches");
     }
 
     #[test]
     fn loop_apply_is_refused_while_unresolved_then_cancels_on_q() {
-        let mut t = term();
+        let mut out = Vec::new();
         let mut recompute = |_: &mut InstallState| {};
         let mut s = state(1);
         s.resolves = Resolve::No;
-        // enter does nothing (blocked), then q cancels.
         let events = vec![Ok(key(KeyCode::Enter)), Ok(key(KeyCode::Char('q')))];
-        let decision = run_loop(&mut t, events, s, &mut recompute).unwrap();
-        assert_eq!(decision, Decision::Cancel);
+        let d = run_loop(&mut out, events, s, &mut recompute).unwrap();
+        assert_eq!(d, Decision::Cancel);
     }
 
     #[test]
     fn exhausted_events_cancel() {
-        let mut t = term();
+        let mut out = Vec::new();
         let mut recompute = |_: &mut InstallState| {};
-        let decision = run_loop(&mut t, vec![], state(1), &mut recompute).unwrap();
-        assert_eq!(decision, Decision::Cancel);
+        let d = run_loop(&mut out, vec![], state(1), &mut recompute).unwrap();
+        assert_eq!(d, Decision::Cancel);
     }
 
-    // ---- render ----
-
-    fn buffer_text(t: &Terminal<TestBackend>) -> String {
-        t.backend().buffer().content().iter().map(|c| c.symbol()).collect()
-    }
+    // ---- render (asserts on the styled string) ----
 
     #[test]
     fn render_shows_package_host_and_keys() {
-        let mut t = term();
-        t.draw(|f| render(&state(2), f)).unwrap();
-        let text = buffer_text(&t);
-        assert!(text.contains("ripgrep"), "package shown: {text}");
-        assert!(text.contains("h0"), "host shown: {text}");
-        assert!(text.contains("apply"), "key hint shown: {text}");
+        let s = render(&state(2));
+        assert!(s.contains("ripgrep"), "package shown");
+        assert!(s.contains("h0"), "host shown");
+        assert!(s.contains("apply"), "key hint shown");
     }
 
     #[test]
     fn render_shows_unresolved_error() {
         let mut s = state(1);
         s.resolves = Resolve::No;
-        let mut t = term();
-        t.draw(|f| render(&s, f)).unwrap();
-        let text = buffer_text(&t);
-        assert!(text.contains("no such package") || text.contains("unresolved"), "error shown: {text}");
+        let out = render(&s);
+        assert!(out.contains("no such package"), "error shown");
     }
 }
+
