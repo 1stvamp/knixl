@@ -15,6 +15,18 @@ pub fn dim() -> Style {
     Style::new().foreground(color("8"))
 }
 
+pub fn amber() -> Style {
+    Style::new().foreground(color("3"))
+}
+
+pub fn good() -> Style {
+    Style::new().foreground(color("2"))
+}
+
+pub fn bad() -> Style {
+    Style::new().foreground(color("1"))
+}
+
 /// The focused/selected element: accent background, dark foreground.
 pub fn selected() -> Style {
     Style::new().foreground(color("0")).background(color("6"))

@@ -1,10 +1,11 @@
 //! Home screen: a focus-navigable menu that routes to the other screens.
 
 use bubbletea_rs::event::KeyMsg;
+use bubbletea_rs::Msg;
 use crossterm::event::{KeyCode, KeyModifiers};
 use lipgloss::{join_vertical, rounded_border, Style, LEFT};
 
-use super::{theme, Nav};
+use super::{theme, Nav, Step};
 
 /// (label, screen key). The key routes in `App::apply`.
 const ITEMS: &[(&str, &str)] = &[
@@ -23,9 +24,11 @@ impl HomeModel {
         Self { sel: 0 }
     }
 
-    /// Pure reducer: fold a key into the selection and report navigation intent.
-    pub fn update(&mut self, key: &KeyMsg) -> Nav {
-        match key.key {
+    /// Reducer: fold a key into the selection and report navigation intent. Non-key messages
+    /// are ignored (Home has no async state).
+    pub fn update(&mut self, msg: Msg, _size: (u16, u16)) -> Step {
+        let Some(key) = msg.downcast_ref::<KeyMsg>() else { return Step::stay() };
+        let nav = match key.key {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.sel = self.sel.saturating_sub(1);
                 Nav::Stay
@@ -41,7 +44,8 @@ impl HomeModel {
             KeyCode::Esc | KeyCode::Char('q') => Nav::Quit,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Nav::Quit,
             _ => Nav::Stay,
-        }
+        };
+        Step::nav(nav)
     }
 
     pub fn view(&self, _size: (u16, u16)) -> String {

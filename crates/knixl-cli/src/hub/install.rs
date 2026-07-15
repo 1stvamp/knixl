@@ -1,0 +1,593 @@
+//! Install screen: pick a host, edit the package name, toggle `--strict`, watch the nix
+//! verify run (async, with a spinner), scroll the generated `.nix`, and Apply or Cancel.
+//!
+//! The reducer is split so the decision logic (focus movement, host switch, apply gating,
+//! verify-result handling) is pure and unit-tested, while the parts that spawn async `Cmd`s
+//! (the nix verify, the spinner tick) read the injected `config()` and stay as thin glue.
+
+use std::time::Duration;
+
+use bubbletea_rs::event::{KeyMsg, WindowSizeMsg};
+use bubbletea_rs::{command, Cmd, Model as BubbleTeaModel, Msg};
+use bubbletea_widgets::{textinput, viewport};
+use crossterm::event::{KeyCode, KeyModifiers};
+use lipgloss::{join_vertical, rounded_border, Style, LEFT};
+
+use knixl_pipeline::install::HostInfo;
+
+use super::{config, theme, Entry, Nav, Step, Verified};
+
+/// Does `pkgs.<pkg>` resolve. Host-independent, recomputed when the package changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolve {
+    Yes,
+    No,
+    Skipped,
+}
+
+/// Does the drafted host file parse under nix. Re-run per host and per package edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Parse {
+    Running,
+    Ok,
+    Failed(String),
+    Skipped,
+}
+
+/// The async verify result, delivered back to `update` as a message.
+struct VerifyDone {
+    seq: u64,
+    verified: Verified,
+}
+
+/// Advances the spinner while a verify is in flight.
+struct SpinnerTick;
+
+const SPINNER: [&str; 10] =
+    ["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Focus {
+    Host,
+    Package,
+    Strict,
+    Preview,
+    Apply,
+    Cancel,
+}
+
+const FOCUS_ORDER: [Focus; 6] =
+    [Focus::Host, Focus::Package, Focus::Strict, Focus::Preview, Focus::Apply, Focus::Cancel];
+
+pub struct InstallModel {
+    pkg: textinput::Model,
+    hosts: Vec<HostInfo>,
+    host_sel: usize,
+    strict: bool,
+    focus: Focus,
+    resolves: Resolve,
+    parses: Parse,
+    preview: viewport::Model,
+    preview_text: String,
+    verifying: bool,
+    seq: u64,
+    spin: usize,
+    dims: (usize, usize),
+}
+
+/// Viewport dimensions for a given terminal size: a padded inner box, clamped.
+fn view_dims(size: (u16, u16)) -> (usize, usize) {
+    let w = (size.0 as usize).saturating_sub(6).clamp(20, 80);
+    let h = (size.1 as usize).saturating_sub(12).clamp(3, 20);
+    (w, h)
+}
+
+/// Below this the layout can't fit; `view` shows a resize hint instead.
+fn too_small(size: (u16, u16)) -> bool {
+    size.0 < 30 || size.1 < 12
+}
+
+impl InstallModel {
+    /// Build the screen for the current entry, focus the package field, and kick the first
+    /// verify. Reads `config()` (hosts, entry, verify), so it runs under the program only.
+    pub fn enter(size: (u16, u16)) -> (Self, Option<Cmd>) {
+        let cfg = config();
+        let (host_sel, pkg_value, strict) = match &cfg.entry {
+            Entry::Install { pkg, strict, host } => {
+                let idx = host
+                    .as_ref()
+                    .and_then(|n| cfg.hosts.iter().position(|h| &h.name == n))
+                    .unwrap_or(0);
+                (idx, pkg.clone(), *strict)
+            }
+            Entry::Hub => (0, String::new(), false),
+        };
+
+        let mut pkg = textinput::new();
+        pkg.set_placeholder("package name");
+        pkg.set_value(&pkg_value);
+        // focus() returns a cursor-blink command we don't drive; drop it explicitly.
+        std::mem::drop(pkg.focus());
+
+        let (w, h) = view_dims(size);
+        let mut model = InstallModel {
+            pkg,
+            hosts: cfg.hosts.clone(),
+            host_sel,
+            strict,
+            focus: Focus::Package,
+            resolves: Resolve::Skipped,
+            parses: Parse::Skipped,
+            preview: viewport::new(w, h),
+            preview_text: String::new(),
+            verifying: false,
+            seq: 0,
+            spin: 0,
+            dims: (w, h),
+        };
+        let cmd = model.begin_verify();
+        (model, cmd)
+    }
+
+    // ---- pure decision logic (unit-tested) ----
+
+    /// Apply is allowed only when no verify is in flight, the package resolves (or the check
+    /// was skipped without `--strict`), and the parse did not fail (nor was skipped under
+    /// `--strict`).
+    fn apply_allowed(&self) -> bool {
+        if self.hosts.is_empty() || self.verifying {
+            return false;
+        }
+        let resolve_ok = match self.resolves {
+            Resolve::Yes => true,
+            Resolve::Skipped => !self.strict,
+            Resolve::No => false,
+        };
+        let parse_ok = match &self.parses {
+            Parse::Ok => true,
+            Parse::Skipped => !self.strict,
+            Parse::Running => false,
+            Parse::Failed(_) => false,
+        };
+        resolve_ok && parse_ok
+    }
+
+    fn focus_index(&self) -> usize {
+        FOCUS_ORDER.iter().position(|f| *f == self.focus).unwrap_or(0)
+    }
+
+    fn focus_next(&mut self) {
+        let i = (self.focus_index() + 1) % FOCUS_ORDER.len();
+        self.focus = FOCUS_ORDER[i];
+    }
+
+    fn focus_prev(&mut self) {
+        let i = (self.focus_index() + FOCUS_ORDER.len() - 1) % FOCUS_ORDER.len();
+        self.focus = FOCUS_ORDER[i];
+    }
+
+    /// Move the host selection; reports whether it actually changed (so the caller re-verifies).
+    fn set_host(&mut self, idx: usize) -> bool {
+        if idx < self.hosts.len() && idx != self.host_sel {
+            self.host_sel = idx;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn toggle_strict(&mut self) {
+        self.strict = !self.strict;
+    }
+
+    /// Fold an async verify result into the state, ignoring stale results from a superseded
+    /// verify (host switched or package edited again before this one returned).
+    fn on_verify_done(&mut self, seq: u64, verified: Verified) {
+        if seq != self.seq {
+            return;
+        }
+        self.verifying = false;
+        self.resolves = verified.resolves;
+        self.parses = verified.parses;
+        self.set_preview(verified.preview);
+    }
+
+    fn set_preview(&mut self, text: String) {
+        self.preview.set_content(&text);
+        self.preview_text = text;
+    }
+
+    /// Mark a new verify as started and return its sequence token.
+    fn mark_verifying(&mut self) -> u64 {
+        self.seq += 1;
+        self.verifying = true;
+        self.parses = Parse::Running;
+        self.spin = 0;
+        self.seq
+    }
+
+    fn resize(&mut self, size: (u16, u16)) {
+        let dims = view_dims(size);
+        if dims != self.dims {
+            self.dims = dims;
+            self.preview = viewport::new(dims.0, dims.1);
+            self.preview.set_content(&self.preview_text);
+        }
+    }
+
+    // ---- async glue (reads config(); not unit-tested) ----
+
+    /// Start a verify for the current host/package: bump the token, show the spinner, and
+    /// batch the nix check with a spinner tick. No hosts means nothing to preview.
+    fn begin_verify(&mut self) -> Option<Cmd> {
+        if self.hosts.is_empty() {
+            self.verifying = false;
+            return None;
+        }
+        let seq = self.mark_verifying();
+        let pkg = self.pkg.value();
+        let host = self.hosts[self.host_sel].clone();
+        Some(command::batch(vec![verify_cmd(seq, pkg, host), spin_cmd()]))
+    }
+
+    pub fn update(&mut self, msg: Msg, size: (u16, u16)) -> Step {
+        if msg.downcast_ref::<WindowSizeMsg>().is_some() {
+            self.resize(size);
+            return Step::stay();
+        }
+        if let Some(done) = msg.downcast_ref::<VerifyDone>() {
+            self.on_verify_done(done.seq, done.verified.clone());
+            return Step::stay();
+        }
+        if msg.downcast_ref::<SpinnerTick>().is_some() {
+            self.spin = (self.spin + 1) % SPINNER.len();
+            return Step { nav: Nav::Stay, cmd: self.verifying.then(spin_cmd) };
+        }
+        let Some((code, mods)) = key_of(&msg) else { return Step::stay() };
+
+        // Ctrl-C and Esc always back out, regardless of focus (so they still work while the
+        // package field has focus and would otherwise swallow the key).
+        if matches!(code, KeyCode::Char('c')) && mods.contains(KeyModifiers::CONTROL) {
+            return Step::nav(Nav::Back);
+        }
+        if code == KeyCode::Esc {
+            return Step::nav(Nav::Back);
+        }
+        if code == KeyCode::Tab {
+            self.focus_next();
+            return Step::stay();
+        }
+        if code == KeyCode::BackTab {
+            self.focus_prev();
+            return Step::stay();
+        }
+
+        match self.focus {
+            Focus::Host => match code {
+                KeyCode::Left => {
+                    if self.host_sel > 0 && self.set_host(self.host_sel - 1) {
+                        Step { nav: Nav::Stay, cmd: self.begin_verify() }
+                    } else {
+                        Step::stay()
+                    }
+                }
+                KeyCode::Right => {
+                    if self.set_host(self.host_sel + 1) {
+                        Step { nav: Nav::Stay, cmd: self.begin_verify() }
+                    } else {
+                        Step::stay()
+                    }
+                }
+                _ => Step::stay(),
+            },
+            Focus::Package => match code {
+                // Enter commits the edited package name and re-verifies.
+                KeyCode::Enter => Step { nav: Nav::Stay, cmd: self.begin_verify() },
+                _ => {
+                    let cmd = self.pkg.update(msg);
+                    Step { nav: Nav::Stay, cmd }
+                }
+            },
+            Focus::Strict => match code {
+                KeyCode::Char(' ') | KeyCode::Enter => {
+                    self.toggle_strict();
+                    Step::stay()
+                }
+                _ => Step::stay(),
+            },
+            Focus::Preview => {
+                let cmd = self.preview.update(msg);
+                Step { nav: Nav::Stay, cmd }
+            }
+            Focus::Apply => match code {
+                KeyCode::Enter if self.apply_allowed() => Step::nav(Nav::Apply {
+                    host: self.hosts[self.host_sel].clone(),
+                    pkg: self.pkg.value(),
+                    strict: self.strict,
+                }),
+                _ => Step::stay(),
+            },
+            Focus::Cancel => match code {
+                KeyCode::Enter => Step::nav(Nav::Back),
+                _ => Step::stay(),
+            },
+        }
+    }
+
+    pub fn view(&self, size: (u16, u16)) -> String {
+        if too_small(size) {
+            return theme::dim().render("terminal too small \u{2013} resize to install");
+        }
+        if self.hosts.is_empty() {
+            return format!(
+                "{}\n{}",
+                theme::accent().render(" install "),
+                theme::dim().render("no hosts found under hosts/"),
+            );
+        }
+
+        let host = &self.hosts[self.host_sel];
+        let host_line = format!(
+            "{}{}{}{}{}",
+            marker(self.focus == Focus::Host),
+            theme::dim().render("host   "),
+            theme::amber().render("\u{2039} "),
+            Style::new().bold(true).render(&host.name),
+            theme::amber().render(" \u{203a}   \u{2190}/\u{2192}"),
+        );
+        let pkg_line = format!(
+            "{}{}{}",
+            marker(self.focus == Focus::Package),
+            theme::dim().render("pkg    "),
+            self.pkg.view(),
+        );
+        let strict_line = format!(
+            "{}{}{} strict",
+            marker(self.focus == Focus::Strict),
+            theme::dim().render("check  "),
+            if self.strict { theme::accent().render("[x]") } else { theme::dim().render("[ ]") },
+        );
+
+        let verify_line =
+            format!("{}{}{}", marker(false), theme::dim().render("verify "), self.verify_status());
+
+        let preview_box = Style::new()
+            .border(rounded_border())
+            .border_foreground(theme::color(if self.focus == Focus::Preview { "6" } else { "8" }))
+            .render(&self.preview.view());
+        let preview_hdr = format!(
+            "{}{}",
+            marker(self.focus == Focus::Preview),
+            theme::dim().render(&format!("{}.nix", host.name)),
+        );
+
+        let apply = self.button("apply", self.focus == Focus::Apply, self.apply_allowed());
+        let cancel = self.button("cancel", self.focus == Focus::Cancel, true);
+        let buttons = format!("{apply}  {cancel}");
+
+        let hint = theme::dim().render(
+            "tab move \u{00b7} enter act \u{00b7} \u{2190}/\u{2192} host \u{00b7} space strict \u{00b7} esc back",
+        );
+
+        let lines = [
+            theme::accent().render(" install "),
+            host_line,
+            pkg_line,
+            strict_line,
+            verify_line,
+            preview_hdr,
+            preview_box,
+            buttons,
+            hint,
+        ];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        join_vertical(LEFT, &refs)
+    }
+
+    fn verify_status(&self) -> String {
+        let (r_txt, r) = match self.resolves {
+            Resolve::Yes => ("\u{2713} resolves", theme::good()),
+            Resolve::No => ("\u{2717} no such package", theme::bad()),
+            Resolve::Skipped => ("\u{00b7} resolve skipped", theme::amber()),
+        };
+        if self.verifying {
+            return format!("{} verifying", theme::amber().render(SPINNER[self.spin]));
+        }
+        let (p_txt, p) = match &self.parses {
+            Parse::Ok => ("\u{2713} parses", theme::good()),
+            Parse::Running => ("\u{2026} verifying", theme::amber()),
+            Parse::Failed(_) => ("\u{2717} parse failed", theme::bad()),
+            Parse::Skipped => ("\u{00b7} parse skipped", theme::amber()),
+        };
+        format!("{}  {}", r.render(r_txt), p.render(p_txt))
+    }
+
+    fn button(&self, label: &str, focused: bool, enabled: bool) -> String {
+        let text = format!(" {label} ");
+        if focused {
+            theme::selected().render(&text)
+        } else if enabled {
+            theme::accent().render(&text)
+        } else {
+            theme::dim().render(&text)
+        }
+    }
+}
+
+fn marker(focused: bool) -> String {
+    if focused {
+        theme::accent().render("\u{25b8} ")
+    } else {
+        "  ".to_string()
+    }
+}
+
+/// Extract the key code and modifiers if the message is a key press. `KeyCode`/`KeyModifiers`
+/// are `Copy`, so we read them out and leave `msg` owned for forwarding to a widget.
+fn key_of(msg: &Msg) -> Option<(KeyCode, KeyModifiers)> {
+    msg.downcast_ref::<KeyMsg>().map(|k| (k.key, k.modifiers))
+}
+
+/// The nix verify, off the event-loop thread so the spinner keeps ticking. Resolves to a
+/// `VerifyDone` carrying the token so a stale result (superseded verify) is discarded.
+fn verify_cmd(seq: u64, pkg: String, host: HostInfo) -> Cmd {
+    let verify = config().verify.clone();
+    Box::pin(async move {
+        match tokio::task::spawn_blocking(move || verify(&pkg, &host)).await {
+            Ok(verified) => Some(Box::new(VerifyDone { seq, verified }) as Msg),
+            Err(_) => None,
+        }
+    })
+}
+
+fn spin_cmd() -> Cmd {
+    command::tick(Duration::from_millis(120), |_| Box::new(SpinnerTick) as Msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn host(name: &str) -> HostInfo {
+        HostInfo { name: name.into(), default: false, path: PathBuf::from(format!("hosts/{name}.kdl")) }
+    }
+
+    /// A model built without the program's `config()` global, for testing the pure logic.
+    fn model(hosts: usize) -> InstallModel {
+        let mut pkg = textinput::new();
+        pkg.set_value("ripgrep");
+        InstallModel {
+            pkg,
+            hosts: (0..hosts).map(|i| host(&format!("h{i}"))).collect(),
+            host_sel: 0,
+            strict: false,
+            focus: Focus::Package,
+            resolves: Resolve::Yes,
+            parses: Parse::Ok,
+            preview: viewport::new(40, 5),
+            preview_text: String::new(),
+            verifying: false,
+            seq: 0,
+            spin: 0,
+            dims: (40, 5),
+        }
+    }
+
+    fn verified(resolves: Resolve, parses: Parse) -> Verified {
+        Verified { preview: "environment.systemPackages = [ pkgs.ripgrep ];".into(), resolves, parses }
+    }
+
+    #[test]
+    fn focus_cycles_forward_and_back_wrapping() {
+        let mut m = model(2);
+        m.focus = Focus::Host;
+        m.focus_next();
+        assert_eq!(m.focus, Focus::Package);
+        m.focus_prev();
+        assert_eq!(m.focus, Focus::Host);
+        m.focus_prev();
+        assert_eq!(m.focus, Focus::Cancel, "wraps to the last control");
+    }
+
+    #[test]
+    fn set_host_moves_and_clamps() {
+        let mut m = model(3);
+        assert!(m.set_host(2));
+        assert_eq!(m.host_sel, 2);
+        assert!(!m.set_host(2), "no change when already selected");
+        assert!(!m.set_host(9), "out of range is refused");
+        assert_eq!(m.host_sel, 2);
+    }
+
+    #[test]
+    fn toggle_strict_flips() {
+        let mut m = model(1);
+        assert!(!m.strict);
+        m.toggle_strict();
+        assert!(m.strict);
+    }
+
+    #[test]
+    fn apply_blocked_while_verifying_and_without_hosts() {
+        let mut m = model(1);
+        assert!(m.apply_allowed());
+        m.verifying = true;
+        assert!(!m.apply_allowed(), "in-flight verify blocks apply");
+        let mut none = model(0);
+        assert!(!none.apply_allowed(), "no hosts blocks apply");
+        none.verifying = false;
+    }
+
+    #[test]
+    fn apply_gating_matches_resolve_and_parse_under_strict() {
+        let mut m = model(1);
+        m.resolves = Resolve::No;
+        assert!(!m.apply_allowed(), "unresolved never applies");
+
+        m.resolves = Resolve::Skipped;
+        m.parses = Parse::Skipped;
+        m.strict = false;
+        assert!(m.apply_allowed(), "skips are fine without --strict");
+        m.strict = true;
+        assert!(!m.apply_allowed(), "--strict rejects skipped checks");
+
+        m.strict = false;
+        m.parses = Parse::Failed("boom".into());
+        assert!(!m.apply_allowed(), "a parse failure never applies");
+    }
+
+    #[test]
+    fn verify_done_updates_status_and_preview() {
+        let mut m = model(1);
+        let seq = m.mark_verifying();
+        assert!(m.verifying);
+        m.on_verify_done(seq, verified(Resolve::No, Parse::Failed("nope".into())));
+        assert!(!m.verifying);
+        assert_eq!(m.resolves, Resolve::No);
+        assert_eq!(m.parses, Parse::Failed("nope".into()));
+        assert!(m.preview_text.contains("systemPackages"));
+    }
+
+    #[test]
+    fn stale_verify_result_is_ignored() {
+        let mut m = model(1);
+        let first = m.mark_verifying();
+        let _second = m.mark_verifying(); // supersedes the first
+        m.on_verify_done(first, verified(Resolve::No, Parse::Ok));
+        assert!(m.verifying, "the superseded result must not clear the in-flight state");
+        assert_eq!(m.resolves, Resolve::Yes, "stale resolve discarded");
+    }
+
+    #[test]
+    fn resize_rebuilds_the_viewport_and_keeps_content() {
+        let mut m = model(1);
+        m.set_preview("a\nb\nc".into());
+        m.resize((120, 40));
+        assert_eq!(m.dims, view_dims((120, 40)));
+        assert!(m.preview.view().contains('a'), "content survives a resize");
+    }
+
+    #[test]
+    fn view_shows_controls_at_a_normal_size() {
+        let m = model(2);
+        let v = m.view((80, 24));
+        assert!(v.contains("install"), "title");
+        assert!(v.contains("ripgrep"), "package field");
+        assert!(v.contains("h0"), "host");
+        assert!(v.contains("apply"), "apply button");
+        assert!(v.contains("cancel"), "cancel button");
+    }
+
+    #[test]
+    fn view_shows_a_resize_hint_when_tiny() {
+        let m = model(1);
+        assert!(m.view((10, 5)).contains("resize"));
+    }
+
+    #[test]
+    fn view_reports_no_hosts() {
+        let m = model(0);
+        assert!(m.view((80, 24)).contains("no hosts"));
+    }
+}
