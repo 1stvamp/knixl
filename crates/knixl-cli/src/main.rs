@@ -2,7 +2,7 @@
 //! thing that inspects the world. Exit codes are stable so CI can branch on them.
 //! SPEC-GRADE SKETCH: Ctx::load and the write/report helpers are not written.
 
-mod hub;
+mod tui;
 
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -160,13 +160,13 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool) ->
 
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     if interactive && !yes {
-        let entry = hub::Entry::Install {
+        let entry = tui::Entry::Install {
             pkg: pkg.to_string(),
             strict,
             host: Some(initial.name.clone()),
         };
         return match open_tui(entry) {
-            Ok(hub::Outcome::Install { host, pkg, strict }) => commit_install(&host, &pkg, strict),
+            Ok(tui::Outcome::Install { host, pkg, strict }) => commit_install(&host, &pkg, strict),
             Ok(_) => { println!("cancelled"); Code::Clean }
             Err(e) => { eprintln!("knixl: tui: {e}"); Code::Internal }
         };
@@ -175,18 +175,18 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool) ->
     // Non-interactive / --yes: the plain path. Hard-check the package, then confirm unless
     // --yes.
     match resolve_package(ctx, pkg) {
-        hub::Resolve::No => {
+        tui::Resolve::No => {
             eprintln!("knixl: no nixpkgs package named `{pkg}`");
             return Code::Validation;
         }
-        hub::Resolve::Skipped if strict => {
+        tui::Resolve::Skipped if strict => {
             eprintln!("knixl: --strict: nix unavailable, cannot verify `{pkg}`");
             return Code::Validation;
         }
-        hub::Resolve::Skipped => {
+        tui::Resolve::Skipped => {
             eprintln!("warning: nix unavailable, skipping package check for `{pkg}`");
         }
-        hub::Resolve::Yes => {}
+        tui::Resolve::Yes => {}
     }
     if !yes && !confirm(&format!("install {pkg} on {}?", initial.name)) {
         println!("cancelled");
@@ -248,18 +248,18 @@ fn commit_install(chosen: &knixl_pipeline::install::HostInfo, pkg: &str, strict:
 
 /// Open the TUI for the given entry: discover the project, list hosts, and inject a verify
 /// function that (off the event-loop thread) drafts the host and checks it under nix.
-fn open_tui(entry: hub::Entry) -> Result<hub::Outcome, String> {
+fn open_tui(entry: tui::Entry) -> Result<tui::Outcome, String> {
     use knixl_pipeline::install::list_hosts;
     let root = discover_root();
     let hosts = list_hosts(&root).map_err(|e| e.to_string())?;
     let modules = browse_modules(&root);
-    hub::run(entry, root.clone(), hosts, make_verify(root), modules)
+    tui::run(entry, root.clone(), hosts, make_verify(root), modules)
 }
 
 /// Enumerate registered modules for the Browse screen: node name, kind tag, rendered schema
 /// doc, and a host-insertion skeleton. Built here (not in the TUI) since the registry is not
 /// `Send`. An unreadable project yields an empty list rather than failing the whole TUI.
-fn browse_modules(root: &std::path::Path) -> Vec<hub::BrowseModule> {
+fn browse_modules(root: &std::path::Path) -> Vec<tui::BrowseModule> {
     use knixl_modules::ModuleKind;
     let Ok(registry) = knixl_pipeline::gather::registry(root) else {
         return Vec::new();
@@ -268,7 +268,7 @@ fn browse_modules(root: &std::path::Path) -> Vec<hub::BrowseModule> {
         .entries()
         .map(|(node, m)| {
             let schema = m.schema();
-            hub::BrowseModule {
+            tui::BrowseModule {
                 node: node.to_string(),
                 kind: match m.kind() {
                     ModuleKind::Builtin => "built-in".to_string(),
@@ -318,7 +318,7 @@ fn skeleton_for(node: &str, schema: &knixl_modules::NodeSchema) -> String {
 /// project root) and rebuilds the registry per call, so it stays `Send + Sync` for the async
 /// off-thread verify. Recomputes both `pkgs.<pkg>` existence and whether the drafted host
 /// parses.
-fn make_verify(root: std::path::PathBuf) -> hub::VerifyFn {
+fn make_verify(root: std::path::PathBuf) -> tui::VerifyFn {
     Arc::new(move |pkg: &str, host: &knixl_pipeline::install::HostInfo| {
         let formatter = default_formatter();
         let tool: semver::Version =
@@ -328,12 +328,12 @@ fn make_verify(root: std::path::PathBuf) -> hub::VerifyFn {
                 let (preview, parses) =
                     preview_host(&project.registry, &formatter, &tool, host, pkg);
                 let resolves = resolve_package_rev(&project.lock.oracle.nixpkgs_rev, pkg);
-                hub::Verified { preview, resolves, parses }
+                tui::Verified { preview, resolves, parses }
             }
-            Err(e) => hub::Verified {
+            Err(e) => tui::Verified {
                 preview: format!("(preview unavailable: {e})"),
-                resolves: hub::Resolve::Skipped,
-                parses: hub::Parse::Skipped,
+                resolves: tui::Resolve::Skipped,
+                parses: tui::Parse::Skipped,
             },
         }
     })
@@ -346,7 +346,7 @@ fn preview_host(
     tool: &semver::Version,
     host: &knixl_pipeline::install::HostInfo,
     pkg: &str,
-) -> (String, hub::Parse) {
+) -> (String, tui::Parse) {
     use knixl_pipeline::{generate, install::add_package, HostSource};
     let src = std::fs::read_to_string(&host.path).unwrap_or_default();
     let drafted = match add_package(&src, pkg) {
@@ -391,36 +391,36 @@ fn systempackages_snippet(nix: &str) -> String {
 }
 
 /// Parse a generated file's text with nix, mapping to the TUI's `Parse` status.
-fn parse_text(nix: &str) -> hub::Parse {
+fn parse_text(nix: &str) -> tui::Parse {
     use knixl_nix::nixeval::{NixError, NixEval};
     let tmp = std::env::temp_dir().join(format!("knixl-tui-parse-{}.nix", std::process::id()));
     if std::fs::write(&tmp, nix).is_err() {
-        return hub::Parse::Skipped;
+        return tui::Parse::Skipped;
     }
     let verdict = NixEval::resolve().parses(&tmp);
     let _ = std::fs::remove_file(&tmp);
     match verdict {
-        Ok(()) => hub::Parse::Ok,
-        Err(NixError::Unavailable(_)) => hub::Parse::Skipped,
-        Err(NixError::Failed(m)) => hub::Parse::Failed(m),
+        Ok(()) => tui::Parse::Ok,
+        Err(NixError::Unavailable(_)) => tui::Parse::Skipped,
+        Err(NixError::Failed(m)) => tui::Parse::Failed(m),
     }
 }
 
 /// `pkgs.<pkg>` existence against the lock's pinned rev (ambient fallback), as a `Resolve`.
-fn resolve_package(ctx: &Ctx, pkg: &str) -> hub::Resolve {
+fn resolve_package(ctx: &Ctx, pkg: &str) -> tui::Resolve {
     resolve_package_rev(&ctx.lock.oracle.nixpkgs_rev, pkg)
 }
 
 /// As `resolve_package`, but taking the pinned rev directly (for the TUI verify closure,
 /// which rebuilds its own project state).
-fn resolve_package_rev(rev: &str, pkg: &str) -> hub::Resolve {
+fn resolve_package_rev(rev: &str, pkg: &str) -> tui::Resolve {
     use knixl_nix::nixeval::{NixError, NixEval, Nixpkgs};
     let src = if rev.is_empty() { Nixpkgs::Ambient } else { Nixpkgs::PinnedRev(rev.to_string()) };
     match NixEval::resolve().package_exists(&src, pkg) {
-        Ok(true) => hub::Resolve::Yes,
-        Ok(false) => hub::Resolve::No,
-        Err(NixError::Unavailable(_)) => hub::Resolve::Skipped,
-        Err(NixError::Failed(_)) => hub::Resolve::No,
+        Ok(true) => tui::Resolve::Yes,
+        Ok(false) => tui::Resolve::No,
+        Err(NixError::Unavailable(_)) => tui::Resolve::Skipped,
+        Err(NixError::Failed(_)) => tui::Resolve::No,
     }
 }
 
@@ -472,7 +472,7 @@ fn dispatch() -> Code {
             eprintln!("knixl: tui needs an interactive terminal");
             return Code::Usage;
         }
-        return match open_tui(hub::Entry::Hub) {
+        return match open_tui(tui::Entry::Hub) {
             Ok(outcome) => finish_tui_outcome(outcome),
             Err(e) => { eprintln!("knixl: {e}"); Code::Internal }
         };
@@ -482,12 +482,12 @@ fn dispatch() -> Code {
 
 /// Act on what the hub session decided: an Install outcome commits the package; a plain quit
 /// or cancel does nothing.
-fn finish_tui_outcome(outcome: hub::Outcome) -> Code {
+fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
     match outcome {
-        hub::Outcome::Install { host, pkg, strict } => commit_install(&host, &pkg, strict),
-        hub::Outcome::Insert { host, node, skeleton } => commit_insert(&host, &node, &skeleton),
-        hub::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),
-        hub::Outcome::Cancelled | hub::Outcome::Quit => Code::Clean,
+        tui::Outcome::Install { host, pkg, strict } => commit_install(&host, &pkg, strict),
+        tui::Outcome::Insert { host, node, skeleton } => commit_insert(&host, &node, &skeleton),
+        tui::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),
+        tui::Outcome::Cancelled | tui::Outcome::Quit => Code::Clean,
     }
 }
 
