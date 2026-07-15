@@ -321,10 +321,37 @@ fn discover_root() -> std::path::PathBuf {
     }
 }
 
-/// The pinned formatter. `KNIXL_FORMATTER` overrides the binary (e.g. `cat` in tests).
+/// The pinned formatter. `KNIXL_FORMATTER` overrides the binary (e.g. `cat` in tests);
+/// otherwise the binary is autodetected among the known names for the RFC-style nixfmt.
+/// The recorded formatter *name* stays `nixfmt-rfc-style` regardless of the binary file
+/// name, so the lock is stable across machines.
 fn default_formatter() -> knixl_nix::Formatter {
-    let bin = std::env::var("KNIXL_FORMATTER").unwrap_or_else(|_| "nixfmt-rfc-style".into());
+    let bin = choose_formatter_bin(std::env::var("KNIXL_FORMATTER").ok(), formatter_runs);
     knixl_nix::Formatter::detect("nixfmt-rfc-style", bin.into(), "0.6.0")
+}
+
+/// Pick the formatter binary. `KNIXL_FORMATTER` wins; otherwise the first candidate that
+/// runs (the packaged binary is `nixfmt`, but some setups expose `nixfmt-rfc-style`); if
+/// none run, `nixfmt` so the not-found error names the usual binary.
+fn choose_formatter_bin(env_override: Option<String>, runs: impl Fn(&str) -> bool) -> String {
+    if let Some(bin) = env_override {
+        return bin;
+    }
+    for cand in ["nixfmt", "nixfmt-rfc-style"] {
+        if runs(cand) {
+            return cand.to_string();
+        }
+    }
+    "nixfmt".to_string()
+}
+
+/// Whether `bin --version` runs successfully (used to probe candidate formatter names).
+fn formatter_runs(bin: &str) -> bool {
+    std::process::Command::new(bin)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn state_label(state: &FileState) -> &'static str {
@@ -439,5 +466,31 @@ fn write_lock(ctx: &Ctx, lock: &knixl_lock::Lock) {
     let target = ctx.root.join("knixl.lock.kdl");
     if let Err(e) = std::fs::write(&target, lock.render()) {
         eprintln!("knixl: {}: {e}", target.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::choose_formatter_bin;
+
+    #[test]
+    fn env_override_wins() {
+        assert_eq!(choose_formatter_bin(Some("cat".into()), |_| true), "cat");
+    }
+
+    #[test]
+    fn prefers_nixfmt_when_present() {
+        assert_eq!(choose_formatter_bin(None, |_| true), "nixfmt");
+    }
+
+    #[test]
+    fn falls_back_to_alternative_name() {
+        // nixfmt not found, but the nixfmt-rfc-style binary is.
+        assert_eq!(choose_formatter_bin(None, |b| b == "nixfmt-rfc-style"), "nixfmt-rfc-style");
+    }
+
+    #[test]
+    fn defaults_to_nixfmt_when_none_run() {
+        assert_eq!(choose_formatter_bin(None, |_| false), "nixfmt");
     }
 }
