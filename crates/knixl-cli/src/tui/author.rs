@@ -232,7 +232,7 @@ impl AuthorModel {
             "{}{}{} required",
             marker(self.focus == Focus::Required),
             theme::dim().render("req     "),
-            if self.required { theme::accent().render("[x]") } else { theme::dim().render("[ ]") },
+            theme::toggle(self.required),
         ));
 
         let create = self.button("create", self.focus == Focus::Create, self.can_create());
@@ -241,13 +241,13 @@ impl AuthorModel {
         let body = join_vertical(LEFT, &lines.iter().map(String::as_str).collect::<Vec<_>>());
         let panel = Style::new()
             .border(rounded_border())
-            .border_foreground(theme::color("6"))
+            .border_foreground(theme::border(false))
             .padding_2(0, 1)
             .render(&body);
 
         format!(
             "{}\n{}\n{}  {}\n{}",
-            theme::accent().render(" new module "),
+            theme::chip(" new module "),
             panel,
             create,
             cancel,

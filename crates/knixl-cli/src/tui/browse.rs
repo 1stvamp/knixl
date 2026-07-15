@@ -161,7 +161,7 @@ impl BrowseModel {
         if self.modules.is_empty() {
             return format!(
                 "{}\n{}",
-                theme::accent().render(" browse "),
+                theme::chip(" browse "),
                 theme::dim().render("no modules registered"),
             );
         }
@@ -180,20 +180,21 @@ impl BrowseModel {
             }
         }
         let list = join_vertical(LEFT, &items.iter().map(String::as_str).collect::<Vec<_>>());
+        // The module list is the focused pane (pink border); the doc pane is violet.
         let list_box = Style::new()
             .border(rounded_border())
-            .border_foreground(theme::color("6"))
+            .border_foreground(theme::border(true))
             .render(&list);
         let doc_box = Style::new()
             .border(rounded_border())
-            .border_foreground(theme::color("8"))
+            .border_foreground(theme::border(false))
             .render(&self.doc.view());
         let panes = join_horizontal(TOP, &[list_box.as_str(), "  ", doc_box.as_str()]);
 
         let hint = theme::dim().render(
             "\u{2191}/\u{2193} select \u{00b7} i insert into host \u{00b7} pgup/pgdn scroll \u{00b7} esc back",
         );
-        format!("{}\n{}\n{}", theme::accent().render(" browse "), panes, hint)
+        format!("{}\n{}\n{}", theme::chip(" browse "), panes, hint)
     }
 
     fn view_pick(&self) -> String {
@@ -209,11 +210,11 @@ impl BrowseModel {
         let list = join_vertical(LEFT, &rows.iter().map(String::as_str).collect::<Vec<_>>());
         let boxed = Style::new()
             .border(rounded_border())
-            .border_foreground(theme::color("6"))
+            .border_foreground(theme::border(true))
             .render(&list);
         format!(
             "{}\n{}\n{}",
-            theme::accent().render(&format!(" insert {node} into ")),
+            theme::chip(&format!(" insert {node} into ")),
             boxed,
             theme::dim().render("\u{2191}/\u{2193} pick \u{00b7} enter insert \u{00b7} esc cancel"),
         )

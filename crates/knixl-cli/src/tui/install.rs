@@ -323,7 +323,7 @@ impl InstallModel {
         if self.hosts.is_empty() {
             return format!(
                 "{}\n{}",
-                theme::accent().render(" install "),
+                theme::chip(" install "),
                 theme::dim().render("no hosts found under hosts/"),
             );
         }
@@ -347,7 +347,7 @@ impl InstallModel {
             "{}{}{} strict",
             marker(self.focus == Focus::Strict),
             theme::dim().render("check  "),
-            if self.strict { theme::accent().render("[x]") } else { theme::dim().render("[ ]") },
+            theme::toggle(self.strict),
         );
 
         let verify_line =
@@ -355,7 +355,7 @@ impl InstallModel {
 
         let preview_box = Style::new()
             .border(rounded_border())
-            .border_foreground(theme::color(if self.focus == Focus::Preview { "6" } else { "8" }))
+            .border_foreground(theme::border(self.focus == Focus::Preview))
             .render(&self.preview.view());
         let preview_hdr = format!(
             "{}{}",
@@ -372,7 +372,7 @@ impl InstallModel {
         );
 
         let lines = [
-            theme::accent().render(" install "),
+            theme::chip(" install "),
             host_line,
             pkg_line,
             strict_line,

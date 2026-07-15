@@ -48,7 +48,7 @@ impl HomeModel {
         Step::nav(nav)
     }
 
-    pub fn view(&self, _size: (u16, u16)) -> String {
+    pub fn view(&self, size: (u16, u16)) -> String {
         let mut lines = Vec::new();
         for (i, (label, _)) in ITEMS.iter().enumerate() {
             if i == self.sel {
@@ -61,11 +61,15 @@ impl HomeModel {
         let body = join_vertical(LEFT, &refs);
         let panel = Style::new()
             .border(rounded_border())
-            .border_foreground(theme::color("6"))
+            .border_foreground(theme::border(false))
             .padding_2(0, 1);
+        // The full gradient wordmark when there is room; the compact chip otherwise.
+        let header =
+            if size.0 >= 46 { theme::wordmark() } else { theme::chip(" knixl ") };
         format!(
-            "{}\n{}\n{}",
-            theme::accent().render(" knixl "),
+            "{}\n{}\n{}\n{}",
+            header,
+            theme::dim().render("opinionated nix, made legible"),
             panel.render(&body),
             theme::dim().render("\u{2191}/\u{2193} move  \u{00b7} enter select  \u{00b7} q quit"),
         )
