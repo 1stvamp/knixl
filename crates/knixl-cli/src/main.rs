@@ -486,8 +486,30 @@ fn finish_tui_outcome(outcome: hub::Outcome) -> Code {
     match outcome {
         hub::Outcome::Install { host, pkg, strict } => commit_install(&host, &pkg, strict),
         hub::Outcome::Insert { host, node, skeleton } => commit_insert(&host, &node, &skeleton),
+        hub::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),
         hub::Outcome::Cancelled | hub::Outcome::Quit => Code::Clean,
     }
+}
+
+/// Write a scaffolded module manifest to `modules/<name>/knixl-module.kdl`, refusing to
+/// overwrite an existing module.
+fn commit_scaffold(name: &str, manifest: &str) -> Code {
+    let dir = discover_root().join("modules").join(name);
+    let path = dir.join("knixl-module.kdl");
+    if path.exists() {
+        eprintln!("knixl: module `{name}` already exists at {}", path.display());
+        return Code::Validation;
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("knixl: {}: {e}", dir.display());
+        return Code::Internal;
+    }
+    if let Err(e) = std::fs::write(&path, manifest) {
+        eprintln!("knixl: {}: {e}", path.display());
+        return Code::Internal;
+    }
+    println!("created module `{name}`: edit {} then declare it on a host", path.display());
+    Code::Clean
 }
 
 /// Scaffold a module node into a host's KDL: splice the skeleton and write the file. Unlike

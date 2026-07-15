@@ -8,6 +8,7 @@
 //! and turns a `Step` into a command. The pure decision logic inside each screen is unit
 //! tested; only the runtime glue (spawning the program, real key reads, async `Cmd`s) is not.
 
+mod author;
 mod browse;
 mod home;
 mod install;
@@ -19,6 +20,7 @@ use std::sync::{Arc, OnceLock};
 use bubbletea_rs::event::{QuitMsg, WindowSizeMsg};
 use bubbletea_rs::{command, Cmd, Model, Msg, Program};
 
+use author::AuthorModel;
 use browse::BrowseModel;
 use home::HomeModel;
 use install::InstallModel;
@@ -70,6 +72,8 @@ pub enum Outcome {
     Install { host: HostInfo, pkg: String, strict: bool },
     /// Scaffold this module's node into this host's KDL.
     Insert { host: HostInfo, node: String, skeleton: String },
+    /// Write a new declarative module manifest (`modules/<name>/knixl-module.kdl`).
+    Scaffold { name: String, manifest: String },
 }
 
 /// Everything the screens read, injected before the program runs.
@@ -99,6 +103,8 @@ pub enum Nav {
     Apply { host: HostInfo, pkg: String, strict: bool },
     /// Scaffold a module node into a host and end the session.
     Insert { host: HostInfo, node: String, skeleton: String },
+    /// Write a new module manifest and end the session.
+    Scaffold { name: String, manifest: String },
 }
 
 /// A reducer's result: a navigation intent plus an optional command to run.
@@ -121,6 +127,7 @@ enum Screen {
     // Boxed: these own widget state and are large, so keep the enum small.
     Install(Box<InstallModel>),
     Browse(Box<BrowseModel>),
+    Author(Box<AuthorModel>),
 }
 
 pub struct App {
@@ -153,6 +160,7 @@ impl Model for App {
             Screen::Home(h) => h.update(msg, self.size),
             Screen::Install(i) => i.update(msg, self.size),
             Screen::Browse(b) => b.update(msg, self.size),
+            Screen::Author(a) => a.update(msg, self.size),
         };
         self.apply(step)
     }
@@ -162,6 +170,7 @@ impl Model for App {
             Screen::Home(h) => h.view(self.size),
             Screen::Install(i) => i.view(self.size),
             Screen::Browse(b) => b.view(self.size),
+            Screen::Author(a) => a.view(self.size),
         }
     }
 }
@@ -177,6 +186,10 @@ impl App {
             }
             Nav::Insert { host, node, skeleton } => {
                 self.outcome = Outcome::Insert { host, node, skeleton };
+                Some(command::quit())
+            }
+            Nav::Scaffold { name, manifest } => {
+                self.outcome = Outcome::Scaffold { name, manifest };
                 Some(command::quit())
             }
             Nav::Back => match config().entry {
@@ -199,7 +212,10 @@ impl App {
                 self.screen = Screen::Browse(Box::new(BrowseModel::enter(self.size)));
                 None
             }
-            // Author lands in a later checkpoint.
+            Nav::Goto("author") => {
+                self.screen = Screen::Author(Box::new(AuthorModel::enter(self.size)));
+                None
+            }
             Nav::Goto(_) => None,
         }
     }
