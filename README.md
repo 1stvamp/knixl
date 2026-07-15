@@ -38,7 +38,7 @@ knixl expands it into a full, idiomatic NixOS module (nginx enabled, TLS and pro
 
 ## Status
 
-Design-complete, not yet implemented. See HANDOFF.md for exactly what exists and what is still a sketch, and NEXT-STEPS.md for the ordered backlog. The Rust under `crates/` is specification-grade: it will not compile as-is (elided bodies, cross-crate wiring pending). Making it compile is task one.
+v1 is built: `check`, `plan`, `generate`, `upgrade`, `doc`, and `install` work, both example hosts reproduce byte-for-byte through the pinned nixfmt, and the oracle validates emitted paths against the NixOS option set. The backlog and in-flight work live in GitHub issues; design specs are under `docs/superpowers/specs/`.
 
 ## Prior art
 

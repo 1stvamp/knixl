@@ -4,7 +4,7 @@ Project instructions for knixl. This sits under the global `~/.claude/CLAUDE.md`
 
 ## What knixl is
 
-A Rust tool that compiles opinionated KDL into maintainable, committed Nix source, with a lockfile-backed reproducibility and drift-detection model. Read README.md, then docs/ in order, then HANDOFF.md before writing code.
+A Rust tool that compiles opinionated KDL into maintainable, committed Nix source, with a lockfile-backed reproducibility and drift-detection model. Read README.md, then docs/ in order, before writing code. The backlog is in GitHub issues.
 
 ## Ground truth, in priority order
 
@@ -28,12 +28,9 @@ A Rust tool that compiles opinionated KDL into maintainable, committed Nix sourc
 - The examples are the acceptance tests. Wire them as golden tests early: parse `examples/hosts/*.kdl`, generate, format, compare against `examples/expected/*.nix`, and diff the produced lock against `examples/knixl.lock.kdl`.
 - Determinism test: generate twice, assert byte-identical. Then generate, permute internal collection order under a feature flag, assert still byte-identical.
 
-## First tasks (see NEXT-STEPS.md for the full ordered backlog)
+## Backlog
 
-1. Make the workspace compile: fill helper bodies, wire cross-crate types, get `cargo build` green with stubbed `lower()` bodies.
-2. Implement `knixl-ir` emit fully (the `Emit` trait + escaping + float formatting + attr-key classification). Unit-test round-trips.
-3. Implement `Plan::compute` (the three-hash `FileState` derivation) and `knixl check`.
-4. Implement the `nixosOptionsDoc` extraction in `knixl-oracle` with the rev pinned in the lock.
+v1 is built and shipped. The backlog lives in GitHub issues (`gh issue list`), not in tracked files. `docs/superpowers/specs/` holds the design spec for each in-flight feature.
 
 ## House style for this repo
 
