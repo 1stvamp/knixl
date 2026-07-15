@@ -19,6 +19,7 @@ use std::sync::{Arc, OnceLock};
 
 use bubbletea_rs::event::{QuitMsg, WindowSizeMsg};
 use bubbletea_rs::{command, Cmd, Model, Msg, Program};
+use lipgloss::{place, CENTER};
 
 use author::AuthorModel;
 use browse::BrowseModel;
@@ -146,7 +147,13 @@ impl Model for App {
             }
             Entry::Hub => (Screen::Home(HomeModel::new()), None),
         };
-        (App { size, screen, outcome: Outcome::Quit }, cmd)
+        // Ask for the real terminal size up front so the first frame fills the screen (rather
+        // than the 80x24 default), batched with any screen's own init command.
+        let init_cmd = match cmd {
+            Some(c) => command::batch(vec![command::window_size(), c]),
+            None => command::window_size(),
+        };
+        (App { size, screen, outcome: Outcome::Quit }, Some(init_cmd))
     }
 
     fn update(&mut self, msg: Msg) -> Option<Cmd> {
@@ -166,12 +173,15 @@ impl Model for App {
     }
 
     fn view(&self) -> String {
-        match &self.screen {
+        let content = match &self.screen {
             Screen::Home(h) => h.view(self.size),
             Screen::Install(i) => i.view(self.size),
             Screen::Browse(b) => b.view(self.size),
             Screen::Author(a) => a.view(self.size),
-        }
+        };
+        // Centre the screen in the full terminal so the alternate screen is used end to end.
+        let (w, h) = self.size;
+        place(w as i32, h as i32, CENTER, CENTER, &content, &[])
     }
 }
 
@@ -236,7 +246,8 @@ pub fn run(
         .build()
         .map_err(|e| e.to_string())?;
     rt.block_on(async {
-        let program = Program::<App>::builder().build().map_err(|e| e.to_string())?;
+        let program =
+            Program::<App>::builder().alt_screen(true).build().map_err(|e| e.to_string())?;
         let app = program.run().await.map_err(|e| e.to_string())?;
         Ok(app.outcome)
     })

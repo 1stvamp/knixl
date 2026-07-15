@@ -253,11 +253,13 @@ impl InstallModel {
         if code == KeyCode::Esc {
             return Step::nav(Nav::Back);
         }
-        if code == KeyCode::Tab {
+        // Tab and the arrow keys move the focus selector between controls. Left/Right stay
+        // control-specific (host switch, cursor in the package field).
+        if matches!(code, KeyCode::Tab | KeyCode::Down) {
             self.focus_next();
             return Step::stay();
         }
-        if code == KeyCode::BackTab {
+        if matches!(code, KeyCode::BackTab | KeyCode::Up) {
             self.focus_prev();
             return Step::stay();
         }
@@ -488,6 +490,17 @@ mod tests {
         assert_eq!(m.focus, Focus::Host);
         m.focus_prev();
         assert_eq!(m.focus, Focus::Cancel, "wraps to the last control");
+    }
+
+    #[test]
+    fn arrow_keys_move_the_focus_selector() {
+        let mut m = model(2);
+        assert_eq!(m.focus, Focus::Package);
+        let key = |c| Box::new(KeyMsg { key: c, modifiers: KeyModifiers::NONE }) as Msg;
+        m.update(key(KeyCode::Down), (80, 24));
+        assert_eq!(m.focus, Focus::Strict, "down moves to the next control");
+        m.update(key(KeyCode::Up), (80, 24));
+        assert_eq!(m.focus, Focus::Package, "up moves back");
     }
 
     #[test]

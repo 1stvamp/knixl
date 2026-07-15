@@ -154,11 +154,12 @@ impl AuthorModel {
         if code == KeyCode::Esc {
             return Step::nav(Nav::Back);
         }
-        if code == KeyCode::Tab {
+        // Tab and the arrow keys move between fields; Left/Right stay for the type cycle.
+        if matches!(code, KeyCode::Tab | KeyCode::Down) {
             self.focus_next();
             return Step::stay();
         }
-        if code == KeyCode::BackTab {
+        if matches!(code, KeyCode::BackTab | KeyCode::Up) {
             self.focus_prev();
             return Step::stay();
         }
@@ -296,6 +297,17 @@ mod tests {
         assert_eq!(m.focus, Focus::Cancel, "wraps to the last control");
         m.focus_next();
         assert_eq!(m.focus, Focus::Name);
+    }
+
+    #[test]
+    fn arrow_keys_move_between_fields() {
+        let mut m = model();
+        assert_eq!(m.focus, Focus::Name);
+        let key = |c| Box::new(KeyMsg { key: c, modifiers: KeyModifiers::NONE }) as Msg;
+        m.update(key(KeyCode::Down), (80, 24));
+        assert_eq!(m.focus, Focus::Node, "down moves to the next field");
+        m.update(key(KeyCode::Up), (80, 24));
+        assert_eq!(m.focus, Focus::Name, "up moves back");
     }
 
     #[test]
