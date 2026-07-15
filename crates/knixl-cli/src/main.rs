@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use knixl_lock::{FileState, Plan};
 
 #[derive(Parser)]
-#[command(name = "knixl")]
+#[command(name = "knixl", version)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
