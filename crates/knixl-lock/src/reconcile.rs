@@ -204,6 +204,7 @@ fn build_lock_next(inputs: &Inputs, lock: &Lock, running: &Versions) -> Lock {
         inputs: inputs.input_hashes.clone(),
         modules: running.modules.clone(),
         outputs,
+        pins: BTreeMap::new(),
     }
 }
 
@@ -236,6 +237,7 @@ mod tests {
             inputs: BTreeMap::new(),
             modules: BTreeMap::new(),
             outputs: vec![],
+            pins: BTreeMap::new(),
         }
     }
     fn p(s: &str) -> PathBuf { PathBuf::from(s) }
