@@ -287,6 +287,11 @@ fn commit_install(
 
     if let Err(e) = std::fs::write(&chosen.path, &draft) {
         eprintln!("knixl: {}: {e}", chosen.path.display());
+        // The pin above may already be on disk even though the KDL write failed: undo it so a
+        // failed install never leaves a dangling pin behind.
+        if version_pin.is_some() {
+            remove_pin(&chosen.name, pkg);
+        }
         return Code::Internal;
     }
     // Undo the pin along with the KDL: a version_pin was written above, before the KDL hit

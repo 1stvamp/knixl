@@ -37,9 +37,14 @@ impl Module for PackageModule {
                     Box::new(NixExpr::Select(Box::new(NixExpr::Ref("builtins".into())), vec!["fetchTarball".into()])),
                     vec![NixExpr::AttrSet(src)],
                 );
+                let mut import_arg = std::collections::BTreeMap::new();
+                import_arg.insert(
+                    AttrKey::Ident("system".into()),
+                    NixExpr::Select(Box::new(NixExpr::Ref("pkgs".into())), vec!["system".into()]),
+                );
                 let imported = NixExpr::Apply(
                     Box::new(NixExpr::Ref("import".into())),
-                    vec![fetch, NixExpr::AttrSet(std::collections::BTreeMap::new())],
+                    vec![fetch, NixExpr::AttrSet(import_arg)],
                 );
                 NixExpr::Select(Box::new(imported), vec![name.clone()])
             }
@@ -165,6 +170,7 @@ mod tests {
         assert!(rendered.contains("abc123"), "carries the pinned commit: {rendered}");
         assert!(rendered.contains("htop"), "selects the package: {rendered}");
         assert!(rendered.contains("fetchTarball"), "uses fetchTarball: {rendered}");
+        assert!(rendered.contains("system"), "passes pkgs.system to the import: {rendered}");
     }
 
     #[test]

@@ -21,12 +21,15 @@ pins are per host. Per-host baseline revs are out of scope.
 - KDL declares intent: `package "htop" version="3.2.1"` under a host.
 - The lock records the resolved pin per host:
   `host "laptop" { pin "htop" version="3.2.1" nixpkgs-rev="<commit>" sha256="..." }`.
-- The generator emits a pinned package from a let-hoisted import of its locked
-  commit, mixed into the host baseline:
+- The generator emits a pinned package inline, as an import of its locked
+  commit selecting the package straight out of it, mixed into the host
+  baseline:
   ```nix
-  let _pin_htop = import (fetchTarball { url = "https://github.com/NixOS/nixpkgs/archive/<commit>.tar.gz"; sha256 = "..."; }) { inherit (pkgs) config system; };
-  in { environment.systemPackages = [ pkgs.ripgrep _pin_htop.htop ]; }
+  { environment.systemPackages = [ pkgs.ripgrep (import (fetchTarball { url = "https://github.com/NixOS/nixpkgs/archive/<commit>.tar.gz"; sha256 = "..."; }) { system = pkgs.system; }).htop ]; }
   ```
+  There is no `_pin_<name>` let binding; identical repeated imports (same url
+  and sha256) are deduped by the existing hoisting pass where eligible, the
+  same as any other repeated attrset.
 - Resolution (version to commit+sha) happens only at `install`/`upgrade`; the
   result is locked, so `generate`/`check` are offline and pure. A KDL-declared
   version with no matching lock pin is a Validation error.
@@ -87,9 +90,11 @@ the lock into the lowering context so emit stays pure and deterministic:
   version) -> Option<&Pin>` (the pins for `Scope.host`).
 - The pipeline (`knixl-pipeline::generate` / `gather`) passes the lock's
   per-host pins into `LowerCtx`.
-- The module emits a let-hoisted binding for the pinned import and references
-  `_pin_<name>.<name>` in `systemPackages`. Reuses the existing let-hoisting pass
-  (`knixl-ir::hoist`), so repeated pins of the same commit bind once.
+- The module emits the pinned import inline in `systemPackages`, as `(import
+  (fetchTarball { url; sha256; }) { system = pkgs.system; }).<name>`. There is
+  no `_pin_<name>` binding; the existing let-hoisting pass (`knixl-ir::hoist`)
+  still dedups the inner `{ url; sha256; }` attrset when it repeats, where
+  eligible.
 - If `version` is set but no pin is threaded (should not happen post-reconcile,
   but defensively), it is a `LowerError` mirroring the reconcile validation.
 
@@ -138,9 +143,9 @@ name+version); switching host in the TUI does not re-resolve (like the build).
 - Resolver: `lookup` against a shim via `KNIXL_PIN_RESOLVER` for found /
   not-found / unavailable / malformed-output.
 - package module: golden-style emit for an unpinned package (unchanged) and a
-  pinned package (let-hoisted import + `_pin_<name>.<name>`), asserting the
-  `fetchTarball` url/sha come from the threaded pin; determinism (byte-identical
-  twice).
+  pinned package (inline `(import (fetchTarball {...}) { system = pkgs.system;
+  }).<name>`), asserting the `fetchTarball` url/sha come from the threaded pin;
+  determinism (byte-identical twice).
 - install: `pkg@version` parsing; resolve-then-refuse on NotFound/Unavailable
   (no write, exit 5) via the CLI harness with a shim; accept writes KDL + lock
   pin and regenerates (plain path with `--yes`).
