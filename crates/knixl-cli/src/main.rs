@@ -34,7 +34,7 @@ enum Cmd {
     Doc { node: String },
     /// Add a package to a host: draft the KDL, verify under nix, preview, then regenerate.
     Install {
-        /// The nixpkgs attribute name, e.g. ripgrep.
+        /// The nixpkgs attribute name (e.g. ripgrep) or versioned form (e.g. ripgrep@13.0.0).
         pkg: String,
         #[arg(long)]
         host: Option<String>,
