@@ -37,7 +37,6 @@ pub struct Pin {
     pub package: String,
     pub version: String,
     pub nixpkgs_rev: String,
-    pub sha256: String,
 }
 
 impl Lock {
@@ -104,7 +103,6 @@ impl Lock {
                                 package: arg_str(p, 0)?,
                                 version: prop_str(p, "version")?,
                                 nixpkgs_rev: prop_str(p, "nixpkgs-rev")?,
-                                sha256: prop_str(p, "sha256")?,
                             });
                         }
                     }
@@ -167,8 +165,8 @@ impl Lock {
             s.push_str(&format!("    host \"{}\" {{\n", esc(host)));
             for p in list {
                 s.push_str(&format!(
-                    "        pin \"{}\" version=\"{}\" nixpkgs-rev=\"{}\" sha256=\"{}\"\n",
-                    esc(&p.package), esc(&p.version), esc(&p.nixpkgs_rev), esc(&p.sha256),
+                    "        pin \"{}\" version=\"{}\" nixpkgs-rev=\"{}\"\n",
+                    esc(&p.package), esc(&p.version), esc(&p.nixpkgs_rev),
                 ));
             }
             s.push_str("    }\n");
@@ -338,7 +336,7 @@ mod tests {
     formatter name="nixfmt-rfc-style" version="0.6.0"
     oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
     host "laptop" {
-        pin "htop" version="3.2.1" nixpkgs-rev="abc123" sha256="sha256:zzz"
+        pin "htop" version="3.2.1" nixpkgs-rev="abc123"
     }
 }
 "#;
@@ -348,7 +346,6 @@ mod tests {
         assert_eq!(pins[0].package, "htop");
         assert_eq!(pins[0].version, "3.2.1");
         assert_eq!(pins[0].nixpkgs_rev, "abc123");
-        assert_eq!(pins[0].sha256, "sha256:zzz");
         // Re-parsing the rendered form yields the same pins (byte-stable ordering).
         let again = Lock::parse(&lock.render()).expect("reparse");
         assert_eq!(again.pins, lock.pins);

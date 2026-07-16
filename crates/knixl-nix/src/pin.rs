@@ -1,8 +1,9 @@
 //! Version-to-commit resolution for `knixl install pkg@version`. Built-in by default: queries
-//! the nixhub/devbox version index over HTTPS via ureq (honouring `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`)
-//! and prefetches the sha via nix-prefetch-url (nix must be present); run only at pin time.
-//! `KNIXL_PIN_RESOLVER` overrides with an external `<name> <version>` -> `<commit> <sha256>` command.
-//! A failure to resolve blocks the pin (never a wrong result).
+//! the nixhub/devbox version index over HTTPS via ureq (honouring `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`);
+//! run only at pin time. A full 40-char git rev is a complete pure pin for `builtins.fetchGit`
+//! on its own, so no sha256 is needed. `KNIXL_PIN_RESOLVER` overrides with an external
+//! `<name> <version>` -> `<commit>` command. A failure to resolve blocks the pin (never a
+//! wrong result).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,7 +11,6 @@ use std::process::Command;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
     pub nixpkgs_rev: String,
-    pub sha256: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -38,7 +38,7 @@ impl PinResolver {
         }
     }
 
-    /// Resolve `pkgs.<name>` at `version` to a nixpkgs commit and its sha256.
+    /// Resolve `pkgs.<name>` at `version` to a nixpkgs commit.
     pub fn lookup(&self, name: &str, version: &str) -> Result<Resolved, PinError> {
         match self {
             PinResolver::External(bin) => lookup_external(bin, name, version),
@@ -47,7 +47,7 @@ impl PinResolver {
     }
 }
 
-/// The external-command protocol: run `<bin> <name> <version>`, expect `<commit> <sha256>`.
+/// The external-command protocol: run `<bin> <name> <version>`, expect `<commit>`.
 fn lookup_external(bin: &Path, name: &str, version: &str) -> Result<Resolved, PinError> {
     let out = crate::output_retrying_etxtbsy(|| {
         let mut c = Command::new(bin);
@@ -74,16 +74,14 @@ fn lookup_external(bin: &Path, name: &str, version: &str) -> Result<Resolved, Pi
     }
     let line = String::from_utf8_lossy(&out.stdout);
     let mut it = line.split_whitespace();
-    match (it.next(), it.next(), it.next()) {
-        (Some(rev), Some(sha), None) => {
-            Ok(Resolved { nixpkgs_rev: rev.to_string(), sha256: sha.to_string() })
-        }
-        _ => Err(PinError::Failed(format!("resolver output not `<commit> <sha256>`: {}", line.trim()))),
+    match (it.next(), it.next()) {
+        (Some(rev), None) => Ok(Resolved { nixpkgs_rev: rev.to_string() }),
+        _ => Err(PinError::Failed(format!("resolver output not `<commit>`: {}", line.trim()))),
     }
 }
 
-/// The built-in resolver: nixhub/devbox resolve API for the commit, `nix-prefetch-url` for
-/// the sha256. ureq's default agent honours the *_PROXY environment variables.
+/// The built-in resolver: nixhub/devbox resolve API for the commit. ureq's default agent
+/// honours the *_PROXY environment variables.
 fn lookup_builtin(name: &str, version: &str) -> Result<Resolved, PinError> {
     let url = format!(
         "https://search.devbox.sh/v1/resolve?name={}&version={}",
@@ -111,8 +109,7 @@ fn lookup_builtin(name: &str, version: &str) -> Result<Resolved, PinError> {
             body.chars().take(200).collect::<String>()
         ))
     })?;
-    let sha = prefetch_sha(&commit)?;
-    Ok(Resolved { nixpkgs_rev: commit, sha256: sha })
+    Ok(Resolved { nixpkgs_rev: commit })
 }
 
 /// The top-level `commit_hash` string from a resolve-API response body.
@@ -122,28 +119,6 @@ fn commit_hash(json: &str) -> Option<String> {
         .get("commit_hash")?
         .as_str()
         .map(str::to_string)
-}
-
-/// Prefetch the sha256 of a nixpkgs tarball at `commit` via `nix-prefetch-url --unpack`.
-/// Its base32 output is used verbatim as the `fetchTarball` sha256.
-fn prefetch_sha(commit: &str) -> Result<String, PinError> {
-    let url = format!("https://github.com/NixOS/nixpkgs/archive/{commit}.tar.gz");
-    let out = crate::output_retrying_etxtbsy(|| {
-        let mut c = Command::new("nix-prefetch-url");
-        c.args(["--unpack", &url]);
-        c
-    })
-    .map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            PinError::Unavailable("nix-prefetch-url not found".into())
-        } else {
-            PinError::Unavailable(e.to_string())
-        }
-    })?;
-    if !out.status.success() {
-        return Err(PinError::Failed(String::from_utf8_lossy(&out.stderr).trim().to_string()));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// Minimal percent-encoding for query values (name/version are simple, but encode to be safe).
@@ -182,11 +157,10 @@ mod tests {
     }
 
     #[test]
-    fn lookup_ok_parses_commit_and_sha() {
-        let r = PinResolver::External(shim("ok", "abc123 sha256:zzz", "", 0));
+    fn lookup_ok_parses_commit() {
+        let r = PinResolver::External(shim("ok", "abc123", "", 0));
         let got = r.lookup("htop", "3.2.1").unwrap();
         assert_eq!(got.nixpkgs_rev, "abc123");
-        assert_eq!(got.sha256, "sha256:zzz");
     }
 
     #[test]
@@ -208,8 +182,8 @@ mod tests {
     }
 
     #[test]
-    fn lookup_malformed_stdout_is_failed() {
-        let r = PinResolver::External(shim("bad", "only-one-token", "", 0));
+    fn lookup_empty_stdout_is_failed() {
+        let r = PinResolver::External(shim("bad", "", "", 0));
         assert!(matches!(r.lookup("htop", "3.2.1"), Err(PinError::Failed(_))));
     }
 
@@ -221,7 +195,7 @@ mod tests {
 
     #[test]
     fn lookup_trailing_tokens_is_failed() {
-        let r = PinResolver::External(shim("trailing", "abc123 sha256:zzz extra", "", 0));
+        let r = PinResolver::External(shim("trailing", "abc123 extra", "", 0));
         assert!(matches!(r.lookup("htop", "3.2.1"), Err(PinError::Failed(_))));
     }
 

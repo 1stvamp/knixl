@@ -20,17 +20,18 @@ pins are per host. Per-host baseline revs are out of scope.
 
 - KDL declares intent: `package "htop" version="3.2.1"` under a host.
 - The lock records the resolved pin per host:
-  `host "laptop" { pin "htop" version="3.2.1" nixpkgs-rev="<commit>" sha256="..." }`.
+  `host "laptop" { pin "htop" version="3.2.1" nixpkgs-rev="<commit>" }`.
 - The generator emits a pinned package inline, as an import of its locked
   commit selecting the package straight out of it, mixed into the host
   baseline:
   ```nix
-  { environment.systemPackages = [ pkgs.ripgrep (import (fetchTarball { url = "https://github.com/NixOS/nixpkgs/archive/<commit>.tar.gz"; sha256 = "..."; }) { system = pkgs.system; }).htop ]; }
+  { environment.systemPackages = [ pkgs.ripgrep (import (builtins.fetchGit { url = "https://github.com/NixOS/nixpkgs"; rev = "<commit>"; }) { system = pkgs.system; }).htop ]; }
   ```
-  There is no `_pin_<name>` let binding; identical repeated imports (same url
-  and sha256) are deduped by the existing hoisting pass where eligible, the
-  same as any other repeated attrset.
-- Resolution (version to commit+sha) happens only at `install`/`upgrade`; the
+  A full 40-char git rev is a complete pure pin on its own, so `fetchGit` needs
+  no sha256. There is no `_pin_<name>` let binding; identical repeated imports
+  (same url and rev) are deduped by the existing hoisting pass where eligible,
+  the same as any other repeated attrset.
+- Resolution (version to commit) happens only at `install`/`upgrade`; the
   result is locked, so `generate`/`check` are offline and pure. A KDL-declared
   version with no matching lock pin is a Validation error.
 
@@ -42,11 +43,11 @@ pins are per host. Per-host baseline revs are out of scope.
 block:
 ```
 host "laptop" {
-    pin "htop" version="3.2.1" nixpkgs-rev="<commit>" sha256="..."
+    pin "htop" version="3.2.1" nixpkgs-rev="<commit>"
 }
 ```
 Model: `Lock` gains `pins: BTreeMap<String /*host*/, Vec<Pin>>` where
-`Pin { package: String, version: String, nixpkgs_rev: String, sha256: String }`.
+`Pin { package: String, version: String, nixpkgs_rev: String }`.
 Deterministic order (BTreeMap by host, pins sorted by package). Parse and
 serialise round-trip (existing lock tests pattern). Absent `host` blocks mean no
 pins (back-compat: existing locks parse unchanged).
@@ -62,7 +63,7 @@ knixl install to pin it`.
 New `knixl-nix::pin` module:
 ```
 pub struct PinResolver { pub bin: PathBuf }         // KNIXL_PIN_RESOLVER, default the bundled resolver
-pub struct Resolved { pub nixpkgs_rev: String, pub sha256: String }
+pub struct Resolved { pub nixpkgs_rev: String }
 pub enum PinError { Unavailable(String), NotFound(String), Failed(String) }
 impl PinResolver {
     pub fn resolve() -> PinResolver;                 // KNIXL_PIN_RESOLVER or default
@@ -70,35 +71,35 @@ impl PinResolver {
 }
 ```
 `lookup` runs the resolver command as `<bin> <name> <version>` and expects one
-line `"<commit> <sha256>"` on stdout (exit 0). Non-zero with a "not found"
-marker maps to `NotFound`; other non-zero to `Failed`; spawn failure to
-`Unavailable`. The default `bin` is a small script (shipped under the CLI, e.g.
-`resolver` invoking nixhub.io via curl then `nix hash`/`nix-prefetch-url`); it is
-never called in tests, which inject a shim via `KNIXL_PIN_RESOLVER` (mirrors the
-`KNIXL_NIX` shim pattern in `nixeval.rs`). Offline/absent resolver is
-`Unavailable`, which blocks the pin with a clear error, never a wrong pin.
+line `"<commit>"` on stdout (exit 0). Non-zero with a "not found" marker maps
+to `NotFound`; other non-zero to `Failed`; spawn failure to `Unavailable`. The
+default `bin` is a small script (shipped under the CLI, e.g. `resolver`
+invoking nixhub.io via curl); it is never called in tests, which inject a shim
+via `KNIXL_PIN_RESOLVER` (mirrors the `KNIXL_NIX` shim pattern in
+`nixeval.rs`). Offline/absent resolver is `Unavailable`, which blocks the pin
+with a clear error, never a wrong pin.
 
 ### 3. package module: version emit
 
 The built-in `package` module (`crates/knixl-modules/src/builtin/package.rs`)
 gains an optional `version` prop in its schema. When absent, emit
 `environment.systemPackages = [ pkgs.<name> ]` exactly as today (unchanged).
-When present, the module needs the pin's `(rev, sha)`; these are threaded from
-the lock into the lowering context so emit stays pure and deterministic:
+When present, the module needs the pin's rev; it is threaded from the lock
+into the lowering context so emit stays pure and deterministic:
 
 - `LowerCtx` gains a pin lookup for the current host: `fn pin(&self, package,
   version) -> Option<&Pin>` (the pins for `Scope.host`).
 - The pipeline (`knixl-pipeline::generate` / `gather`) passes the lock's
   per-host pins into `LowerCtx`.
 - The module emits the pinned import inline in `systemPackages`, as `(import
-  (fetchTarball { url; sha256; }) { system = pkgs.system; }).<name>`. There is
-  no `_pin_<name>` binding; the existing let-hoisting pass (`knixl-ir::hoist`)
-  still dedups the inner `{ url; sha256; }` attrset when it repeats, where
-  eligible.
+  (builtins.fetchGit { url; rev; }) { system = pkgs.system; }).<name>`. There
+  is no `_pin_<name>` binding; the existing let-hoisting pass
+  (`knixl-ir::hoist`) still dedups the inner `{ url; rev; }` attrset when it
+  repeats, where eligible.
 - If `version` is set but no pin is threaded (should not happen post-reconcile,
   but defensively), it is a `LowerError` mirroring the reconcile validation.
 
-Determinism: pin imports emit in stable order; the `fetchTarball` url/sha are
+Determinism: pin imports emit in stable order; the `fetchGit` url/rev are
 byte-stable from the lock.
 
 ### 4. install pkg@version + accept/deny
@@ -106,7 +107,7 @@ byte-stable from the lock.
 `knixl install` accepts `pkg@version` (parse the `@`; bare `pkg` unchanged).
 The flow, per host (install already targets a host):
 
-- Resolve `version` to `(commit, sha)` via the injected resolver. On
+- Resolve `version` to a `commit` via the injected resolver. On
   `NotFound`/`Unavailable`/`Failed`, refuse with the mapped message (exit 5),
   never write.
 - Compute the change: pinning `<pkg>` to `<version>` from nixpkgs `<commit>`
@@ -143,8 +144,8 @@ name+version); switching host in the TUI does not re-resolve (like the build).
 - Resolver: `lookup` against a shim via `KNIXL_PIN_RESOLVER` for found /
   not-found / unavailable / malformed-output.
 - package module: golden-style emit for an unpinned package (unchanged) and a
-  pinned package (inline `(import (fetchTarball {...}) { system = pkgs.system;
-  }).<name>`), asserting the `fetchTarball` url/sha come from the threaded pin;
+  pinned package (inline `(import (fetchGit {...}) { system = pkgs.system;
+  }).<name>`), asserting the `fetchGit` url/rev come from the threaded pin;
   determinism (byte-identical twice).
 - install: `pkg@version` parsing; resolve-then-refuse on NotFound/Unavailable
   (no write, exit 5) via the CLI harness with a shim; accept writes KDL + lock

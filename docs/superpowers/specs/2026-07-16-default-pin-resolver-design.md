@@ -7,11 +7,11 @@ Builds on: docs/adr/0005-package-version-pinning.md, docs/superpowers/specs/2026
 
 ## Problem and goal
 
-`knixl install pkg@version` resolves a version to a nixpkgs commit + sha256 through
-`PinResolver`. Today `PinResolver::resolve()` defaults to an external `knixl-pin-resolve`
-command that is never shipped, so pinning always refuses with "version resolver is not
-available". Ship a built-in default so `install pkg@version` works with no extra setup,
-while keeping `KNIXL_PIN_RESOLVER` as the override seam.
+`knixl install pkg@version` resolves a version to a nixpkgs commit through `PinResolver`.
+Today `PinResolver::resolve()` defaults to an external `knixl-pin-resolve` command that is
+never shipped, so pinning always refuses with "version resolver is not available". Ship a
+built-in default so `install pkg@version` works with no extra setup, while keeping
+`KNIXL_PIN_RESOLVER` as the override seam.
 
 ## Approach
 
@@ -45,11 +45,9 @@ Host-independent, run only at pin time (install/upgrade), so a network call here
    synchronous `knixl-nix` with no async runtime.
 2. On HTTP 200, parse the body with `serde_json` (already a workspace dependency) and read
    the top-level `commit_hash` string.
-3. Prefetch the sha256 with `nix-prefetch-url --unpack
-   https://github.com/NixOS/nixpkgs/archive/<commit>.tar.gz`; its base32 output is used
-   verbatim as the `sha256` value (`builtins.fetchTarball` accepts it). This stays a `nix`
-   shell-out (nix is already required by knixl).
-4. Return `Resolved { nixpkgs_rev: commit, sha256 }`.
+3. Return `Resolved { nixpkgs_rev: commit }`. A full 40-char git rev is a complete pure pin
+   on its own, so there is no separate content hash to prefetch: the package emit uses
+   `builtins.fetchGit { url; rev; }`, not `fetchTarball` + `sha256`.
 
 ### Error mapping (Builtin), matching the External semantics
 
@@ -57,8 +55,7 @@ Host-independent, run only at pin time (install/upgrade), so a network call here
   200 nor 404 => `Unavailable` (the index was unreachable; a pin cannot be created, so
   install still refuses, but the message says so).
 - HTTP 404 => `NotFound` (no commit ships that version).
-- HTTP 200 with a missing/non-string `commit_hash`, unparseable JSON, or a non-zero
-  `nix-prefetch-url` => `Failed`. `nix-prefetch-url` not spawnable => `Unavailable`.
+- HTTP 200 with a missing/non-string `commit_hash` or unparseable JSON => `Failed`.
 
 ## Testability
 
@@ -70,9 +67,8 @@ fn commit_hash(resolve_json: &str) -> Option<String>
 ```
 
 Tests: a real 200 body (returns its `commit_hash`), a body missing `commit_hash` (returns
-None), and a malformed/empty body (returns None). The `ureq` fetch and the
-`nix-prefetch-url` shell-out are untested glue, as with the other nix shell-outs. The
-`External` path keeps its existing shim tests unchanged.
+None), and a malformed/empty body (returns None). The `ureq` fetch is untested glue, as
+with the other nix shell-outs. The `External` path keeps its existing shim tests unchanged.
 
 ## Wiring and docs
 
@@ -85,8 +81,7 @@ None), and a malformed/empty body (returns None). The `ureq` fetch and the
 - No CLI or lock changes: the CLI already builds `PinResolver::resolve()` and locks the
   result; it now gets a working default.
 - `docs/05-cli.md`: note that `pkg@version` resolves via nixhub.io by default (HTTPS is
-  built in and honours `*_PROXY`; the sha prefetch needs `nix` present), overridable with
-  `KNIXL_PIN_RESOLVER`.
+  built in and honours `*_PROXY`), overridable with `KNIXL_PIN_RESOLVER`.
 - Closes #21.
 
 ## Out of scope

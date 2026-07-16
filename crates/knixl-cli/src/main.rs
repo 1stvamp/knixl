@@ -345,7 +345,6 @@ fn write_pin(host: &str, package: &str, version: &str, resolved: &knixl_nix::pin
         package: package.to_string(),
         version: version.to_string(),
         nixpkgs_rev: resolved.nixpkgs_rev.clone(),
-        sha256: resolved.sha256.clone(),
     });
     pins.sort_by(|a, b| a.package.cmp(&b.package));
     write_lock(&ctx, &lock);
@@ -363,17 +362,17 @@ fn remove_pin(host: &str, package: &str) {
     write_lock(&ctx, &lock);
 }
 
-/// Turn the TUI's `Outcome::Install` pin payload (rev, sha256 as plain strings, since the
-/// TUI module stays decoupled from `knixl_nix`) into `commit_install`'s `version_pin`
-/// argument, then commit. Shared by the interactive `install` branch and the Hub flow.
+/// Turn the TUI's `Outcome::Install` pin payload (the rev as a plain string, since the TUI
+/// module stays decoupled from `knixl_nix`) into `commit_install`'s `version_pin` argument,
+/// then commit. Shared by the interactive `install` branch and the Hub flow.
 fn commit_tui_install(
     host: knixl_pipeline::install::HostInfo,
     pkg: String,
     strict: bool,
     version: Option<String>,
-    pin: Option<(String, String)>,
+    pin: Option<String>,
 ) -> Code {
-    let resolved = pin.map(|(rev, sha256)| knixl_nix::pin::Resolved { nixpkgs_rev: rev, sha256 });
+    let resolved = pin.map(|rev| knixl_nix::pin::Resolved { nixpkgs_rev: rev });
     let version_pin = version.as_deref().zip(resolved.as_ref());
     commit_install(&host, &pkg, version_pin, strict)
 }
@@ -497,7 +496,7 @@ fn make_build(root: std::path::PathBuf) -> tui::BuildFn {
 fn make_pin() -> tui::PinFn {
     use knixl_nix::pin::{PinError, PinResolver};
     Arc::new(move |name: &str, version: &str| match PinResolver::resolve().lookup(name, version) {
-        Ok(r) => tui::PinOutcome::Resolved { rev: r.nixpkgs_rev, sha256: r.sha256 },
+        Ok(r) => tui::PinOutcome::Resolved(r.nixpkgs_rev),
         Err(PinError::NotFound(_)) => tui::PinOutcome::NotFound,
         Err(PinError::Unavailable(_)) => tui::PinOutcome::Unavailable,
         Err(PinError::Failed(_)) => tui::PinOutcome::Failed,

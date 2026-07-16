@@ -26,15 +26,14 @@ impl Module for PackageModule {
                         ctx.scope().host
                     ))
                 })?;
-                let url = format!(
-                    "https://github.com/NixOS/nixpkgs/archive/{}.tar.gz",
-                    pin.nixpkgs_rev
-                );
                 let mut src = std::collections::BTreeMap::new();
-                src.insert(AttrKey::Ident("url".into()), NixExpr::Str(url));
-                src.insert(AttrKey::Ident("sha256".into()), NixExpr::Str(pin.sha256.clone()));
+                src.insert(
+                    AttrKey::Ident("url".into()),
+                    NixExpr::Str("https://github.com/NixOS/nixpkgs".into()),
+                );
+                src.insert(AttrKey::Ident("rev".into()), NixExpr::Str(pin.nixpkgs_rev.clone()));
                 let fetch = NixExpr::Apply(
-                    Box::new(NixExpr::Select(Box::new(NixExpr::Ref("builtins".into())), vec!["fetchTarball".into()])),
+                    Box::new(NixExpr::Select(Box::new(NixExpr::Ref("builtins".into())), vec!["fetchGit".into()])),
                     vec![NixExpr::AttrSet(src)],
                 );
                 let mut import_arg = std::collections::BTreeMap::new();
@@ -158,18 +157,17 @@ mod tests {
             package: "htop".into(),
             version: "3.2.1".into(),
             nixpkgs_rev: "abc123".into(),
-            sha256: "sha256:zzz".into(),
         }];
         let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, pins);
 
         let out = m.lower(&n, &mut ctx).unwrap();
-        // The emitted text must contain the pinned fetchTarball import and select the package
+        // The emitted text must contain the pinned fetchGit import and select the package
         // from it, not from baseline `pkgs`.
         let a = &out.units[0].assignment;
         let rendered = format!("{:?}", a.value); // structural check below is the real assertion
         assert!(rendered.contains("abc123"), "carries the pinned commit: {rendered}");
         assert!(rendered.contains("htop"), "selects the package: {rendered}");
-        assert!(rendered.contains("fetchTarball"), "uses fetchTarball: {rendered}");
+        assert!(rendered.contains("fetchGit"), "uses fetchGit: {rendered}");
         assert!(rendered.contains("system"), "passes pkgs.system to the import: {rendered}");
     }
 

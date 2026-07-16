@@ -104,9 +104,9 @@ pub struct InstallModel {
     pin: PinState,
     pin_spinner: spinner::Model,
     pin_seq: u64,
-    /// The resolved (rev, sha256), set once `pin` reaches `Resolved`. Carried through to
-    /// `Nav::Apply` for the CLI to write the pin.
-    pin_resolved: Option<(String, String)>,
+    /// The resolved rev, set once `pin` reaches `Resolved`. Carried through to `Nav::Apply`
+    /// for the CLI to write the pin.
+    pin_resolved: Option<String>,
     dims: (usize, usize),
 }
 
@@ -308,9 +308,9 @@ impl InstallModel {
             return;
         }
         match outcome {
-            PinOutcome::Resolved { rev, sha256 } => {
+            PinOutcome::Resolved(rev) => {
                 self.pin = PinState::Resolved;
-                self.pin_resolved = Some((rev, sha256));
+                self.pin_resolved = Some(rev);
             }
             PinOutcome::NotFound | PinOutcome::Unavailable | PinOutcome::Failed => {
                 self.pin = PinState::Failed;
@@ -532,7 +532,7 @@ impl InstallModel {
             let status = match self.pin {
                 PinState::Resolving => format!("{} resolving", self.pin_spinner.view()),
                 PinState::Resolved => {
-                    let rev = self.pin_resolved.as_ref().map(|(r, _)| short_rev(r)).unwrap_or_default();
+                    let rev = self.pin_resolved.as_deref().map(short_rev).unwrap_or_default();
                     theme::good().render(&format!("\u{2713} pinned {rev}"))
                 }
                 PinState::Failed => theme::bad().render("\u{2717} pin failed"),
@@ -909,7 +909,7 @@ mod tests {
         let mut m = model(1);
         let seq = m.mark_resolving();
         m.mark_resolving();
-        m.on_pin_done(seq, PinOutcome::Resolved { rev: "abc123".into(), sha256: "sha256:zzz".into() });
+        m.on_pin_done(seq, PinOutcome::Resolved("abc123".into()));
         assert_eq!(m.pin, PinState::Resolving, "stale resolve discarded");
     }
 }

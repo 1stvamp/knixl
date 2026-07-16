@@ -103,7 +103,6 @@ fn generate_one(
                     package: p.package.clone(),
                     version: p.version.clone(),
                     nixpkgs_rev: p.nixpkgs_rev.clone(),
-                    sha256: p.sha256.clone(),
                 })
                 .collect()
         })

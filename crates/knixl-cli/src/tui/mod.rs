@@ -60,15 +60,14 @@ pub type BuildFn = Arc<dyn Fn(&str) -> BuildOutcome + Send + Sync>;
 /// The result of resolving `pkg@version` to a nixpkgs commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PinOutcome {
-    Resolved { rev: String, sha256: String },
+    Resolved(String),
     NotFound,
     Unavailable,
     Failed,
 }
 
-/// Resolves `name@version` to a nixpkgs commit and its sha256 (host-independent). Injected
-/// only when a version was requested; `Send + Sync` so the Install screen runs it off the
-/// event loop.
+/// Resolves `name@version` to a nixpkgs commit (host-independent). Injected only when a
+/// version was requested; `Send + Sync` so the Install screen runs it off the event loop.
 pub type PinFn = Arc<dyn Fn(&str, &str) -> PinOutcome + Send + Sync>;
 
 /// A registered module as the Browse screen sees it: its claimed node, a kind tag, the
@@ -98,8 +97,8 @@ pub enum Outcome {
     /// The install screen was cancelled.
     Cancelled,
     /// Apply this package to this host. `version`/`pin` are set only when a version was
-    /// requested and resolved: the CLI writes the pin (rev, sha256) before committing.
-    Install { host: HostInfo, pkg: String, strict: bool, version: Option<String>, pin: Option<(String, String)> },
+    /// requested and resolved: the CLI writes the pin (rev) before committing.
+    Install { host: HostInfo, pkg: String, strict: bool, version: Option<String>, pin: Option<String> },
     /// Scaffold this module's node into this host's KDL.
     Insert { host: HostInfo, node: String, skeleton: String },
     /// Write a new declarative module manifest (`modules/<name>/knixl-module.kdl`).
@@ -132,7 +131,7 @@ pub enum Nav {
     /// Open another screen by key.
     Goto(&'static str),
     /// Commit the install and end the session.
-    Apply { host: HostInfo, pkg: String, strict: bool, version: Option<String>, pin: Option<(String, String)> },
+    Apply { host: HostInfo, pkg: String, strict: bool, version: Option<String>, pin: Option<String> },
     /// Scaffold a module node into a host and end the session.
     Insert { host: HostInfo, node: String, skeleton: String },
     /// Write a new module manifest and end the session.

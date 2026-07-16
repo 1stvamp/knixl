@@ -14,10 +14,11 @@ The options for pinning a version are:
 
 1. **Historical-commit mixing.** Find a nixpkgs commit that ships the wanted
    version, import that commit alongside the host's baseline nixpkgs, and take
-   just that package from it (`(import (fetchTarball <commit>) {}).<name>`). The
-   version-to-commit map comes from an external index (nixhub.io, lazamar's
+   just that package from it (`(import (fetchGit { url; rev = <commit>; }) {}).<name>`).
+   The version-to-commit map comes from an external index (nixhub.io, lazamar's
    nix-package-versions) since nixpkgs has none. Deterministic once the commit
-   is resolved and locked.
+   is resolved and locked: a full 40-char git rev is a complete pure pin on its
+   own, so `fetchGit` needs no separate content hash.
 2. **`overrideAttrs` version+src+hash.** Override the package's version and
    source in an overlay. Fragile: old versions rarely build against current
    build inputs, and the user must supply the source hash.
@@ -37,14 +38,13 @@ scoped per host:
 - The **global baseline nixpkgs rev** (the oracle's) is unchanged and supplies
   every unpinned package. Per-host *baseline* revs are out of scope (deferred).
 - A pinned package is recorded **per host in the lock** as
-  `pin "<name>" version="..." nixpkgs-rev="<commit>" sha256="..."`. The KDL holds
-  only the intent (`package "<name>" version="1.2.3"`); the resolved commit and
-  hash are derived data and live in the lock, like the oracle rev and module
-  versions (consistent with ADR 0001).
+  `pin "<name>" version="..." nixpkgs-rev="<commit>"`. The KDL holds only the
+  intent (`package "<name>" version="1.2.3"`); the resolved commit is derived
+  data and lives in the lock, like the oracle rev and module versions
+  (consistent with ADR 0001).
 - Version-to-commit resolution is an **injected command** (`KNIXL_PIN_RESOLVER`,
-  default queries nixhub.io and prefetches the sha256). It runs only at pin time
-  (`install` / `upgrade`); the result is locked, so `generate` and `check` stay
-  offline and pure.
+  default queries nixhub.io). It runs only at pin time (`install` / `upgrade`);
+  the result is locked, so `generate` and `check` stay offline and pure.
 - The generator emits a pinned package from a let-hoisted import of its locked
   commit, mixed into the host's baseline (Nix permits several nixpkgs revisions
   in one configuration). ABI breakage is caught by `install --build` (ADR-less
@@ -60,8 +60,8 @@ scoped per host:
 - knixl gains a soft dependency on an external version index at pin time only.
   Offline or without the resolver, a pin cannot be created (a clear error); it
   never resolves to a wrong commit silently.
-- The reproducibility boundary widens: each pin's `(commit, sha256)` joins the
-  lock as reproducibility data, and a pinned host fetches more than one nixpkgs.
+- The reproducibility boundary widens: each pin's commit joins the lock as
+  reproducibility data, and a pinned host fetches more than one nixpkgs.
 - Cross-rev ABI mismatch is a real failure mode. Pairing pinning with `--build`
   turns it into an install-time refusal rather than a broken host.
 - Deferred, and documented here so the decision is not silently reversed:

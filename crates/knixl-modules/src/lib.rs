@@ -237,7 +237,6 @@ pub struct ResolvedPin {
     pub package: String,
     pub version: String,
     pub nixpkgs_rev: String,
-    pub sha256: String,
 }
 
 pub struct LowerCtx<'a> {

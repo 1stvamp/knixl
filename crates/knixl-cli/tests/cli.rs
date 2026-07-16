@@ -297,7 +297,7 @@ fn install_pkg_at_version_refuses_when_resolver_cannot_find_it() {
 fn install_pkg_at_version_resolves_writes_the_pin_and_regenerates() {
     let root = temp_project("install-version-ok");
     let ok_eval = nix_shim("version-ok-eval", true); // package resolves + parses
-    let resolver = resolver_shim("ok", "abc123 sha256:zzz", "", 0);
+    let resolver = resolver_shim("ok", "abc123", "", 0);
     let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
         .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
         .current_dir(&root)
@@ -314,7 +314,10 @@ fn install_pkg_at_version_resolves_writes_the_pin_and_regenerates() {
     let lock = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
     assert!(lock.contains("pin \"htop\" version=\"3.2.1\""), "pin recorded: {lock}");
     assert!(lock.contains("nixpkgs-rev=\"abc123\""), "rev recorded: {lock}");
-    assert!(lock.contains("sha256=\"sha256:zzz\""), "sha256 recorded: {lock}");
+
+    let nix = fs::read_to_string(root.join("generated/hosts/web.nix")).unwrap();
+    assert!(nix.contains("fetchGit"), "pinned import uses fetchGit: {nix}");
+    assert!(nix.contains("abc123"), "pinned import carries the commit: {nix}");
 
     let _ = fs::remove_file(&ok_eval);
     let _ = fs::remove_file(&resolver);
@@ -342,7 +345,7 @@ fn nix_shim_parse_fails(tag: &str) -> PathBuf {
 fn install_pkg_at_version_reverts_the_pin_when_commit_fails_after_write_pin() {
     let root = temp_project("install-version-revert");
     let parse_fail_eval = nix_shim_parse_fails("revert");
-    let resolver = resolver_shim("revert-ok", "abc123 sha256:zzz", "", 0);
+    let resolver = resolver_shim("revert-ok", "abc123", "", 0);
     let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
         .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
         .current_dir(&root)
