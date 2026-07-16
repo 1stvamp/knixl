@@ -73,7 +73,7 @@ pub enum Entry {
     /// `knixl tui`: start at Home.
     Hub,
     /// `knixl install <pkg>`: open the Install screen with the package prefilled.
-    Install { pkg: String, strict: bool, host: Option<String>, build: bool },
+    Install { pkg: String, strict: bool, host: Option<String> },
 }
 
 /// What the session decided, returned by `run` for the CLI to act on.

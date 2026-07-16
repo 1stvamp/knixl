@@ -169,7 +169,6 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, bu
             pkg: pkg.to_string(),
             strict,
             host: Some(initial.name.clone()),
-            build,
         };
         let build_fn = build.then(|| make_build(ctx.root.clone()));
         return match open_tui(entry, build_fn) {
