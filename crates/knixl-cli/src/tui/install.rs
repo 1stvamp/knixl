@@ -111,15 +111,15 @@ impl InstallModel {
     /// verify. Reads `config()` (hosts, entry, verify), so it runs under the program only.
     pub fn enter(size: (u16, u16)) -> (Self, Option<Cmd>) {
         let cfg = config();
-        let (host_sel, pkg_value, strict) = match &cfg.entry {
-            Entry::Install { pkg, strict, host, build: _ } => {
+        let (host_sel, pkg_value, strict, build_requested) = match &cfg.entry {
+            Entry::Install { pkg, strict, host, build } => {
                 let idx = host
                     .as_ref()
                     .and_then(|n| cfg.hosts.iter().position(|h| &h.name == n))
                     .unwrap_or(0);
-                (idx, pkg.clone(), *strict)
+                (idx, pkg.clone(), *strict, *build)
             }
-            Entry::Hub => (0, String::new(), false),
+            Entry::Hub => (0, String::new(), false, false),
         };
 
         let mut pkg = textinput::new();
@@ -129,7 +129,9 @@ impl InstallModel {
         std::mem::drop(pkg.focus());
 
         let (w, h) = view_dims(size);
-        let build = if cfg.build.is_some() { BuildState::Building } else { BuildState::Off };
+        // `build_requested` (from the entry) and `cfg.build.is_some()` (the injected fn) are
+        // kept in sync by the CLI, but the entry's own flag is the more direct signal here.
+        let build = if build_requested { BuildState::Building } else { BuildState::Off };
         let mut model = InstallModel {
             pkg,
             hosts: cfg.hosts.clone(),

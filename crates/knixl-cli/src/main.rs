@@ -43,6 +43,9 @@ enum Cmd {
         /// Treat a skipped nix check (nix absent) as an error.
         #[arg(long)]
         strict: bool,
+        /// Also build the package derivation (proves it builds, not just resolves).
+        #[arg(long)]
+        build: bool,
     },
     /// Open the interactive TUI (install, browse modules, scaffold a module).
     Tui,
@@ -137,7 +140,9 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
 
         Cmd::Doc { node } => { print_doc(ctx, &node, cli.json); Code::Clean }
 
-        Cmd::Install { pkg, host, yes, strict } => install(ctx, &pkg, host.as_deref(), yes, strict),
+        Cmd::Install { pkg, host, yes, strict, build } => {
+            install(ctx, &pkg, host.as_deref(), yes, strict, build)
+        }
 
         Cmd::Tui => unreachable!("tui is dispatched before Ctx::load"),
     }
@@ -146,7 +151,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
 /// `knixl install <pkg>`: resolve a host, then either open the interactive Install screen
 /// (TTY, no `--yes`) or take the plain path (verify, confirm, commit). The host KDL is
 /// reverted on any failure or a declined confirm.
-fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool) -> Code {
+fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, build: bool) -> Code {
     use knixl_pipeline::install::{list_hosts, select_host};
 
     let hosts = match list_hosts(&ctx.root) {
@@ -164,17 +169,18 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool) ->
             pkg: pkg.to_string(),
             strict,
             host: Some(initial.name.clone()),
-            build: false,
+            build,
         };
-        return match open_tui(entry) {
+        let build_fn = build.then(|| make_build(ctx.root.clone()));
+        return match open_tui(entry, build_fn) {
             Ok(tui::Outcome::Install { host, pkg, strict }) => commit_install(&host, &pkg, strict),
             Ok(_) => { println!("cancelled"); Code::Clean }
             Err(e) => { eprintln!("knixl: tui: {e}"); Code::Internal }
         };
     }
 
-    // Non-interactive / --yes: the plain path. Hard-check the package, then confirm unless
-    // --yes.
+    // Non-interactive / --yes: the plain path. Hard-check the package, then build it if
+    // requested, then confirm unless --yes.
     match resolve_package(ctx, pkg) {
         tui::Resolve::No => {
             eprintln!("knixl: no nixpkgs package named `{pkg}`");
@@ -188,6 +194,25 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool) ->
             eprintln!("warning: nix unavailable, skipping package check for `{pkg}`");
         }
         tui::Resolve::Yes => {}
+    }
+    if build {
+        use knixl_nix::nixeval::{NixError, NixEval, Nixpkgs};
+        let rev = &ctx.lock.oracle.nixpkgs_rev;
+        let src = if rev.is_empty() { Nixpkgs::Ambient } else { Nixpkgs::PinnedRev(rev.clone()) };
+        match NixEval::resolve().builds(&src, pkg) {
+            Ok(()) => {}
+            Err(NixError::Unavailable(_)) if strict => {
+                eprintln!("knixl: --strict: nix unavailable, cannot build `{pkg}`");
+                return Code::Validation;
+            }
+            Err(NixError::Unavailable(_)) => {
+                eprintln!("warning: nix unavailable, skipping build of `{pkg}`");
+            }
+            Err(NixError::Failed(m)) => {
+                eprintln!("knixl: `{pkg}` failed to build: {m}");
+                return Code::Validation;
+            }
+        }
     }
     if !yes && !confirm(&format!("install {pkg} on {}?", initial.name)) {
         println!("cancelled");
@@ -249,12 +274,12 @@ fn commit_install(chosen: &knixl_pipeline::install::HostInfo, pkg: &str, strict:
 
 /// Open the TUI for the given entry: discover the project, list hosts, and inject a verify
 /// function that (off the event-loop thread) drafts the host and checks it under nix.
-fn open_tui(entry: tui::Entry) -> Result<tui::Outcome, String> {
+fn open_tui(entry: tui::Entry, build: Option<tui::BuildFn>) -> Result<tui::Outcome, String> {
     use knixl_pipeline::install::list_hosts;
     let root = discover_root();
     let hosts = list_hosts(&root).map_err(|e| e.to_string())?;
     let modules = browse_modules(&root);
-    tui::run(entry, root.clone(), hosts, make_verify(root), modules, None)
+    tui::run(entry, root.clone(), hosts, make_verify(root.clone()), modules, build)
 }
 
 /// Enumerate registered modules for the Browse screen: node name, kind tag, rendered schema
@@ -338,6 +363,30 @@ fn make_verify(root: std::path::PathBuf) -> tui::VerifyFn {
             },
         }
     })
+}
+
+/// The build function for the Install screen: builds `pkgs.<pkg>` from the lock's pinned rev
+/// (ambient fallback), mapping nix errors to a coarse outcome. Closes over only `root`.
+fn make_build(root: std::path::PathBuf) -> tui::BuildFn {
+    use knixl_nix::nixeval::{NixError, NixEval, Nixpkgs};
+    Arc::new(move |pkg: &str| {
+        let rev = read_pinned_rev(&root);
+        let src = if rev.is_empty() { Nixpkgs::Ambient } else { Nixpkgs::PinnedRev(rev) };
+        match NixEval::resolve().builds(&src, pkg) {
+            Ok(()) => tui::BuildOutcome::Ok,
+            Err(NixError::Unavailable(_)) => tui::BuildOutcome::Skipped,
+            Err(NixError::Failed(_)) => tui::BuildOutcome::Failed,
+        }
+    })
+}
+
+/// The lock's pinned nixpkgs rev for `root`, or empty if unavailable.
+fn read_pinned_rev(root: &std::path::Path) -> String {
+    let formatter = default_formatter();
+    let tool: semver::Version = env!("CARGO_PKG_VERSION").parse().expect("tool version parses");
+    knixl_pipeline::gather::gather(root, &formatter, tool)
+        .map(|p| p.lock.oracle.nixpkgs_rev)
+        .unwrap_or_default()
 }
 
 /// Generate the drafted host in memory (no disk writes) and parse it, for the TUI preview.
@@ -473,7 +522,7 @@ fn dispatch() -> Code {
             eprintln!("knixl: tui needs an interactive terminal");
             return Code::Usage;
         }
-        return match open_tui(tui::Entry::Hub) {
+        return match open_tui(tui::Entry::Hub, None) {
             Ok(outcome) => finish_tui_outcome(outcome),
             Err(e) => { eprintln!("knixl: {e}"); Code::Internal }
         };
