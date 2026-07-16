@@ -28,6 +28,10 @@ impl Module for PackageModule {
                 })?;
                 let mut src = std::collections::BTreeMap::new();
                 src.insert(
+                    AttrKey::Ident("shallow".into()),
+                    NixExpr::Bool(true),
+                );
+                src.insert(
                     AttrKey::Ident("url".into()),
                     NixExpr::Str("https://github.com/NixOS/nixpkgs".into()),
                 );
@@ -168,6 +172,7 @@ mod tests {
         assert!(rendered.contains("abc123"), "carries the pinned commit: {rendered}");
         assert!(rendered.contains("htop"), "selects the package: {rendered}");
         assert!(rendered.contains("fetchGit"), "uses fetchGit: {rendered}");
+        assert!(rendered.contains("shallow"), "uses shallow fetch: {rendered}");
         assert!(rendered.contains("system"), "passes pkgs.system to the import: {rendered}");
     }
 
