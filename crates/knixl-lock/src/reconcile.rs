@@ -183,7 +183,8 @@ fn compute_skew(lock: &Lock, running: &Versions) -> Option<VersionSkew> {
 }
 
 /// The lock a clean apply would write: running versions plus the freshly generated outputs,
-/// ordered deterministically by path.
+/// ordered deterministically by path. Pins carry forward unchanged from `lock`: nothing here
+/// resolves or revokes them, so a clean apply must not silently drop the pins `install` wrote.
 fn build_lock_next(inputs: &Inputs, lock: &Lock, running: &Versions) -> Lock {
     let mut outputs: Vec<OutputEntry> = inputs
         .expected
@@ -204,7 +205,7 @@ fn build_lock_next(inputs: &Inputs, lock: &Lock, running: &Versions) -> Lock {
         inputs: inputs.input_hashes.clone(),
         modules: running.modules.clone(),
         outputs,
-        pins: BTreeMap::new(),
+        pins: lock.pins.clone(),
     }
 }
 

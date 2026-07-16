@@ -254,6 +254,73 @@ fn install_strict_errors_when_nix_absent() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// A shim mimicking `knixl-pin-resolve`: prints `stdout_line` and exits `code`.
+fn resolver_shim(tag: &str, stdout_line: &str, stderr_line: &str, code: i32) -> PathBuf {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let path = std::env::temp_dir().join(format!("knixl-cli-resolvershim-{}-{tag}", std::process::id()));
+    let script = format!(
+        "#!/bin/sh\n[ -n \"{o}\" ] && echo \"{o}\"\n[ -n \"{e}\" ] && echo \"{e}\" 1>&2\nexit {code}\n",
+        o = stdout_line, e = stderr_line,
+    );
+    let mut f = fs::File::create(&path).unwrap();
+    f.write_all(script.as_bytes()).unwrap();
+    f.flush().unwrap();
+    drop(f); // close before exec, or spawning races with ETXTBSY
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[test]
+fn install_pkg_at_version_refuses_when_resolver_cannot_find_it() {
+    let root = temp_project("install-version-nf");
+    let ok_eval = nix_shim("version-nf-eval", true); // package resolves + parses
+    let nf_resolver = resolver_shim("nf", "", "not found", 1);
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "htop@9.9.9", "--host", "web", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &ok_eval)
+        .env("KNIXL_PIN_RESOLVER", &nf_resolver)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(out.status.code(), Some(5), "unresolvable version refuses (Validation): {out:?}");
+    // The KDL is untouched (reverted / never written): the pin gate runs before commit.
+    let kdl = fs::read_to_string(root.join("hosts/web.kdl")).unwrap();
+    assert!(!kdl.contains("htop"), "no draft left behind: {kdl}");
+    let _ = fs::remove_file(&ok_eval);
+    let _ = fs::remove_file(&nf_resolver);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn install_pkg_at_version_resolves_writes_the_pin_and_regenerates() {
+    let root = temp_project("install-version-ok");
+    let ok_eval = nix_shim("version-ok-eval", true); // package resolves + parses
+    let resolver = resolver_shim("ok", "abc123 sha256:zzz", "", 0);
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &ok_eval)
+        .env("KNIXL_PIN_RESOLVER", &resolver)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let kdl = fs::read_to_string(root.join("hosts/web.kdl")).unwrap();
+    assert!(kdl.contains("package \"htop\" version=\"3.2.1\""), "kdl edited: {kdl}");
+
+    let lock = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert!(lock.contains("pin \"htop\" version=\"3.2.1\""), "pin recorded: {lock}");
+    assert!(lock.contains("nixpkgs-rev=\"abc123\""), "rev recorded: {lock}");
+    assert!(lock.contains("sha256=\"sha256:zzz\""), "sha256 recorded: {lock}");
+
+    let _ = fs::remove_file(&ok_eval);
+    let _ = fs::remove_file(&resolver);
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn generate_writes_files_then_check_is_clean() {
     let root = temp_project("gen");

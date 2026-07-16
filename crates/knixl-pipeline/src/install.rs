@@ -51,10 +51,11 @@ pub fn select_host<'a>(
     }
 }
 
-/// Append `package "<pkg>"` as a child of the single top-level `host` node in `src`,
-/// preserving the rest of the file's formatting. Returns the new source, or `None` if the
-/// host already declares that package (idempotent).
-pub fn add_package(src: &str, pkg: &str) -> Result<Option<String>, String> {
+/// Append `package "<pkg>"` (or `package "<pkg>" version="<v>"` when `version` is given) as a
+/// child of the single top-level `host` node in `src`, preserving the rest of the file's
+/// formatting. Returns the new source, or `None` if the host already declares that package
+/// (idempotent).
+pub fn add_package(src: &str, pkg: &str, version: Option<&str>) -> Result<Option<String>, String> {
     let doc: KdlDocument = src.parse().map_err(|e: kdl::KdlError| e.to_string())?;
     let host = doc
         .nodes()
@@ -79,7 +80,10 @@ pub fn add_package(src: &str, pkg: &str) -> Result<Option<String>, String> {
     let line_start = src[..close].rfind('\n').map(|i| i + 1).unwrap_or(0);
     let indent = detect_indent(src);
 
-    let insertion = format!("{indent}package \"{pkg}\"\n");
+    let insertion = match version {
+        Some(v) => format!("{indent}package \"{pkg}\" version=\"{v}\"\n"),
+        None => format!("{indent}package \"{pkg}\"\n"),
+    };
     let mut out = String::with_capacity(src.len() + insertion.len());
     out.push_str(&src[..line_start]);
     out.push_str(&insertion);
@@ -236,7 +240,7 @@ mod tests {
     #[test]
     fn add_package_appends_under_host() {
         let src = "host \"web\" {\n    system \"x86_64-linux\"\n}\n";
-        let out = add_package(src, "ripgrep").unwrap().expect("edit produced");
+        let out = add_package(src, "ripgrep", None).unwrap().expect("edit produced");
         assert!(out.contains("package"), "package node added: {out}");
         assert!(out.contains("ripgrep"), "package name present: {out}");
         assert!(out.contains("system \"x86_64-linux\""), "existing content kept: {out}");
@@ -249,7 +253,16 @@ mod tests {
     #[test]
     fn add_package_is_idempotent() {
         let src = "host \"web\" {\n    system \"x86_64-linux\"\n    package \"ripgrep\"\n}\n";
-        assert_eq!(add_package(src, "ripgrep").unwrap(), None, "already present is a no-op");
+        assert_eq!(add_package(src, "ripgrep", None).unwrap(), None, "already present is a no-op");
+    }
+
+    #[test]
+    fn add_package_with_version_splices_a_version_prop() {
+        let src = "host \"web\" {\n    system \"x86_64-linux\"\n}\n";
+        let out = add_package(src, "htop", Some("3.2.1")).unwrap().expect("edit");
+        assert!(out.contains("package \"htop\" version=\"3.2.1\""), "{out}");
+        let doc: KdlDocument = out.parse().expect("valid kdl");
+        assert!(doc.nodes().iter().any(|n| n.name().value() == "host"));
     }
 
     #[test]
