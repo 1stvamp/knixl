@@ -77,7 +77,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
 
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
-    let (expected, validation_errors) = match generate(&hosts, &registry, formatter, &tool, oracle.as_ref()) {
+    let (expected, validation_errors) = match generate(&hosts, &registry, formatter, &tool, oracle.as_ref(), &lock.pins) {
         Ok(files) => {
             let expected = files
                 .into_iter()

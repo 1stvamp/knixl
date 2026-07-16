@@ -52,17 +52,19 @@ pub enum GenerateError {
 }
 
 /// Generate every output file for the given hosts, deterministically. When `oracle` is
-/// Some, every emitted option path is validated against the real NixOS option set.
+/// Some, every emitted option path is validated against the real NixOS option set. `pins`
+/// carries the lock's resolved package pins, keyed by host name.
 pub fn generate(
     hosts: &[HostSource],
     registry: &Registry,
     formatter: &Formatter,
     tool: &Version,
     oracle: Option<&knixl_oracle::Oracle>,
+    pins: &BTreeMap<String, Vec<knixl_lock::model::Pin>>,
 ) -> Result<Vec<GeneratedFile>, GenerateError> {
     let mut out = Vec::new();
     for host in hosts {
-        out.extend(generate_one(host, registry, formatter, tool, oracle)?);
+        out.extend(generate_one(host, registry, formatter, tool, oracle, pins)?);
     }
     Ok(out)
 }
@@ -73,6 +75,7 @@ fn generate_one(
     formatter: &Formatter,
     tool: &Version,
     oracle: Option<&knixl_oracle::Oracle>,
+    pins: &BTreeMap<String, Vec<knixl_lock::model::Pin>>,
 ) -> Result<Vec<GeneratedFile>, GenerateError> {
     let doc: KdlDocument = parse(&host.src)?;
     let host_name = first_arg_str(doc.nodes().first().ok_or_else(|| {
@@ -90,6 +93,22 @@ fn generate_one(
     let mut file_modules: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut diags: Vec<knixl_modules::Diagnostic> = Vec::new();
 
+    // Resolved pins for this host, mapped from the lock's `knixl_lock::Pin` into
+    // `knixl_modules::ResolvedPin` (knixl-modules must not depend on knixl-lock).
+    let resolved_pins: Vec<knixl_modules::ResolvedPin> = pins
+        .get(&host_name)
+        .map(|ps| {
+            ps.iter()
+                .map(|p| knixl_modules::ResolvedPin {
+                    package: p.package.clone(),
+                    version: p.version.clone(),
+                    nixpkgs_rev: p.nixpkgs_rev.clone(),
+                    sha256: p.sha256.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     for node in doc.nodes() {
         let name = node.name().value();
         let module = registry
@@ -106,6 +125,7 @@ fn generate_one(
             Scope { host: host_name.clone() },
             registry,
             &mut diags,
+            resolved_pins.clone(),
         );
         let mut output = module.lower(node, &mut ctx)?;
         // The top-level module claims any unit its delegates did not already attribute.

@@ -402,12 +402,14 @@ fn preview_host(
         Ok(Some(d)) => d,
         _ => src,
     };
+    let no_pins = std::collections::BTreeMap::new();
     let nix = generate(
         &[HostSource { path: host.path.clone(), src: drafted }],
         registry,
         formatter,
         tool,
         None,
+        &no_pins,
     )
     .ok()
     .and_then(|files| files.into_iter().map(|f| f.text).find(|t| t.contains("systemPackages")))

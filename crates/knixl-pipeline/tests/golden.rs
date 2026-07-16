@@ -65,7 +65,8 @@ fn generate_host(host_file: &str) -> Vec<knixl_pipeline::GeneratedFile> {
     let path = PathBuf::from("hosts").join(host_file);
     let src = fs::read_to_string(examples.join(&path)).expect("read host kdl");
     let tool = "0.3.1".parse().unwrap();
-    generate(&[HostSource { path, src }], &build_registry(), &identity_formatter(), &tool, None)
+    let no_pins = std::collections::BTreeMap::new();
+    generate(&[HostSource { path, src }], &build_registry(), &identity_formatter(), &tool, None, &no_pins)
         .expect("generate")
 }
 
@@ -120,12 +121,14 @@ fn unknown_child_node_surfaces_as_a_warning_not_an_error() {
     // rather than being silently dropped.
     let src = "host \"web\" {\n    system \"x86_64-linux\"\n    mystery-service\n}".to_string();
     let tool = "0.3.1".parse().unwrap();
+    let no_pins = std::collections::BTreeMap::new();
     let files = generate(
         &[HostSource { path: PathBuf::from("hosts/web.kdl"), src }],
         &build_registry(),
         &identity_formatter(),
         &tool,
         None,
+        &no_pins,
     )
     .expect("generate");
 
@@ -234,7 +237,8 @@ fn assert_host_matches(host_file: &str) {
 
     let registry = build_registry();
     let tool = "0.3.1".parse().unwrap();
-    let files = generate(&[HostSource { path, src }], &registry, &formatter(), &tool, None)
+    let no_pins = std::collections::BTreeMap::new();
+    let files = generate(&[HostSource { path, src }], &registry, &formatter(), &tool, None, &no_pins)
         .expect("generate");
 
     assert!(!files.is_empty(), "generate produced no files for {host_file}");
@@ -286,6 +290,7 @@ fn generate_is_byte_identical_across_runs() {
     let path = PathBuf::from("hosts/web.kdl");
     let src = fs::read_to_string(examples.join(&path)).expect("read host kdl");
     let tool = "0.3.1".parse().unwrap();
+    let no_pins = std::collections::BTreeMap::new();
 
     let run = || {
         generate(
@@ -294,6 +299,7 @@ fn generate_is_byte_identical_across_runs() {
             &formatter(),
             &tool,
             None,
+            &no_pins,
         )
         .expect("generate")
         .into_iter()

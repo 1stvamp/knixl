@@ -102,7 +102,7 @@ mod tests {
         let n = node("backups {\n    repo \"s3:https://s3.example.com/backups/db\"\n    schedule \"daily\"\n    when \"config.services.postgresql.enable\"\n}");
         let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags);
+        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags, vec![]);
 
         let out = b.lower(&n, &mut ctx).unwrap();
         assert_eq!(out.units.len(), 1);
@@ -124,7 +124,7 @@ mod tests {
         let n = node("backups {\n    repo \"r\"\n}");
         let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags);
+        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags, vec![]);
         let out = b.lower(&n, &mut ctx).unwrap();
         assert!(out.units[0].assignment.condition.is_none());
     }

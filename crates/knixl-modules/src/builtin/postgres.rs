@@ -94,7 +94,7 @@ mod tests {
         let n = node("postgres version=16 {\n    listen-tcp #true\n    database \"app\"\n    database \"metrics\"\n}");
         let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags);
+        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags, vec![]);
 
         let out = pg.lower(&n, &mut ctx).unwrap();
         // enable, package, ensureDatabases, and the forced enableTCPIP
@@ -109,7 +109,7 @@ mod tests {
         let n = node("postgres {\n    database \"app\"\n}");
         let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags);
+        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags, vec![]);
 
         let out = pg.lower(&n, &mut ctx).unwrap();
         assert_eq!(out.units.len(), 3);

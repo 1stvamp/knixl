@@ -230,20 +230,41 @@ fn check_ty(value: &kdl::KdlValue, ty: &ValueTy, name: &str, span: SourceSpan, d
 
 // ---- lowering ----
 
+/// A resolved package pin, threaded into lowering so the `package` module can emit a pinned
+/// import. Mapped from the lock by the pipeline (knixl-modules must not depend on knixl-lock).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPin {
+    pub package: String,
+    pub version: String,
+    pub nixpkgs_rev: String,
+    pub sha256: String,
+}
+
 pub struct LowerCtx<'a> {
     scope: Scope,
     registry: &'a Registry,
     diags: &'a mut Vec<Diagnostic>,
+    pins: Vec<ResolvedPin>,
 }
 
 pub struct Scope { pub host: String }
 
 impl<'a> LowerCtx<'a> {
-    pub fn new(scope: Scope, registry: &'a Registry, diags: &'a mut Vec<Diagnostic>) -> Self {
-        Self { scope, registry, diags }
+    pub fn new(
+        scope: Scope,
+        registry: &'a Registry,
+        diags: &'a mut Vec<Diagnostic>,
+        pins: Vec<ResolvedPin>,
+    ) -> Self {
+        Self { scope, registry, diags, pins }
     }
 
     pub fn scope(&self) -> &Scope { &self.scope }
+
+    /// The resolved pin for a package at a version on this host, if any.
+    pub fn pin(&self, package: &str, version: &str) -> Option<&ResolvedPin> {
+        self.pins.iter().find(|p| p.package == package && p.version == version)
+    }
 
     /// Dispatch each child NOT in `consumed` to its registered module, collect outputs.
     /// Only container modules (host) call this; leaf modules read their own subtree.
@@ -476,7 +497,7 @@ mod tests {
         reg.register(Box::new(StubModule::new())).unwrap();
         let host = node("host \"web\" {\n    system \"x\"\n    stub\n    mystery\n}");
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags);
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
         let outputs = ctx.lower_children(&host, &["system"]).unwrap();
         drop(ctx);
         assert_eq!(outputs.len(), 1, "the one registered child (stub) is dispatched");
