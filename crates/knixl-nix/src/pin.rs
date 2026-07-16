@@ -1,7 +1,8 @@
-//! Version-to-commit resolution for `knixl install pkg@version`. The resolver is an injected
-//! command (`KNIXL_PIN_RESOLVER`, default `knixl-pin-resolve`) mapping `name version` to a
-//! nixpkgs commit and its sha256, run only at pin time. A missing resolver is Unavailable
-//! (blocks the pin), never a wrong result.
+//! Version-to-commit resolution for `knixl install pkg@version`. Built-in by default: queries
+//! the nixhub/devbox version index over HTTPS via ureq (honouring `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`)
+//! and prefetches the sha via nix-prefetch-url (nix must be present); run only at pin time.
+//! `KNIXL_PIN_RESOLVER` overrides with an external `<name> <version>` -> `<commit> <sha256>` command.
+//! A failure to resolve blocks the pin (never a wrong result).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
