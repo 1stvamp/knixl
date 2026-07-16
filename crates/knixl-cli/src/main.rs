@@ -164,6 +164,7 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool) ->
             pkg: pkg.to_string(),
             strict,
             host: Some(initial.name.clone()),
+            build: false,
         };
         return match open_tui(entry) {
             Ok(tui::Outcome::Install { host, pkg, strict }) => commit_install(&host, &pkg, strict),
@@ -253,7 +254,7 @@ fn open_tui(entry: tui::Entry) -> Result<tui::Outcome, String> {
     let root = discover_root();
     let hosts = list_hosts(&root).map_err(|e| e.to_string())?;
     let modules = browse_modules(&root);
-    tui::run(entry, root.clone(), hosts, make_verify(root), modules)
+    tui::run(entry, root.clone(), hosts, make_verify(root), modules, None)
 }
 
 /// Enumerate registered modules for the Browse screen: node name, kind tag, rendered schema

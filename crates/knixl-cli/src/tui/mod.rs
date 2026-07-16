@@ -45,6 +45,18 @@ pub struct Verified {
 /// supply their own; it is `Send + Sync` so the Install screen can run it off the event loop.
 pub type VerifyFn = Arc<dyn Fn(&str, &HostInfo) -> Verified + Send + Sync>;
 
+/// The result of the async package build (`--build`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildOutcome {
+    Ok,
+    Failed,
+    Skipped,
+}
+
+/// Builds `pkgs.<pkg>` (host-independent). Injected only when `--build` is requested;
+/// `Send + Sync` so the Install screen runs it off the event loop.
+pub type BuildFn = Arc<dyn Fn(&str) -> BuildOutcome + Send + Sync>;
+
 /// A registered module as the Browse screen sees it: its claimed node, a kind tag, the
 /// rendered schema doc, and a skeleton to splice into a host. Precomputed by the CLI so the
 /// TUI never touches the (non-`Send`) registry.
@@ -61,7 +73,7 @@ pub enum Entry {
     /// `knixl tui`: start at Home.
     Hub,
     /// `knixl install <pkg>`: open the Install screen with the package prefilled.
-    Install { pkg: String, strict: bool, host: Option<String> },
+    Install { pkg: String, strict: bool, host: Option<String>, build: bool },
 }
 
 /// What the session decided, returned by `run` for the CLI to act on.
@@ -87,6 +99,7 @@ pub struct TuiConfig {
     pub entry: Entry,
     pub verify: VerifyFn,
     pub modules: Vec<BrowseModule>,
+    pub build: Option<BuildFn>,
 }
 
 fn config() -> &'static TuiConfig {
@@ -240,8 +253,9 @@ pub fn run(
     hosts: Vec<HostInfo>,
     verify: VerifyFn,
     modules: Vec<BrowseModule>,
+    build: Option<BuildFn>,
 ) -> Result<Outcome, String> {
-    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify, modules });
+    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify, modules, build });
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

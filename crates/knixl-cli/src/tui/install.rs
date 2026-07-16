@@ -93,7 +93,7 @@ impl InstallModel {
     pub fn enter(size: (u16, u16)) -> (Self, Option<Cmd>) {
         let cfg = config();
         let (host_sel, pkg_value, strict) = match &cfg.entry {
-            Entry::Install { pkg, strict, host } => {
+            Entry::Install { pkg, strict, host, build: _ } => {
                 let idx = host
                     .as_ref()
                     .and_then(|n| cfg.hosts.iter().position(|h| &h.name == n))
