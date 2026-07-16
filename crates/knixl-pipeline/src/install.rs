@@ -53,8 +53,9 @@ pub fn select_host<'a>(
 
 /// Append `package "<pkg>"` (or `package "<pkg>" version="<v>"` when `version` is given) as a
 /// child of the single top-level `host` node in `src`, preserving the rest of the file's
-/// formatting. Returns the new source, or `None` if the host already declares that package
-/// (idempotent).
+/// formatting. If the host already declares that package, rewrite its `version` prop in place
+/// instead of appending a duplicate. Returns the new source, or `None` if the requested version
+/// already matches what is declared (a true no-op).
 pub fn add_package(src: &str, pkg: &str, version: Option<&str>) -> Result<Option<String>, String> {
     let doc: KdlDocument = src.parse().map_err(|e: kdl::KdlError| e.to_string())?;
     let host = doc
@@ -63,8 +64,24 @@ pub fn add_package(src: &str, pkg: &str, version: Option<&str>) -> Result<Option
         .find(|n| n.name().value() == "host")
         .ok_or_else(|| "no `host` node to add a package to".to_string())?;
 
-    if has_package(host, pkg) {
-        return Ok(None);
+    if let Some(existing) = find_package(host, pkg) {
+        let current = existing.get("version").and_then(|v| v.as_string());
+        if current == version {
+            return Ok(None);
+        }
+        // Rewrite the existing node in place: replace exactly its own text (the span
+        // excludes the leading indentation and trailing newline, so both are preserved).
+        let start = existing.span().offset();
+        let end = (start + existing.span().len()).min(src.len());
+        let replacement = match version {
+            Some(v) => format!("package \"{pkg}\" version=\"{v}\""),
+            None => format!("package \"{pkg}\""),
+        };
+        let mut out = String::with_capacity(src.len() + replacement.len());
+        out.push_str(&src[..start]);
+        out.push_str(&replacement);
+        out.push_str(&src[end..]);
+        return Ok(Some(out));
     }
 
     // Splice at the text level, keyed off the host node's span, so every other byte
@@ -183,13 +200,11 @@ fn host_info(src: &str, path: &Path) -> Option<HostInfo> {
     Some(HostInfo { name, default, path: path.to_path_buf() })
 }
 
-/// True if `host` already has a `package "<pkg>"` child.
-fn has_package(host: &KdlNode, pkg: &str) -> bool {
-    host.children().is_some_and(|doc| {
-        doc.nodes().iter().any(|n| {
-            n.name().value() == "package"
-                && n.entries().iter().any(|e| e.name().is_none() && e.value().as_string() == Some(pkg))
-        })
+/// `host`'s `package "<pkg>"` child, if it has one.
+fn find_package<'a>(host: &'a KdlNode, pkg: &str) -> Option<&'a KdlNode> {
+    host.children()?.nodes().iter().find(|n| {
+        n.name().value() == "package"
+            && n.entries().iter().any(|e| e.name().is_none() && e.value().as_string() == Some(pkg))
     })
 }
 
@@ -247,7 +262,7 @@ mod tests {
         // The edit round-trips as valid KDL with the new package present.
         let doc: KdlDocument = out.parse().expect("valid kdl");
         let host = doc.nodes().iter().find(|n| n.name().value() == "host").unwrap();
-        assert!(has_package(host, "ripgrep"));
+        assert!(find_package(host, "ripgrep").is_some());
     }
 
     #[test]
@@ -263,6 +278,38 @@ mod tests {
         assert!(out.contains("package \"htop\" version=\"3.2.1\""), "{out}");
         let doc: KdlDocument = out.parse().expect("valid kdl");
         assert!(doc.nodes().iter().any(|n| n.name().value() == "host"));
+    }
+
+    #[test]
+    fn add_package_versions_an_existing_unversioned_node() {
+        let src = "host \"web\" {\n    system \"x86_64-linux\"\n    package \"ripgrep\"\n}\n";
+        let out = add_package(src, "ripgrep", Some("14.1.0")).unwrap().expect("edit produced");
+        assert!(out.contains("package \"ripgrep\" version=\"14.1.0\""), "{out}");
+        let doc: KdlDocument = out.parse().expect("valid kdl");
+        let host = doc.nodes().iter().find(|n| n.name().value() == "host").unwrap();
+        let packages: Vec<_> =
+            host.children().unwrap().nodes().iter().filter(|n| n.name().value() == "package").collect();
+        assert_eq!(packages.len(), 1, "exactly one ripgrep package node: {out}");
+    }
+
+    #[test]
+    fn add_package_changes_an_existing_version() {
+        let src = "host \"web\" {\n    system \"x86_64-linux\"\n    package \"ripgrep\" version=\"13.0.0\"\n}\n";
+        let out = add_package(src, "ripgrep", Some("14.1.0")).unwrap().expect("edit produced");
+        assert!(out.contains("version=\"14.1.0\""), "{out}");
+        assert!(!out.contains("13.0.0"), "old version gone: {out}");
+    }
+
+    #[test]
+    fn add_package_same_version_is_a_noop() {
+        let src = "host \"web\" {\n    system \"x86_64-linux\"\n    package \"ripgrep\" version=\"14.1.0\"\n}\n";
+        assert_eq!(add_package(src, "ripgrep", Some("14.1.0")).unwrap(), None, "same version is a no-op");
+    }
+
+    #[test]
+    fn add_package_unversioned_same_is_a_noop() {
+        let src = "host \"web\" {\n    system \"x86_64-linux\"\n    package \"ripgrep\"\n}\n";
+        assert_eq!(add_package(src, "ripgrep", None).unwrap(), None, "unversioned request is a no-op");
     }
 
     #[test]
