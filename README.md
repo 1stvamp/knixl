@@ -1,8 +1,17 @@
+```
+██╗  ██╗ ███╗   ██╗ ██╗ ██╗  ██╗ ██╗
+██║ ██╔╝ ████╗  ██║ ██║ ╚██╗██╔╝ ██║
+█████╔╝  ██╔██╗ ██║ ██║  ╚███╔╝  ██║
+██╔═██╗  ██║╚██╗██║ ██║  ██╔██╗  ██║
+██║  ██╗ ██║ ╚████║ ██║ ██╔╝ ██╗ ███████╗
+╚═╝  ╚═╝ ╚═╝  ╚═══╝ ╚═╝ ╚═╝  ╚═╝ ╚══════╝
+```
+
 # knixl
 
 knixl generates maintainable, human-readable Nix from small amounts of opinionated KDL.
 
-Pronounced "nickle" or "nixell". Written in Rust. KDL is the source of truth, the generated Nix is a committed build artefact, and regeneration is version-aware so a framework upgrade cannot change your output without telling you first.
+Pronounced "nix-ull". Written in Rust. KDL is the source of truth, the generated Nix is a committed build artefact, and regeneration is version-aware so a framework upgrade cannot change your output without telling you first.
 
 ## What it does
 
