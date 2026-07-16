@@ -313,6 +313,22 @@ mod tests {
     }
 
     #[test]
+    fn add_package_none_removes_an_existing_version() {
+        let src = "host \"web\" {\n    package \"ripgrep\" version=\"14.1.0\"\n}\n";
+        let out = add_package(src, "ripgrep", None).unwrap().expect("edit produced");
+        assert!(!out.contains("version="), "the version prop is dropped: {out}");
+        assert!(out.contains("package \"ripgrep\""), "the bare package node remains: {out}");
+        // Exactly one ripgrep node, now unversioned.
+        let doc: KdlDocument = out.parse().expect("valid kdl");
+        let host = doc.nodes().iter().find(|n| n.name().value() == "host").unwrap();
+        let count = host.children().unwrap().nodes().iter()
+            .filter(|n| n.name().value() == "package")
+            .filter(|n| n.entries().iter().any(|e| e.name().is_none() && e.value().as_string() == Some("ripgrep")))
+            .count();
+        assert_eq!(count, 1, "exactly one ripgrep node: {out}");
+    }
+
+    #[test]
     fn add_node_splices_a_block_skeleton_indented() {
         let src = "host \"web\" {\n    system \"x86_64-linux\"\n}\n";
         let skeleton = "postgres {\n    version \"16\"\n}";
