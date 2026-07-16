@@ -52,17 +52,24 @@ impl PinResolver {
             }
         })?;
         if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr);
-            let msg = err.trim().to_string();
-            if err.to_lowercase().contains("not found") {
-                return Err(PinError::NotFound(format!("{name} {version}: {msg}")));
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let combined = format!("{}{}", stderr, stdout).trim().to_string();
+            let combined_lower = combined.to_lowercase();
+            if combined_lower.contains("not found") {
+                return Err(PinError::NotFound(format!("{name} {version}: {combined}")));
             }
-            return Err(PinError::Failed(msg));
+            let err_msg = if !stderr.is_empty() {
+                stderr.trim().to_string()
+            } else {
+                stdout.trim().to_string()
+            };
+            return Err(PinError::Failed(err_msg));
         }
         let line = String::from_utf8_lossy(&out.stdout);
         let mut it = line.split_whitespace();
-        match (it.next(), it.next()) {
-            (Some(rev), Some(sha)) => {
+        match (it.next(), it.next(), it.next()) {
+            (Some(rev), Some(sha), None) => {
                 Ok(Resolved { nixpkgs_rev: rev.to_string(), sha256: sha.to_string() })
             }
             _ => Err(PinError::Failed(format!("resolver output not `<commit> <sha256>`: {}", line.trim()))),
@@ -120,6 +127,18 @@ mod tests {
     #[test]
     fn lookup_malformed_stdout_is_failed() {
         let r = PinResolver { bin: shim("bad", "only-one-token", "", 0) };
+        assert!(matches!(r.lookup("htop", "3.2.1"), Err(PinError::Failed(_))));
+    }
+
+    #[test]
+    fn lookup_not_found_on_stdout_maps_to_notfound() {
+        let r = PinResolver { bin: shim("nf-stdout", "version not found", "", 1) };
+        assert!(matches!(r.lookup("htop", "9.9.9"), Err(PinError::NotFound(_))));
+    }
+
+    #[test]
+    fn lookup_trailing_tokens_is_failed() {
+        let r = PinResolver { bin: shim("trailing", "abc123 sha256:zzz extra", "", 0) };
         assert!(matches!(r.lookup("htop", "3.2.1"), Err(PinError::Failed(_))));
     }
 }
