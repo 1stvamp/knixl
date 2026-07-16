@@ -57,6 +57,20 @@ pub enum BuildOutcome {
 /// `Send + Sync` so the Install screen runs it off the event loop.
 pub type BuildFn = Arc<dyn Fn(&str) -> BuildOutcome + Send + Sync>;
 
+/// The result of resolving `pkg@version` to a nixpkgs commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinOutcome {
+    Resolved { rev: String, sha256: String },
+    NotFound,
+    Unavailable,
+    Failed,
+}
+
+/// Resolves `name@version` to a nixpkgs commit and its sha256 (host-independent). Injected
+/// only when a version was requested; `Send + Sync` so the Install screen runs it off the
+/// event loop.
+pub type PinFn = Arc<dyn Fn(&str, &str) -> PinOutcome + Send + Sync>;
+
 /// A registered module as the Browse screen sees it: its claimed node, a kind tag, the
 /// rendered schema doc, and a skeleton to splice into a host. Precomputed by the CLI so the
 /// TUI never touches the (non-`Send`) registry.
@@ -72,8 +86,9 @@ pub struct BrowseModule {
 pub enum Entry {
     /// `knixl tui`: start at Home.
     Hub,
-    /// `knixl install <pkg>`: open the Install screen with the package prefilled.
-    Install { pkg: String, strict: bool, host: Option<String> },
+    /// `knixl install <pkg>` or `knixl install <pkg>@<version>`: open the Install screen with
+    /// the package prefilled, and the version (if any) to be resolved and pinned on Apply.
+    Install { pkg: String, strict: bool, host: Option<String>, version: Option<String> },
 }
 
 /// What the session decided, returned by `run` for the CLI to act on.
@@ -82,8 +97,9 @@ pub enum Outcome {
     Quit,
     /// The install screen was cancelled.
     Cancelled,
-    /// Apply this package to this host.
-    Install { host: HostInfo, pkg: String, strict: bool },
+    /// Apply this package to this host. `version`/`pin` are set only when a version was
+    /// requested and resolved: the CLI writes the pin (rev, sha256) before committing.
+    Install { host: HostInfo, pkg: String, strict: bool, version: Option<String>, pin: Option<(String, String)> },
     /// Scaffold this module's node into this host's KDL.
     Insert { host: HostInfo, node: String, skeleton: String },
     /// Write a new declarative module manifest (`modules/<name>/knixl-module.kdl`).
@@ -100,6 +116,7 @@ pub struct TuiConfig {
     pub verify: VerifyFn,
     pub modules: Vec<BrowseModule>,
     pub build: Option<BuildFn>,
+    pub pin: Option<PinFn>,
 }
 
 fn config() -> &'static TuiConfig {
@@ -115,7 +132,7 @@ pub enum Nav {
     /// Open another screen by key.
     Goto(&'static str),
     /// Commit the install and end the session.
-    Apply { host: HostInfo, pkg: String, strict: bool },
+    Apply { host: HostInfo, pkg: String, strict: bool, version: Option<String>, pin: Option<(String, String)> },
     /// Scaffold a module node into a host and end the session.
     Insert { host: HostInfo, node: String, skeleton: String },
     /// Write a new module manifest and end the session.
@@ -204,8 +221,8 @@ impl App {
         match step.nav {
             Nav::Stay => step.cmd,
             Nav::Quit => Some(command::quit()),
-            Nav::Apply { host, pkg, strict } => {
-                self.outcome = Outcome::Install { host, pkg, strict };
+            Nav::Apply { host, pkg, strict, version, pin } => {
+                self.outcome = Outcome::Install { host, pkg, strict, version, pin };
                 Some(command::quit())
             }
             Nav::Insert { host, node, skeleton } => {
@@ -254,8 +271,9 @@ pub fn run(
     verify: VerifyFn,
     modules: Vec<BrowseModule>,
     build: Option<BuildFn>,
+    pin: Option<PinFn>,
 ) -> Result<Outcome, String> {
-    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify, modules, build });
+    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify, modules, build, pin });
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

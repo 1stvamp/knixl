@@ -149,13 +149,13 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
 }
 
 /// `knixl install <pkg>` or `knixl install <pkg>@<version>`: resolve a host, then either open
-/// the interactive Install screen (TTY, no `--yes`, no version) or take the plain path
-/// (verify, confirm, commit). The host KDL is reverted on any failure or a declined confirm.
+/// the interactive Install screen (TTY, no `--yes`) or take the plain path (verify, confirm,
+/// commit). The host KDL is reverted on any failure or a declined confirm.
 ///
-/// A version pin is resolved up front: unlike the ambient nix package check (which can be
-/// skipped when nix is unavailable, absent `--strict`), an unresolved pin always refuses,
-/// since generation would be blocked otherwise (a `package` node with a `version` prop but no
-/// matching lock pin is a validation error).
+/// A version pin is resolved up front (plain path) or asynchronously by the TUI: unlike the
+/// ambient nix package check (which can be skipped when nix is unavailable, absent
+/// `--strict`), an unresolved pin always refuses, since generation would be blocked otherwise
+/// (a `package` node with a `version` prop but no matching lock pin is a validation error).
 fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, build: bool) -> Code {
     use knixl_pipeline::install::{list_hosts, select_host};
     use knixl_nix::pin::{PinError, PinResolver};
@@ -174,18 +174,20 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, bu
         Err(e) => { eprintln!("knixl: {e}"); return Code::Usage; }
     };
 
-    // The interactive TUI pin surface is a later addition; for now a versioned install
-    // always takes the plain path below, even on a TTY without --yes.
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    if interactive && !yes && version.is_none() {
+    if interactive && !yes {
         let entry = tui::Entry::Install {
-            pkg: pkg.to_string(),
+            pkg: name.to_string(),
             strict,
             host: Some(initial.name.clone()),
+            version: version.map(str::to_string),
         };
         let build_fn = build.then(|| make_build(ctx.root.clone()));
-        return match open_tui(entry, build_fn) {
-            Ok(tui::Outcome::Install { host, pkg, strict }) => commit_install(&host, &pkg, None, strict),
+        let pin_fn = version.is_some().then(make_pin);
+        return match open_tui(entry, build_fn, pin_fn) {
+            Ok(tui::Outcome::Install { host, pkg, strict, version, pin }) => {
+                commit_tui_install(host, pkg, strict, version, pin)
+            }
             Ok(_) => { println!("cancelled"); Code::Clean }
             Err(e) => { eprintln!("knixl: tui: {e}"); Code::Internal }
         };
@@ -287,7 +289,14 @@ fn commit_install(
         eprintln!("knixl: {}: {e}", chosen.path.display());
         return Code::Internal;
     }
-    let revert = || { let _ = std::fs::write(&chosen.path, &original); };
+    // Undo the pin along with the KDL: a version_pin was written above, before the KDL hit
+    // disk, so an abort past this point must not leave it dangling in the lock.
+    let revert = || {
+        let _ = std::fs::write(&chosen.path, &original);
+        if version_pin.is_some() {
+            remove_pin(&chosen.name, pkg);
+        }
+    };
 
     let drafted = Ctx::load();
     let plan = Plan::compute(&drafted.inputs, &drafted.disk, &drafted.lock, &drafted.running);
@@ -337,14 +346,45 @@ fn write_pin(host: &str, package: &str, version: &str, resolved: &knixl_nix::pin
     write_lock(&ctx, &lock);
 }
 
+/// Undo `write_pin`: drop the pin for `package` under `host`, then write the lock back.
+/// Mirrors `write_pin`. Called on `commit_install`'s revert path (a validation, parse, or
+/// drift failure after the pin was already written), so an aborted install never leaves a
+/// dangling pin behind. A no-op when no pin exists for that package on that host.
+fn remove_pin(host: &str, package: &str) {
+    let ctx = Ctx::load();
+    let mut lock = ctx.lock.clone();
+    let pins = lock.pins.entry(host.to_string()).or_default();
+    pins.retain(|p| p.package != package);
+    write_lock(&ctx, &lock);
+}
+
+/// Turn the TUI's `Outcome::Install` pin payload (rev, sha256 as plain strings, since the
+/// TUI module stays decoupled from `knixl_nix`) into `commit_install`'s `version_pin`
+/// argument, then commit. Shared by the interactive `install` branch and the Hub flow.
+fn commit_tui_install(
+    host: knixl_pipeline::install::HostInfo,
+    pkg: String,
+    strict: bool,
+    version: Option<String>,
+    pin: Option<(String, String)>,
+) -> Code {
+    let resolved = pin.map(|(rev, sha256)| knixl_nix::pin::Resolved { nixpkgs_rev: rev, sha256 });
+    let version_pin = version.as_deref().zip(resolved.as_ref());
+    commit_install(&host, &pkg, version_pin, strict)
+}
+
 /// Open the TUI for the given entry: discover the project, list hosts, and inject a verify
 /// function that (off the event-loop thread) drafts the host and checks it under nix.
-fn open_tui(entry: tui::Entry, build: Option<tui::BuildFn>) -> Result<tui::Outcome, String> {
+fn open_tui(
+    entry: tui::Entry,
+    build: Option<tui::BuildFn>,
+    pin: Option<tui::PinFn>,
+) -> Result<tui::Outcome, String> {
     use knixl_pipeline::install::list_hosts;
     let root = discover_root();
     let hosts = list_hosts(&root).map_err(|e| e.to_string())?;
     let modules = browse_modules(&root);
-    tui::run(entry, root.clone(), hosts, make_verify(root.clone()), modules, build)
+    tui::run(entry, root.clone(), hosts, make_verify(root.clone()), modules, build, pin)
 }
 
 /// Enumerate registered modules for the Browse screen: node name, kind tag, rendered schema
@@ -442,6 +482,20 @@ fn make_build(root: std::path::PathBuf) -> tui::BuildFn {
             Err(NixError::Unavailable(_)) => tui::BuildOutcome::Skipped,
             Err(NixError::Failed(_)) => tui::BuildOutcome::Failed,
         }
+    })
+}
+
+/// The pin-resolve function for the Install screen: resolves `name@version` to a nixpkgs
+/// commit via `PinResolver`, mapping resolver errors to a coarse outcome. Injected only when
+/// a version was requested; takes no project state (the resolver is version-independent of
+/// the current lock).
+fn make_pin() -> tui::PinFn {
+    use knixl_nix::pin::{PinError, PinResolver};
+    Arc::new(move |name: &str, version: &str| match PinResolver::resolve().lookup(name, version) {
+        Ok(r) => tui::PinOutcome::Resolved { rev: r.nixpkgs_rev, sha256: r.sha256 },
+        Err(PinError::NotFound(_)) => tui::PinOutcome::NotFound,
+        Err(PinError::Unavailable(_)) => tui::PinOutcome::Unavailable,
+        Err(PinError::Failed(_)) => tui::PinOutcome::Failed,
     })
 }
 
@@ -589,7 +643,7 @@ fn dispatch() -> Code {
             eprintln!("knixl: tui needs an interactive terminal");
             return Code::Usage;
         }
-        return match open_tui(tui::Entry::Hub, None) {
+        return match open_tui(tui::Entry::Hub, None, None) {
             Ok(outcome) => finish_tui_outcome(outcome),
             Err(e) => { eprintln!("knixl: {e}"); Code::Internal }
         };
@@ -601,7 +655,9 @@ fn dispatch() -> Code {
 /// or cancel does nothing.
 fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
     match outcome {
-        tui::Outcome::Install { host, pkg, strict } => commit_install(&host, &pkg, None, strict),
+        tui::Outcome::Install { host, pkg, strict, version, pin } => {
+            commit_tui_install(host, pkg, strict, version, pin)
+        }
         tui::Outcome::Insert { host, node, skeleton } => commit_insert(&host, &node, &skeleton),
         tui::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),
         tui::Outcome::Cancelled | tui::Outcome::Quit => Code::Clean,

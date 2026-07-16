@@ -13,7 +13,7 @@ use lipgloss::{join_vertical, rounded_border, Style, LEFT};
 
 use knixl_pipeline::install::HostInfo;
 
-use super::{config, theme, widgets, BuildOutcome, Entry, Nav, Step, Verified};
+use super::{config, theme, widgets, BuildOutcome, Entry, Nav, PinOutcome, Step, Verified};
 
 /// Does `pkgs.<pkg>` resolve. Host-independent, recomputed when the package changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +54,22 @@ struct BuildDone {
     outcome: BuildOutcome,
 }
 
+/// The version-pin resolve status. `Off` means no version was requested (never gates apply,
+/// unlike the build/verify checks, which stay strict-gated: an unresolved pin always refuses).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinState {
+    Off,
+    Resolving,
+    Resolved,
+    Failed,
+}
+
+/// The async pin-resolve result, delivered back to `update`.
+struct PinDone {
+    seq: u64,
+    outcome: PinOutcome,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Focus {
     Host,
@@ -83,6 +99,14 @@ pub struct InstallModel {
     build: BuildState,
     build_spinner: spinner::Model,
     build_seq: u64,
+    /// The version requested at entry (`install pkg@version`), if any. Host-independent.
+    version: Option<String>,
+    pin: PinState,
+    pin_spinner: spinner::Model,
+    pin_seq: u64,
+    /// The resolved (rev, sha256), set once `pin` reaches `Resolved`. Carried through to
+    /// `Nav::Apply` for the CLI to write the pin.
+    pin_resolved: Option<(String, String)>,
     dims: (usize, usize),
 }
 
@@ -111,15 +135,15 @@ impl InstallModel {
     /// verify. Reads `config()` (hosts, entry, verify), so it runs under the program only.
     pub fn enter(size: (u16, u16)) -> (Self, Option<Cmd>) {
         let cfg = config();
-        let (host_sel, pkg_value, strict) = match &cfg.entry {
-            Entry::Install { pkg, strict, host } => {
+        let (host_sel, pkg_value, strict, version) = match &cfg.entry {
+            Entry::Install { pkg, strict, host, version } => {
                 let idx = host
                     .as_ref()
                     .and_then(|n| cfg.hosts.iter().position(|h| &h.name == n))
                     .unwrap_or(0);
-                (idx, pkg.clone(), *strict)
+                (idx, pkg.clone(), *strict, version.clone())
             }
-            Entry::Hub => (0, String::new(), false),
+            Entry::Hub => (0, String::new(), false, None),
         };
 
         let mut pkg = textinput::new();
@@ -129,9 +153,11 @@ impl InstallModel {
         std::mem::drop(pkg.focus());
 
         let (w, h) = view_dims(size);
-        // The injected build fn is the single source of truth for whether `--build` was
-        // requested (Hub never injects one, so it always seeds `Off` there).
+        // The injected build/pin fns are the single source of truth for whether `--build` /
+        // a version were requested (Hub never injects either, so it always seeds `Off` there).
         let build_state = if cfg.build.is_some() { BuildState::Building } else { BuildState::Off };
+        let pin_state =
+            if cfg.pin.is_some() && version.is_some() { PinState::Resolving } else { PinState::Off };
         let mut model = InstallModel {
             pkg,
             hosts: cfg.hosts.clone(),
@@ -148,16 +174,17 @@ impl InstallModel {
             build: build_state,
             build_spinner: new_spinner(),
             build_seq: 0,
+            version,
+            pin: pin_state,
+            pin_spinner: new_spinner(),
+            pin_seq: 0,
+            pin_resolved: None,
             dims: (w, h),
         };
         let verify = model.begin_verify();
         let build = model.begin_build();
-        let cmd = match (verify, build) {
-            (Some(v), Some(b)) => Some(command::batch(vec![v, b])),
-            (v, None) => v,
-            (None, b) => b,
-        };
-        (model, cmd)
+        let pin = model.begin_pin();
+        (model, batch_all(vec![verify, build, pin]))
     }
 
     // ---- pure decision logic (unit-tested) ----
@@ -185,7 +212,13 @@ impl InstallModel {
             BuildState::Skipped => !self.strict,
             BuildState::Building | BuildState::Failed => false,
         };
-        resolve_ok && parse_ok && build_ok
+        // Unlike build/verify, a requested pin is never skippable under --strict: an
+        // unresolved version always refuses (docs on `install`'s pin resolution).
+        let pin_ok = match self.pin {
+            PinState::Off | PinState::Resolved => true,
+            PinState::Resolving | PinState::Failed => false,
+        };
+        resolve_ok && parse_ok && build_ok && pin_ok
     }
 
     fn focus_index(&self) -> usize {
@@ -261,6 +294,30 @@ impl InstallModel {
         };
     }
 
+    /// Mark a new pin resolve as started and return its sequence token.
+    fn mark_resolving(&mut self) -> u64 {
+        self.pin_seq += 1;
+        self.pin = PinState::Resolving;
+        self.pin_seq
+    }
+
+    /// Fold an async pin-resolve result into the state, ignoring a stale result from a
+    /// superseded resolve (package edited again before this one returned).
+    fn on_pin_done(&mut self, seq: u64, outcome: PinOutcome) {
+        if seq != self.pin_seq {
+            return;
+        }
+        match outcome {
+            PinOutcome::Resolved { rev, sha256 } => {
+                self.pin = PinState::Resolved;
+                self.pin_resolved = Some((rev, sha256));
+            }
+            PinOutcome::NotFound | PinOutcome::Unavailable | PinOutcome::Failed => {
+                self.pin = PinState::Failed;
+            }
+        }
+    }
+
     fn resize(&mut self, size: (u16, u16)) {
         let dims = view_dims(size);
         if dims != self.dims {
@@ -294,6 +351,16 @@ impl InstallModel {
         Some(command::batch(vec![build_cmd(seq, pkg), spin_start(self.build_spinner.tick_msg())]))
     }
 
+    /// Start a pin resolve for the current package, if a version was requested. Host-
+    /// independent, so this is NOT called on a host switch.
+    fn begin_pin(&mut self) -> Option<Cmd> {
+        config().pin.as_ref()?; // None => no version requested
+        let version = self.version.clone()?;
+        let seq = self.mark_resolving();
+        let pkg = self.pkg.value();
+        Some(command::batch(vec![pin_cmd(seq, pkg, version), spin_start(self.pin_spinner.tick_msg())]))
+    }
+
     pub fn update(&mut self, msg: Msg, size: (u16, u16)) -> Step {
         if msg.downcast_ref::<WindowSizeMsg>().is_some() {
             self.resize(size);
@@ -307,6 +374,10 @@ impl InstallModel {
             self.on_build_done(done.seq, done.outcome);
             return Step::stay();
         }
+        if let Some(done) = msg.downcast_ref::<PinDone>() {
+            self.on_pin_done(done.seq, done.outcome.clone());
+            return Step::stay();
+        }
         if let Some(tick) = msg.downcast_ref::<spinner::TickMsg>() {
             // Route the tick to whichever spinner owns it (each has a distinct id), and
             // re-arm only while that spinner's work is still in flight.
@@ -315,6 +386,13 @@ impl InstallModel {
                 return Step {
                     nav: Nav::Stay,
                     cmd: if self.build == BuildState::Building { cmd } else { None },
+                };
+            }
+            if tick.id == self.pin_spinner.id() {
+                let cmd = self.pin_spinner.update(msg);
+                return Step {
+                    nav: Nav::Stay,
+                    cmd: if self.pin == PinState::Resolving { cmd } else { None },
                 };
             }
             let cmd = self.spinner.update(msg);
@@ -360,17 +438,14 @@ impl InstallModel {
                 _ => Step::stay(),
             },
             Focus::Package => match code {
-                // Enter commits the edited package name, re-verifies, and re-builds (the
-                // build is package-only, so it re-runs here but not on a host switch).
+                // Enter commits the edited package name, re-verifies, and re-runs the build
+                // and pin resolve (both package-only, so they re-run here but not on a host
+                // switch).
                 KeyCode::Enter => {
                     let v = self.begin_verify();
                     let b = self.begin_build();
-                    let cmd = match (v, b) {
-                        (Some(v), Some(b)) => Some(command::batch(vec![v, b])),
-                        (v, None) => v,
-                        (None, b) => b,
-                    };
-                    Step { nav: Nav::Stay, cmd }
+                    let p = self.begin_pin();
+                    Step { nav: Nav::Stay, cmd: batch_all(vec![v, b, p]) }
                 }
                 _ => {
                     let cmd = self.pkg.update(msg);
@@ -393,6 +468,8 @@ impl InstallModel {
                     host: self.hosts[self.host_sel].clone(),
                     pkg: self.pkg.value(),
                     strict: self.strict,
+                    version: self.version.clone(),
+                    pin: self.pin_resolved.clone(),
                 }),
                 _ => Step::stay(),
             },
@@ -451,6 +528,19 @@ impl InstallModel {
             format!("{}{}{}", marker(false), theme::dim().render("build  "), status)
         });
 
+        let pin_line = (self.pin != PinState::Off).then(|| {
+            let status = match self.pin {
+                PinState::Resolving => format!("{} resolving", self.pin_spinner.view()),
+                PinState::Resolved => {
+                    let rev = self.pin_resolved.as_ref().map(|(r, _)| short_rev(r)).unwrap_or_default();
+                    theme::good().render(&format!("\u{2713} pinned {rev}"))
+                }
+                PinState::Failed => theme::bad().render("\u{2717} pin failed"),
+                PinState::Off => String::new(),
+            };
+            format!("{}{}{}", marker(false), theme::dim().render("pin    "), status)
+        });
+
         let preview_box = Style::new()
             .border(rounded_border())
             .border_foreground(theme::border(self.focus == Focus::Preview))
@@ -476,6 +566,9 @@ impl InstallModel {
         let mut lines = vec![theme::chip(" install "), host_line, pkg_line, strict_line, verify_line];
         if let Some(b) = build_line {
             lines.push(b);
+        }
+        if let Some(p) = pin_line {
+            lines.push(p);
         }
         lines.extend([preview_hdr, preview_box, buttons, hint]);
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
@@ -551,9 +644,39 @@ fn build_cmd(seq: u64, pkg: String) -> Cmd {
     })
 }
 
+/// The pin resolve, off the event-loop thread. Resolves to a `PinDone` with the token so a
+/// stale resolve (package edited again) is discarded. Only called when `config().pin` is
+/// `Some` and a version was requested.
+fn pin_cmd(seq: u64, pkg: String, version: String) -> Cmd {
+    let pin = config().pin.clone().expect("pin fn present when begin_pin ran");
+    Box::pin(async move {
+        match tokio::task::spawn_blocking(move || pin(&pkg, &version)).await {
+            Ok(outcome) => Some(Box::new(PinDone { seq, outcome }) as Msg),
+            Err(_) => None,
+        }
+    })
+}
+
 /// Kick the spinner by emitting its first tick; the spinner's own `update` re-arms after that.
 fn spin_start(tick: spinner::TickMsg) -> Cmd {
     Box::pin(async move { Some(Box::new(tick) as Msg) })
+}
+
+/// Batch together whichever of these commands are present, or `None` if all are absent.
+/// Generalises the verify/build/pin fan-out at `enter` and on a package edit, each of which
+/// may or may not have a command to run.
+fn batch_all(cmds: Vec<Option<Cmd>>) -> Option<Cmd> {
+    let mut present: Vec<Cmd> = cmds.into_iter().flatten().collect();
+    match present.len() {
+        0 => None,
+        1 => present.pop(),
+        _ => Some(command::batch(present)),
+    }
+}
+
+/// A short form of a nixpkgs commit for the pin status line (first 7 chars, git-style).
+fn short_rev(rev: &str) -> String {
+    rev.chars().take(7).collect()
 }
 
 #[cfg(test)]
@@ -585,6 +708,11 @@ mod tests {
             build: BuildState::Off,
             build_spinner: new_spinner(),
             build_seq: 0,
+            version: None,
+            pin: PinState::Off,
+            pin_spinner: new_spinner(),
+            pin_seq: 0,
+            pin_resolved: None,
             dims: (40, 5),
         }
     }
@@ -756,5 +884,32 @@ mod tests {
         m.mark_building();
         m.on_build_done(stale, BuildOutcome::Failed);
         assert_eq!(m.build, BuildState::Building, "stale build result discarded");
+    }
+
+    #[test]
+    fn pin_gating_blocks_apply_until_resolved() {
+        let mut m = model(1);
+        m.pin = PinState::Resolving;
+        assert!(!m.apply_allowed(), "in-flight resolve blocks apply");
+        m.pin = PinState::Failed;
+        assert!(!m.apply_allowed(), "failed resolve blocks apply");
+        m.pin = PinState::Resolved;
+        assert!(m.apply_allowed(), "resolved allows apply");
+    }
+
+    #[test]
+    fn pin_off_does_not_affect_gating() {
+        let mut m = model(1);
+        m.pin = PinState::Off;
+        assert!(m.apply_allowed());
+    }
+
+    #[test]
+    fn on_pin_done_ignores_stale() {
+        let mut m = model(1);
+        let seq = m.mark_resolving();
+        m.mark_resolving();
+        m.on_pin_done(seq, PinOutcome::Resolved { rev: "abc123".into(), sha256: "sha256:zzz".into() });
+        assert_eq!(m.pin, PinState::Resolving, "stale resolve discarded");
     }
 }
