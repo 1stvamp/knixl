@@ -16,6 +16,7 @@ pub struct Lock {
     pub inputs: BTreeMap<PathBuf, Hash>,
     pub modules: BTreeMap<String, Version>,
     pub outputs: Vec<OutputEntry>,
+    pub pins: BTreeMap<String, Vec<Pin>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,13 @@ pub struct OutputEntry {
     pub hash: Hash,
     pub from: PathBuf,
     pub modules: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pin {
+    pub package: String,
+    pub version: String,
+    pub nixpkgs_rev: String,
 }
 
 impl Lock {
@@ -56,6 +64,7 @@ impl Lock {
         let mut inputs = BTreeMap::new();
         let mut modules = BTreeMap::new();
         let mut outputs = Vec::new();
+        let mut pins: BTreeMap<String, Vec<Pin>> = BTreeMap::new();
 
         for node in body.nodes() {
             match node.name().value() {
@@ -79,6 +88,27 @@ impl Lock {
                     modules.insert(arg_str(node, 0)?, parse_version(&prop_str(node, "version")?)?);
                 }
                 "output" => outputs.push(parse_output(node)?),
+                "host" => {
+                    let host = arg_str(node, 0)?;
+                    let mut list = Vec::new();
+                    if let Some(body) = node.children() {
+                        for p in body.nodes() {
+                            if p.name().value() != "pin" {
+                                return Err(LockError::Malformed(format!(
+                                    "unexpected `{}` in host block (expected `pin`)",
+                                    p.name().value()
+                                )));
+                            }
+                            list.push(Pin {
+                                package: arg_str(p, 0)?,
+                                version: prop_str(p, "version")?,
+                                nixpkgs_rev: prop_str(p, "nixpkgs-rev")?,
+                            });
+                        }
+                    }
+                    list.sort_by(|a, b| a.package.cmp(&b.package));
+                    pins.insert(host, list);
+                }
                 other => {
                     return Err(LockError::Malformed(format!("unexpected node `{other}` in lock")))
                 }
@@ -93,6 +123,7 @@ impl Lock {
             inputs,
             modules,
             outputs,
+            pins,
         })
     }
     pub fn render(&self) -> String {
@@ -126,6 +157,19 @@ impl Lock {
                 esc(name),
                 esc(&version.to_string()),
             ));
+        }
+
+        for (host, list) in &self.pins {
+            if list.is_empty() { continue; }
+            s.push('\n');
+            s.push_str(&format!("    host \"{}\" {{\n", esc(host)));
+            for p in list {
+                s.push_str(&format!(
+                    "        pin \"{}\" version=\"{}\" nixpkgs-rev=\"{}\"\n",
+                    esc(&p.package), esc(&p.version), esc(&p.nixpkgs_rev),
+                ));
+            }
+            s.push_str("    }\n");
         }
 
         for out in &self.outputs {
@@ -256,6 +300,7 @@ mod tests {
                     modules: vec!["host".into(), "postgres".into()],
                 },
             ],
+            pins: BTreeMap::new(),
         }
     }
 
@@ -282,5 +327,39 @@ mod tests {
             modules: vec![],
         }];
         assert_eq!(Lock::parse(&lock.render()).expect("parse"), lock);
+    }
+
+    #[test]
+    fn pins_round_trip_and_are_deterministic() {
+        let src = r#"lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
+    host "laptop" {
+        pin "htop" version="3.2.1" nixpkgs-rev="abc123"
+    }
+}
+"#;
+        let lock = Lock::parse(src).expect("parse");
+        let pins = lock.pins.get("laptop").expect("laptop pins");
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].package, "htop");
+        assert_eq!(pins[0].version, "3.2.1");
+        assert_eq!(pins[0].nixpkgs_rev, "abc123");
+        // Re-parsing the rendered form yields the same pins (byte-stable ordering).
+        let again = Lock::parse(&lock.render()).expect("reparse");
+        assert_eq!(again.pins, lock.pins);
+    }
+
+    #[test]
+    fn lock_without_host_block_parses_with_no_pins() {
+        let src = r#"lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
+}
+"#;
+        let lock = Lock::parse(src).expect("parse");
+        assert!(lock.pins.is_empty(), "back-compat: no host block means no pins");
     }
 }

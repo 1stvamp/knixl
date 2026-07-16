@@ -8,3 +8,5 @@ license.workspace = true
 [dependencies]
 blake3.workspace = true
 thiserror.workspace = true
+ureq = "3"
+serde_json.workspace = true

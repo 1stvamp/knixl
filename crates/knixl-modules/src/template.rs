@@ -864,7 +864,7 @@ mod tests {
     fn lower(module: &DeclarativeModule, n: &kdl::KdlNode) -> LowerOutput {
         let reg = crate::Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = crate::LowerCtx::new(crate::Scope { host: "web".into() }, &reg, &mut diags);
+        let mut ctx = crate::LowerCtx::new(crate::Scope { host: "web".into() }, &reg, &mut diags, vec![]);
         module.lower(n, &mut ctx).expect("lower")
     }
 

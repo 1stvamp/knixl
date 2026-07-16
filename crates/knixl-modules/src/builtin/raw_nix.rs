@@ -53,7 +53,7 @@ mod tests {
         let m = RawNixModule::new();
         let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags);
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
 
         let out = m.lower(&node, &mut ctx).unwrap();
         assert!(out.units.is_empty());

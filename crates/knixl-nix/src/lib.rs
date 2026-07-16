@@ -2,6 +2,7 @@
 //! reproducibility boundary. SPEC-GRADE SKETCH.
 
 pub mod nixeval;
+pub mod pin;
 
 #[derive(Debug, Clone)]
 pub struct Formatter {

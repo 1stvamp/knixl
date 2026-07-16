@@ -88,7 +88,7 @@ mod tests {
         // It emits nothing: lowering still yields only the hostPlatform assignment.
         let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags);
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
         let out = h.lower(&n, &mut ctx).unwrap();
         assert_eq!(out.units.len(), 1, "default emits nothing extra");
     }
@@ -99,7 +99,7 @@ mod tests {
         let n = node("host \"web\" {\n    system \"x86_64-linux\"\n}");
         let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags);
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
 
         let out = host.lower(&n, &mut ctx).unwrap();
         assert_eq!(out.units.len(), 1);
