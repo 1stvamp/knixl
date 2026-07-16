@@ -149,6 +149,43 @@ fn nix_shim(tag: &str, exists: bool) -> PathBuf {
     path
 }
 
+/// A shim mimicking `nix-build`: exits 0 when `build_ok`, else 1.
+fn build_shim(tag: &str, build_ok: bool) -> PathBuf {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let path = std::env::temp_dir().join(format!("knixl-cli-buildshim-{}-{tag}", std::process::id()));
+    let exit = if build_ok { 0 } else { 1 };
+    let script = format!("#!/bin/sh\nexit {exit}\n");
+    let mut f = fs::File::create(&path).unwrap();
+    f.write_all(script.as_bytes()).unwrap();
+    f.flush().unwrap();
+    drop(f); // close before exec, or spawning races with ETXTBSY
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[test]
+fn install_build_refuses_when_the_build_fails() {
+    let root = temp_project("install-build-fail");
+    let eval_shim = nix_shim("build-fail-eval", true); // package resolves + parses
+    let bad_build = build_shim("build-fail", false); // build exits non-zero
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "ripgrep", "--host", "web", "--yes", "--build"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &eval_shim)
+        .env("KNIXL_NIX_BUILD", &bad_build)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(out.status.code(), Some(5), "build failure exits Validation (5): {out:?}");
+    // The KDL is untouched (reverted / never written): the build gate runs before commit.
+    let kdl = fs::read_to_string(root.join("hosts/web.kdl")).unwrap();
+    assert!(!kdl.contains("ripgrep"), "no draft left behind: {kdl}");
+    let _ = fs::remove_file(&eval_shim);
+    let _ = fs::remove_file(&bad_build);
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn install_drafts_verifies_and_regenerates() {
     let root = temp_project("install");
