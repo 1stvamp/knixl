@@ -1,5 +1,5 @@
 # mise tasks for knixl. The Rust toolchain itself is pinned in rust-toolchain.toml
-# (1.85.1, honoured by rustup), so mise only drives the workflow here.
+# (1.87.0, honoured by rustup), so mise only drives the workflow here.
 
 [env]
 # Put both build outputs on PATH so `knixl` is callable directly after a build,
@@ -34,7 +34,7 @@ run = "cargo fmt --all --check"
 description = "Type-check without producing binaries"
 run = "cargo check --workspace"
 
-[tasks.run]
+[tasks."run:debug"]
 description = "Run the knixl CLI (args pass through, e.g. `mise run run -- check`)"
 run = "cargo run --quiet -p knixl-cli --"
 
@@ -42,13 +42,25 @@ run = "cargo run --quiet -p knixl-cli --"
 description = "Run the release knixl CLI (args pass through)"
 run = "cargo run --quiet --release -p knixl-cli --"
 
-[tasks.install]
+[tasks."install:release"]
 description = "Build release and install `knixl` to ~/.local/bin (override with KNIXL_INSTALL_DIR)"
 depends = ["build:release"]
+run = "KNIXL_SRC=target/release/knixl mise run install:knixl"
+
+[tasks."install:debug"]
+description = "Build debug and install `knixl` to ~/.local/bin (fast local build; override with KNIXL_INSTALL_DIR)"
+depends = ["build"]
+run = "KNIXL_SRC=target/debug/knixl mise run install:knixl"
+
+# Shared installer body, reused by install:release and install:debug. KNIXL_SRC picks the
+# binary to copy; not meant to be run directly.
+[tasks."install:knixl"]
+hide = true
 run = """
+src="${KNIXL_SRC:-target/release/knixl}"
 dir="${KNIXL_INSTALL_DIR:-$HOME/.local/bin}"
 mkdir -p "$dir"
-install -m 0755 target/release/knixl "$dir/knixl"
+install -m 0755 "$src" "$dir/knixl"
 echo "installed knixl -> $dir/knixl"
 case ":$PATH:" in
   *":$dir:"*) ;;
@@ -56,7 +68,7 @@ case ":$PATH:" in
 esac
 """
 
-[tasks.uninstall]
+[tasks."uninstall:release"]
 description = "Remove the installed `knixl` from ~/.local/bin (override with KNIXL_INSTALL_DIR)"
 run = """
 dir="${KNIXL_INSTALL_DIR:-$HOME/.local/bin}"
