@@ -13,7 +13,7 @@ use lipgloss::{join_vertical, rounded_border, Style, LEFT};
 
 use knixl_pipeline::install::HostInfo;
 
-use super::{config, theme, widgets, Entry, Nav, Step, Verified};
+use super::{config, theme, widgets, BuildOutcome, Entry, Nav, Step, Verified};
 
 /// Does `pkgs.<pkg>` resolve. Host-independent, recomputed when the package changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +36,22 @@ pub enum Parse {
 struct VerifyDone {
     seq: u64,
     verified: Verified,
+}
+
+/// The `--build` status. `Off` means `--build` was not requested (never gates apply).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildState {
+    Off,
+    Building,
+    Ok,
+    Failed,
+    Skipped,
+}
+
+/// The async build result, delivered back to `update`.
+struct BuildDone {
+    seq: u64,
+    outcome: BuildOutcome,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,6 +80,9 @@ pub struct InstallModel {
     verifying: bool,
     seq: u64,
     spinner: spinner::Model,
+    build: BuildState,
+    build_spinner: spinner::Model,
+    build_seq: u64,
     dims: (usize, usize),
 }
 
@@ -110,6 +129,7 @@ impl InstallModel {
         std::mem::drop(pkg.focus());
 
         let (w, h) = view_dims(size);
+        let build = if cfg.build.is_some() { BuildState::Building } else { BuildState::Off };
         let mut model = InstallModel {
             pkg,
             hosts: cfg.hosts.clone(),
@@ -123,9 +143,18 @@ impl InstallModel {
             verifying: false,
             seq: 0,
             spinner: new_spinner(),
+            build,
+            build_spinner: new_spinner(),
+            build_seq: 0,
             dims: (w, h),
         };
-        let cmd = model.begin_verify();
+        let verify = model.begin_verify();
+        let build = model.begin_build();
+        let cmd = match (verify, build) {
+            (Some(v), Some(b)) => Some(command::batch(vec![v, b])),
+            (v, None) => v,
+            (None, b) => b,
+        };
         (model, cmd)
     }
 
@@ -149,7 +178,12 @@ impl InstallModel {
             Parse::Running => false,
             Parse::Failed(_) => false,
         };
-        resolve_ok && parse_ok
+        let build_ok = match self.build {
+            BuildState::Off | BuildState::Ok => true,
+            BuildState::Skipped => !self.strict,
+            BuildState::Building | BuildState::Failed => false,
+        };
+        resolve_ok && parse_ok && build_ok
     }
 
     fn focus_index(&self) -> usize {
@@ -205,6 +239,26 @@ impl InstallModel {
         self.seq
     }
 
+    /// Mark a new build as started and return its sequence token.
+    fn mark_building(&mut self) -> u64 {
+        self.build_seq += 1;
+        self.build = BuildState::Building;
+        self.build_seq
+    }
+
+    /// Fold an async build result into the state, ignoring a stale result from a superseded
+    /// build (package edited again before this one returned).
+    fn on_build_done(&mut self, seq: u64, outcome: BuildOutcome) {
+        if seq != self.build_seq {
+            return;
+        }
+        self.build = match outcome {
+            BuildOutcome::Ok => BuildState::Ok,
+            BuildOutcome::Failed => BuildState::Failed,
+            BuildOutcome::Skipped => BuildState::Skipped,
+        };
+    }
+
     fn resize(&mut self, size: (u16, u16)) {
         let dims = view_dims(size);
         if dims != self.dims {
@@ -229,6 +283,15 @@ impl InstallModel {
         Some(command::batch(vec![verify_cmd(seq, pkg, host), spin_start(self.spinner.tick_msg())]))
     }
 
+    /// Start a build for the current package, if `--build` was requested. Host-independent,
+    /// so this is NOT called on a host switch.
+    fn begin_build(&mut self) -> Option<Cmd> {
+        config().build.as_ref()?; // None => --build not requested
+        let seq = self.mark_building();
+        let pkg = self.pkg.value();
+        Some(command::batch(vec![build_cmd(seq, pkg), spin_start(self.build_spinner.tick_msg())]))
+    }
+
     pub fn update(&mut self, msg: Msg, size: (u16, u16)) -> Step {
         if msg.downcast_ref::<WindowSizeMsg>().is_some() {
             self.resize(size);
@@ -238,9 +301,20 @@ impl InstallModel {
             self.on_verify_done(done.seq, done.verified.clone());
             return Step::stay();
         }
-        if msg.downcast_ref::<spinner::TickMsg>().is_some() {
-            // Advance the spinner and re-arm only while a verify is in flight, so the
-            // animation stops once the result lands.
+        if let Some(done) = msg.downcast_ref::<BuildDone>() {
+            self.on_build_done(done.seq, done.outcome);
+            return Step::stay();
+        }
+        if let Some(tick) = msg.downcast_ref::<spinner::TickMsg>() {
+            // Route the tick to whichever spinner owns it (each has a distinct id), and
+            // re-arm only while that spinner's work is still in flight.
+            if tick.id == self.build_spinner.id() {
+                let cmd = self.build_spinner.update(msg);
+                return Step {
+                    nav: Nav::Stay,
+                    cmd: if self.build == BuildState::Building { cmd } else { None },
+                };
+            }
             let cmd = self.spinner.update(msg);
             return Step { nav: Nav::Stay, cmd: if self.verifying { cmd } else { None } };
         }
@@ -284,8 +358,18 @@ impl InstallModel {
                 _ => Step::stay(),
             },
             Focus::Package => match code {
-                // Enter commits the edited package name and re-verifies.
-                KeyCode::Enter => Step { nav: Nav::Stay, cmd: self.begin_verify() },
+                // Enter commits the edited package name, re-verifies, and re-builds (the
+                // build is package-only, so it re-runs here but not on a host switch).
+                KeyCode::Enter => {
+                    let v = self.begin_verify();
+                    let b = self.begin_build();
+                    let cmd = match (v, b) {
+                        (Some(v), Some(b)) => Some(command::batch(vec![v, b])),
+                        (v, None) => v,
+                        (None, b) => b,
+                    };
+                    Step { nav: Nav::Stay, cmd }
+                }
                 _ => {
                     let cmd = self.pkg.update(msg);
                     Step { nav: Nav::Stay, cmd }
@@ -354,6 +438,17 @@ impl InstallModel {
         let verify_line =
             format!("{}{}{}", marker(false), theme::dim().render("verify "), self.verify_status());
 
+        let build_line = (self.build != BuildState::Off).then(|| {
+            let status = match self.build {
+                BuildState::Building => format!("{} building", self.build_spinner.view()),
+                BuildState::Ok => theme::good().render("\u{2713} builds"),
+                BuildState::Failed => theme::bad().render("\u{2717} build failed"),
+                BuildState::Skipped => theme::amber().render("\u{00b7} build skipped"),
+                BuildState::Off => String::new(),
+            };
+            format!("{}{}{}", marker(false), theme::dim().render("build  "), status)
+        });
+
         let preview_box = Style::new()
             .border(rounded_border())
             .border_foreground(theme::border(self.focus == Focus::Preview))
@@ -376,17 +471,11 @@ impl InstallModel {
             ("esc", "back"),
         ]);
 
-        let lines = [
-            theme::chip(" install "),
-            host_line,
-            pkg_line,
-            strict_line,
-            verify_line,
-            preview_hdr,
-            preview_box,
-            buttons,
-            hint,
-        ];
+        let mut lines = vec![theme::chip(" install "), host_line, pkg_line, strict_line, verify_line];
+        if let Some(b) = build_line {
+            lines.push(b);
+        }
+        lines.extend([preview_hdr, preview_box, buttons, hint]);
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         join_vertical(LEFT, &refs)
     }
@@ -447,6 +536,19 @@ fn verify_cmd(seq: u64, pkg: String, host: HostInfo) -> Cmd {
     })
 }
 
+/// The package build, off the event-loop thread. Resolves to a `BuildDone` with the token so
+/// a stale build (package edited again) is discarded. Only called when `config().build` is
+/// `Some`.
+fn build_cmd(seq: u64, pkg: String) -> Cmd {
+    let build = config().build.clone().expect("build fn present when begin_build ran");
+    Box::pin(async move {
+        match tokio::task::spawn_blocking(move || build(&pkg)).await {
+            Ok(outcome) => Some(Box::new(BuildDone { seq, outcome }) as Msg),
+            Err(_) => None,
+        }
+    })
+}
+
 /// Kick the spinner by emitting its first tick; the spinner's own `update` re-arms after that.
 fn spin_start(tick: spinner::TickMsg) -> Cmd {
     Box::pin(async move { Some(Box::new(tick) as Msg) })
@@ -478,6 +580,9 @@ mod tests {
             verifying: false,
             seq: 0,
             spinner: new_spinner(),
+            build: BuildState::Off,
+            build_spinner: new_spinner(),
+            build_seq: 0,
             dims: (40, 5),
         }
     }
@@ -608,5 +713,46 @@ mod tests {
     fn view_reports_no_hosts() {
         let m = model(0);
         assert!(m.view((80, 24)).contains("no hosts"));
+    }
+
+    #[test]
+    fn build_gating_blocks_apply_until_it_succeeds() {
+        let mut m = model(1);
+        m.build = BuildState::Building; // requested + in flight
+        assert!(!m.apply_allowed(), "in-flight build blocks apply");
+        m.build = BuildState::Failed;
+        assert!(!m.apply_allowed(), "failed build blocks apply");
+        m.build = BuildState::Ok;
+        assert!(m.apply_allowed(), "successful build allows apply");
+    }
+
+    #[test]
+    fn build_skipped_gates_only_under_strict() {
+        let mut m = model(1);
+        m.build = BuildState::Skipped;
+        m.strict = false;
+        assert!(m.apply_allowed(), "skipped build is fine without --strict");
+        m.strict = true;
+        assert!(!m.apply_allowed(), "--strict rejects a skipped build");
+    }
+
+    #[test]
+    fn build_off_does_not_affect_gating() {
+        let mut m = model(1); // resolves Yes, parses Ok by default
+        m.build = BuildState::Off;
+        assert!(m.apply_allowed(), "no --build means the build never gates");
+    }
+
+    #[test]
+    fn on_build_done_sets_state_and_ignores_stale() {
+        let mut m = model(1);
+        m.build = BuildState::Building;
+        let seq = m.mark_building(); // bumps build_seq, sets Building
+        m.on_build_done(seq, BuildOutcome::Ok);
+        assert_eq!(m.build, BuildState::Ok);
+        let stale = seq; // superseded
+        m.mark_building();
+        m.on_build_done(stale, BuildOutcome::Failed);
+        assert_eq!(m.build, BuildState::Building, "stale build result discarded");
     }
 }
