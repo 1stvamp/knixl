@@ -103,6 +103,10 @@ fn generate_one(
                     package: p.package.clone(),
                     version: p.version.clone(),
                     nixpkgs_rev: p.nixpkgs_rev.clone(),
+                    strategy: match p.strategy {
+                        knixl_lock::model::PinStrategy::CommitMix => knixl_modules::PinStrategy::CommitMix,
+                        knixl_lock::model::PinStrategy::Override => knixl_modules::PinStrategy::Override,
+                    },
                 })
                 .collect()
         })
