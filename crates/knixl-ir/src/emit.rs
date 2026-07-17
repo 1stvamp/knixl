@@ -39,12 +39,16 @@ impl Emit for NixExpr {
             NixExpr::Ref(id) => w.push(id),
             NixExpr::Path(p) => w.push(&p.display().to_string()),
             NixExpr::Select(base, path) => {
-                base.emit(w);
+                // `(f x).y` and `(let .. in ..).y` need the base parenthesised; `pkgs.x`
+                // and `{ .. }.x` stand alone.
+                emit_atom(w, base);
                 for seg in path { w.push("."); w.push(seg); }
             }
             NixExpr::List(items) => {
                 w.push("["); w.nl(); w.open();
-                for it in items { it.emit(w); w.nl(); }
+                // List elements are whitespace-separated atoms, so a bare application or
+                // binding form must be parenthesised or it splits into several elements.
+                for it in items { emit_atom(w, it); w.nl(); }
                 w.close(); w.push("]");
             }
             NixExpr::AttrSet(map) => {
@@ -55,7 +59,9 @@ impl Emit for NixExpr {
                 w.close(); w.push("}");
             }
             NixExpr::Apply(f, args) => {
-                f.emit(w);
+                // A lambda or let in function position needs wrapping (`(x: b) y`); a bare
+                // ref/select/apply function is fine, so emit_atom leaves those alone.
+                emit_atom(w, f);
                 for a in args { w.push(" ("); a.emit(w); w.push(")"); }
             }
             NixExpr::Lambda { formals, body } => {
@@ -108,7 +114,7 @@ impl Emit for NixModule {
         w.push("{"); w.nl(); w.open();
         if !self.imports.is_empty() {
             w.push("imports = ["); w.nl(); w.open();
-            for i in &self.imports { i.emit(w); w.nl(); }
+            for i in &self.imports { emit_atom(w, i); w.nl(); }
             w.close(); w.push("];"); w.nl(); w.nl();
         }
         for a in &self.body { a.emit(w); }
@@ -225,6 +231,22 @@ fn emit_raw(w: &mut Writer, r: &RawNix) {
     for (i, line) in r.src.lines().enumerate() {
         if i > 0 { w.nl(); }
         w.push(line);
+    }
+}
+
+
+/// Emit `e` where a single atom is required (a list element, a select base, or a function
+/// position). Function application and binding forms (`f x`, `let .. in ..`, lambdas) are not
+/// atoms, so they are parenthesised; everything else (refs, selects, literals, attrsets,
+/// lists) already stands alone. Without this, `[ import (fetchGit ..) ({..}).x ]` splits into
+/// separate list elements and `(import ..).x` loses its parens. `Raw` is opaque text and is
+/// emitted verbatim: if a caller ever puts a raw application in atom position it must include
+/// its own parens.
+fn emit_atom(w: &mut Writer, e: &NixExpr) {
+    if matches!(e, NixExpr::Apply(..) | NixExpr::Lambda { .. } | NixExpr::Let { .. }) {
+        w.push("("); e.emit(w); w.push(")");
+    } else {
+        e.emit(w);
     }
 }
 
@@ -459,6 +481,56 @@ mod tests {
             NixExpr::Bool(true),
         ]);
         assert_eq!(capture(|w| expr.emit(w)), capture(|w| expr.emit(w)));
+    }
+
+    // ---- atom parenthesisation (list elements and select bases) ----
+
+    #[test]
+    fn application_as_list_element_is_parenthesised() {
+        // A bare `f (x)` in a list would split into two separate elements; it must be
+        // wrapped so it stays a single atom.
+        let expr = NixExpr::List(vec![NixExpr::Apply(
+            Box::new(NixExpr::Ref("f".into())),
+            vec![NixExpr::Ref("x".into())],
+        )]);
+        assert!(
+            capture(|w| expr.emit(w)).contains("(f (x))"),
+            "application list element must be parenthesised: {}",
+            capture(|w| expr.emit(w))
+        );
+    }
+
+    #[test]
+    fn select_on_an_application_parenthesises_the_base() {
+        // `(f x).y`, not `f x.y` (which parses as `f (x.y)`). This is the pinned-package
+        // shape: `(import (fetchGit ..) { .. }).<name>`.
+        let expr = NixExpr::Select(
+            Box::new(NixExpr::Apply(
+                Box::new(NixExpr::Ref("f".into())),
+                vec![NixExpr::Ref("x".into())],
+            )),
+            vec!["y".into()],
+        );
+        assert_eq!(capture(|w| expr.emit(w)), "(f (x)).y");
+    }
+
+    #[test]
+    fn select_on_a_ref_is_not_parenthesised() {
+        let expr = NixExpr::Select(Box::new(NixExpr::Ref("pkgs".into())), vec!["ripgrep".into()]);
+        assert_eq!(capture(|w| expr.emit(w)), "pkgs.ripgrep");
+    }
+
+    #[test]
+    fn lambda_in_function_position_is_parenthesised() {
+        // `({ x }: x) (5)`, not `{ x }: x (5)` (which parses as a lambda returning `x (5)`).
+        let expr = NixExpr::Apply(
+            Box::new(NixExpr::Lambda {
+                formals: Formals { args: vec!["x".into()], ellipsis: false },
+                body: Box::new(NixExpr::Ref("x".into())),
+            }),
+            vec![NixExpr::Int(5)],
+        );
+        assert_eq!(capture(|w| expr.emit(w)), "({ x }: x) (5)");
     }
 
     // ---- module let-block ----
