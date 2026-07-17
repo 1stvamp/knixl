@@ -72,9 +72,8 @@ pub type PinFn = Arc<dyn Fn(&str, &str) -> PinOutcome + Send + Sync>;
 
 /// The result of deciding a pin strategy for `name` at a resolved commit (#28: this replaces
 /// the CLI's post-Apply, second build-test with a decision made once, inside the TUI, before
-/// commit time). Unused until Task 3 wires `TuiConfig.strategy` into the Install screen.
+/// commit time).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum StrategyOutcome {
     /// A strategy was chosen; `label` is the same short phrase the `pinned ... via ...` status
     /// line prints (e.g. "build ok", "override build failed").
@@ -85,7 +84,7 @@ pub enum StrategyOutcome {
 
 /// Decides a pin strategy for `name@version` resolved to `rev` (host-independent). Injected
 /// only when a version was requested; `Send + Sync` so the Install screen runs it off the
-/// event loop. Not yet injected as of #28 Task 1 (wired in Task 3).
+/// event loop.
 pub type StrategyFn = Arc<dyn Fn(&str, &str) -> StrategyOutcome + Send + Sync>;
 
 /// A registered module as the Browse screen sees it: its claimed node, a kind tag, the
@@ -132,6 +131,10 @@ pub enum Outcome {
         version: Option<String>,
         pin: Option<String>,
         no_abi_check: bool,
+        /// The strategy chosen by the Install screen's strategy-selection step (#28), for a
+        /// versioned install; `None` for an unversioned one. The CLI writes the pin with this
+        /// strategy directly, rather than build-testing a second time at commit.
+        strategy: Option<knixl_lock::model::PinStrategy>,
     },
     /// Scaffold this module's node into this host's KDL.
     Insert { host: HostInfo, node: String, skeleton: String },
@@ -150,8 +153,8 @@ pub struct TuiConfig {
     pub modules: Vec<BrowseModule>,
     pub build: Option<BuildFn>,
     pub pin: Option<PinFn>,
-    /// Unused until #28 Task 3 wires it into the Install screen's Apply step.
-    #[allow(dead_code)]
+    /// Injected only when a version was requested (#28): decides the pin strategy inside the
+    /// Install screen's Apply-gated verify sequence, replacing the CLI's post-Apply build-test.
     pub strategy: Option<StrategyFn>,
 }
 
@@ -176,9 +179,8 @@ pub enum Nav {
         pin: Option<String>,
         no_abi_check: bool,
         /// The strategy chosen by the Install screen's strategy-selection step (#28), for a
-        /// versioned install; `None` for an unversioned one. Ignored by `Outcome::Install`'s
-        /// mapping until Task 3 threads it through to `commit_tui_install`.
-        #[allow(dead_code)]
+        /// versioned install; `None` for an unversioned one. Threaded straight through to
+        /// `Outcome::Install`, for the CLI to pass to `commit_tui_install`.
         strategy: Option<knixl_lock::model::PinStrategy>,
     },
     /// Scaffold a module node into a host and end the session.
@@ -269,9 +271,9 @@ impl App {
         match step.nav {
             Nav::Stay => step.cmd,
             Nav::Quit => Some(command::quit()),
-            Nav::Apply { host, pkg, strict, version, pin, no_abi_check, strategy: _ } => {
-                // `strategy` is not yet threaded into `Outcome::Install` (Task 3).
-                self.outcome = Outcome::Install { host, pkg, strict, version, pin, no_abi_check };
+            Nav::Apply { host, pkg, strict, version, pin, no_abi_check, strategy } => {
+                self.outcome =
+                    Outcome::Install { host, pkg, strict, version, pin, no_abi_check, strategy };
                 Some(command::quit())
             }
             Nav::Insert { host, node, skeleton } => {
@@ -313,6 +315,7 @@ impl App {
 
 /// Run the TUI, returning what the session decided. Sets the config, builds a tokio runtime,
 /// drives the bubbletea program, and reads the outcome off the final model.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     entry: Entry,
     root: PathBuf,
@@ -321,8 +324,9 @@ pub fn run(
     modules: Vec<BrowseModule>,
     build: Option<BuildFn>,
     pin: Option<PinFn>,
+    strategy: Option<StrategyFn>,
 ) -> Result<Outcome, String> {
-    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify, modules, build, pin, strategy: None });
+    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify, modules, build, pin, strategy });
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

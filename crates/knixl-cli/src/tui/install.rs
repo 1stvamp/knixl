@@ -71,9 +71,9 @@ struct PinDone {
 }
 
 /// The pin-strategy selection status (#28). `Off` covers both "no version requested" and "a
-/// version was requested but the pin has not resolved yet, or no strategy fn was injected"
-/// (Task 3 wires the fn in); like `PinState::Off`, it never gates apply. `Selecting` replaces
-/// the ambient `--build` check for a versioned install once the pin resolves a rev.
+/// version was requested but the pin has not resolved yet"; like `PinState::Off`, it never
+/// gates apply. `Selecting` replaces the ambient `--build` check for a versioned install once
+/// the pin resolves a rev.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StrategyState {
     Off,
@@ -107,7 +107,9 @@ pub struct InstallModel {
     host_sel: usize,
     strict: bool,
     /// Threaded from the entry point (`--no-abi-check`), carried unchanged through to
-    /// `Nav::Apply` for the CLI to pass on to strategy selection at commit time. Never
+    /// `Nav::Apply`/`Outcome::Install`. Strategy selection itself already closed over the
+    /// CLI's own copy of this flag before the TUI started (`make_strategy`, #28 Task 3); this
+    /// copy is carried along for symmetry with the other `Entry::Install` fields. Never
     /// toggled from within the screen: there is no UI control for it.
     no_abi_check: bool,
     focus: Focus,
@@ -438,7 +440,7 @@ impl InstallModel {
     /// only from `update`'s `PinDone` handling, once the pin resolves a rev for a versioned
     /// install; replaces the ambient build there. Host-independent.
     fn begin_strategy(&mut self, rev: String) -> Option<Cmd> {
-        config().strategy.as_ref()?; // None => not yet wired (Task 3), or no version requested
+        config().strategy.as_ref()?; // None => no version requested (unversioned installs skip this)
         let seq = self.mark_selecting();
         let pkg = self.pkg.value();
         Some(command::batch(vec![

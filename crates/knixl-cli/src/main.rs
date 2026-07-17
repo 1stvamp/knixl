@@ -246,12 +246,22 @@ fn install(
         };
         let build_fn = build.then(|| make_build(ctx.root.clone()));
         let pin_fn = version.is_some().then(make_pin);
-        return match open_tui(entry, build_fn, pin_fn) {
-            Ok(tui::Outcome::Install { host, pkg, strict, version, pin, no_abi_check }) => {
+        // #28: decide the pin strategy once, up front, and inject it into the Install
+        // screen's Apply-gated verify sequence, rather than build-testing a second time at
+        // commit (`commit_tui_install`'s old `choose_strategy` call). `initial` is the target
+        // host before the TUI runs; a host switch inside the TUI does not re-derive this
+        // (mirrors `make_build`/`make_pin`, which are also fixed at `initial`/host-independent).
+        let strategy_fn = version.is_some().then(|| {
+            let baseline_rev =
+                effective_baseline_rev(ctx, &initial.path, &initial.name, pending.get(&initial.name));
+            make_strategy(baseline_rev, no_abi_check)
+        });
+        return match open_tui(entry, build_fn, pin_fn, strategy_fn) {
+            Ok(tui::Outcome::Install { host, pkg, strict, version, pin, no_abi_check, strategy }) => {
                 // The TUI may switch the target host from `initial`: look the pending
                 // resolution up for whichever host was actually chosen.
                 let baseline_pending = pending.get(&host.name).cloned();
-                commit_tui_install(host, pkg, strict, version, pin, no_abi_check, baseline_pending)
+                commit_tui_install(host, pkg, strict, version, pin, no_abi_check, strategy, baseline_pending)
             }
             Ok(_) => { println!("cancelled"); Code::Clean }
             Err(e) => { eprintln!("knixl: tui: {e}"); Code::Internal }
@@ -652,42 +662,34 @@ fn patch_inputs_for_pending(
 /// module stays decoupled from `knixl_nix`) into `commit_install`'s `version_pin` argument,
 /// and commit `baseline_pending` (already resolved in memory by the caller: `run`'s pre-pass
 /// for the interactive-install branch, `finish_tui_outcome`'s own resolve for the Hub flow,
-/// which has no pre-pass) alongside it. `no_abi_check` is threaded from the interactive
-/// `install()` call (the Hub flow has no such flag, so it passes `false`, matching prior
-/// behaviour); on success, print the same status lines as the plain path once the TUI has
-/// restored the terminal (there is no in-TUI status row for this yet: see the Task 5 report).
-/// Shared by the interactive `install` branch and the Hub flow.
+/// which has no pre-pass) alongside it. The strategy for a versioned install was already
+/// chosen inside the TUI's Apply-gated verify sequence (#28 Task 2), so this writes it
+/// straight to the lock rather than build-testing a second time (the double-build issue #28
+/// fixes). `strategy` is `None` only for an unversioned install: Apply is gated on a chosen
+/// strategy whenever a version was requested (see `InstallModel::apply_allowed`), so a
+/// versioned install here always carries `Some`. `no_abi_check` is unused now that the
+/// strategy decision has already been made by the time this runs; it stays a parameter for
+/// symmetry with `Outcome::Install`'s other fields. Shared by the interactive `install`
+/// branch and the Hub flow.
+#[allow(clippy::too_many_arguments)]
 fn commit_tui_install(
     host: knixl_pipeline::install::HostInfo,
     pkg: String,
     strict: bool,
     version: Option<String>,
     pin: Option<String>,
-    no_abi_check: bool,
+    _no_abi_check: bool,
+    strategy: Option<knixl_lock::model::PinStrategy>,
     baseline_pending: Option<HostBaseline>,
 ) -> Code {
-    let version_pin = match (version.as_deref(), pin) {
-        (Some(v), Some(rev)) => {
+    let version_pin = match (version.as_deref(), pin, strategy) {
+        (Some(v), Some(rev), Some(strategy)) => {
             let resolved = knixl_nix::pin::Resolved { nixpkgs_rev: rev };
-            let ctx = Ctx::load();
-            let baseline_rev =
-                effective_baseline_rev(&ctx, &host.path, &host.name, baseline_pending.as_ref());
-            // TODO(#23): the TUI's --build check (if requested) already build-tested `pkg`
-            // before Apply; this build-tests again for strategy selection. Reusing the earlier
-            // result would need strategy selection threaded into the async verify step, which
-            // is a bigger restructure than this fix warrants.
-            match choose_strategy(&pkg, &resolved.nixpkgs_rev, &baseline_rev, no_abi_check) {
-                Ok((strategy, reason, _)) => Some((v, resolved, strategy, reason)),
-                Err((commit_mix, over)) => {
-                    eprintln!("knixl: cannot pin {pkg}@{v}: commit-mix build failed: {commit_mix}");
-                    eprintln!("knixl: cannot pin {pkg}@{v}: override build failed: {over}");
-                    return Code::Validation;
-                }
-            }
+            Some((v, resolved, strategy))
         }
         _ => None,
     };
-    let pin_args = version_pin.as_ref().map(|(v, resolved, strategy, _)| (*v, resolved, *strategy));
+    let pin_args = version_pin.as_ref().map(|(v, resolved, strategy)| (*v, resolved, *strategy));
     let code = commit_install(&host, &pkg, pin_args, baseline_pending.as_ref(), strict);
     if code == Code::Clean {
         if let Some(b) = &baseline_pending {
@@ -696,8 +698,8 @@ fn commit_tui_install(
                 b.release, host.name, b.nixpkgs_rev,
             );
         }
-        if let Some((v, _, strategy, reason)) = &version_pin {
-            println!("pinned {pkg} {v} via {} ({reason})", strategy_label(*strategy));
+        if let Some((v, _, strategy)) = &version_pin {
+            println!("pinned {pkg} {v} via {}", strategy_label(*strategy));
         }
     }
     code
@@ -709,12 +711,13 @@ fn open_tui(
     entry: tui::Entry,
     build: Option<tui::BuildFn>,
     pin: Option<tui::PinFn>,
+    strategy: Option<tui::StrategyFn>,
 ) -> Result<tui::Outcome, String> {
     use knixl_pipeline::install::list_hosts;
     let root = discover_root();
     let hosts = list_hosts(&root).map_err(|e| e.to_string())?;
     let modules = browse_modules(&root);
-    tui::run(entry, root.clone(), hosts, make_verify(root.clone()), modules, build, pin)
+    tui::run(entry, root.clone(), hosts, make_verify(root.clone()), modules, build, pin, strategy)
 }
 
 /// Enumerate registered modules for the Browse screen: node name, kind tag, rendered schema
@@ -880,8 +883,6 @@ fn nix_build_available() -> bool {
 /// Maps `choose_strategy`'s decision to the TUI's `StrategyOutcome`, so `make_strategy`'s
 /// closure shares `choose_strategy`'s decision logic (and the plain path's error text) instead
 /// of a second copy that could drift.
-// Unused until #28 Task 3 wires `make_strategy` into the TUI.
-#[allow(dead_code)]
 fn strategy_outcome(name: &str, rev: &str, baseline_rev: &str, no_abi_check: bool) -> tui::StrategyOutcome {
     match choose_strategy(name, rev, baseline_rev, no_abi_check) {
         Ok((strategy, label, _tested)) => tui::StrategyOutcome::Chosen { strategy, label },
@@ -893,9 +894,8 @@ fn strategy_outcome(name: &str, rev: &str, baseline_rev: &str, no_abi_check: boo
 
 /// Builds the TUI's strategy-selection closure (#28): given `(name, rev)`, runs the same
 /// decision `choose_strategy` runs for the plain path, closing over `baseline_rev` and
-/// `no_abi_check`. Not yet injected into the TUI (unused until Task 3 wires it into the
-/// Install screen's Apply step, replacing the CLI's second, redundant build-test).
-#[allow(dead_code)]
+/// `no_abi_check`. Injected into `TuiConfig` for a versioned interactive install, replacing
+/// the CLI's old second, redundant build-test at commit time.
 fn make_strategy(baseline_rev: String, no_abi_check: bool) -> tui::StrategyFn {
     Arc::new(move |name: &str, rev: &str| strategy_outcome(name, rev, &baseline_rev, no_abi_check))
 }
@@ -1053,7 +1053,7 @@ fn dispatch() -> Code {
             eprintln!("knixl: tui needs an interactive terminal");
             return Code::Usage;
         }
-        return match open_tui(tui::Entry::Hub, None, None) {
+        return match open_tui(tui::Entry::Hub, None, None, None) {
             Ok(outcome) => finish_tui_outcome(outcome),
             Err(e) => { eprintln!("knixl: {e}"); Code::Internal }
         };
@@ -1069,14 +1069,16 @@ fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
         // `false` in `InstallModel::enter`, matching prior behaviour. The Hub flow also has
         // no `run` pre-pass (`Cmd::Tui` is dispatched before `Ctx::load`), so it resolves
         // this one host's pending baseline itself before committing (issue #22 review fix:
-        // this used to be skipped entirely for an ambient install here).
-        tui::Outcome::Install { host, pkg, strict, version, pin, no_abi_check } => {
+        // this used to be skipped entirely for an ambient install here). It also never
+        // requests a version (`Entry::Hub` seeds `version: None`), so `strategy` is always
+        // `None` here too.
+        tui::Outcome::Install { host, pkg, strict, version, pin, no_abi_check, strategy } => {
             let ctx = Ctx::load();
             let baseline_pending = match resolve_pending_baseline(&ctx, &host.name, &host.path) {
                 Ok(b) => b,
                 Err(code) => return code,
             };
-            commit_tui_install(host, pkg, strict, version, pin, no_abi_check, baseline_pending)
+            commit_tui_install(host, pkg, strict, version, pin, no_abi_check, strategy, baseline_pending)
         }
         tui::Outcome::Insert { host, node, skeleton } => commit_insert(&host, &node, &skeleton),
         tui::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),
@@ -1327,8 +1329,13 @@ fn write_lock(ctx: &Ctx, lock: &knixl_lock::Lock) {
 
 #[cfg(test)]
 mod tests {
-    use super::{choose_formatter_bin, make_strategy};
+    use super::{choose_formatter_bin, commit_tui_install, make_strategy, Code};
     use crate::tui;
+
+    /// Serializes tests that mutate `KNIXL_NIX_BUILD` (a process-global env var): cargo runs
+    /// `#[test]` fns in this binary concurrently by default, so two tests each doing their own
+    /// sequential set/assert/restore of the same var would otherwise race each other.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn env_override_wins() {
@@ -1375,6 +1382,7 @@ mod tests {
     /// avoids a race with itself.
     #[test]
     fn make_strategy_maps_build_outcomes() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let prior = std::env::var_os("KNIXL_NIX_BUILD");
 
         let ok_build = build_shim("override-ok", true);
@@ -1405,5 +1413,84 @@ mod tests {
             Some(v) => std::env::set_var("KNIXL_NIX_BUILD", v),
             None => std::env::remove_var("KNIXL_NIX_BUILD"),
         }
+    }
+
+    /// Restores process-global state (`Ctx::load`'s cwd-based root discovery, `KNIXL_FORMATTER`,
+    /// `KNIXL_NIX_BUILD`) on drop, so a panicked assertion in the test below still leaves the
+    /// process sane for whichever other test runs next in this binary.
+    struct RestoreEnv {
+        cwd: std::path::PathBuf,
+        formatter: Option<std::ffi::OsString>,
+        build: Option<std::ffi::OsString>,
+    }
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.cwd);
+            match &self.formatter {
+                Some(v) => std::env::set_var("KNIXL_FORMATTER", v),
+                None => std::env::remove_var("KNIXL_FORMATTER"),
+            }
+            match &self.build {
+                Some(v) => std::env::set_var("KNIXL_NIX_BUILD", v),
+                None => std::env::remove_var("KNIXL_NIX_BUILD"),
+            }
+        }
+    }
+
+    /// #28: `commit_tui_install` used to re-derive the pin strategy itself (`choose_strategy`,
+    /// deleted in Task 3), build-testing a second time even though the TUI's own verify
+    /// sequence had already chosen one. This proves the fix by handing it a strategy directly
+    /// with a build shim that always fails: if `commit_tui_install` still build-tested (the
+    /// bug this closes), both candidates would fail and the install would exit `Validation`
+    /// rather than commit `Override` (the passed-in choice, not what the shim would pick).
+    #[test]
+    fn commit_tui_install_reuses_the_chosen_strategy_without_a_second_build() {
+        use knixl_lock::model::PinStrategy;
+        use knixl_pipeline::install::HostInfo;
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _restore = RestoreEnv {
+            cwd: std::env::current_dir().unwrap(),
+            formatter: std::env::var_os("KNIXL_FORMATTER"),
+            build: std::env::var_os("KNIXL_NIX_BUILD"),
+        };
+
+        let root = std::env::temp_dir().join(format!("knixl-cli-committui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("hosts")).unwrap();
+        std::fs::create_dir_all(root.join("modules/web-service")).unwrap();
+        let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        std::fs::copy(examples.join("hosts/web.kdl"), root.join("hosts/web.kdl")).unwrap();
+        std::fs::copy(
+            examples.join("../modules/web-service/knixl-module.kdl"),
+            root.join("modules/web-service/knixl-module.kdl"),
+        )
+        .unwrap();
+
+        std::env::set_var("KNIXL_FORMATTER", "cat");
+        // Always fails: the canary that proves `commit_tui_install` never calls the build
+        // oracle itself any more.
+        let never_build = build_shim("commit-tui-install", false);
+        std::env::set_var("KNIXL_NIX_BUILD", &never_build);
+        std::env::set_current_dir(&root).unwrap(); // `Ctx::load` (inside `commit_install`) discovers the root from cwd
+
+        let host = HostInfo { name: "web".into(), default: false, path: root.join("hosts/web.kdl") };
+        let code = commit_tui_install(
+            host,
+            "htop".into(),
+            false,
+            Some("3.2.1".into()),
+            Some("abc123".into()),
+            false,
+            Some(PinStrategy::Override),
+            None,
+        );
+        assert!(code == Code::Clean, "a pre-chosen strategy commits without build-testing again");
+
+        let lock = std::fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+        assert!(lock.contains("strategy=\"override\""), "the passed-in strategy is recorded verbatim: {lock}");
+
+        let _ = std::fs::remove_file(&never_build);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
