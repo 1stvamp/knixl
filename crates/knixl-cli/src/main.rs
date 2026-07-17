@@ -345,6 +345,8 @@ fn write_pin(host: &str, package: &str, version: &str, resolved: &knixl_nix::pin
         package: package.to_string(),
         version: version.to_string(),
         nixpkgs_rev: resolved.nixpkgs_rev.clone(),
+        // Task 5 replaces this with the strategy chosen by select_strategy.
+        strategy: knixl_lock::model::PinStrategy::CommitMix,
     });
     pins.sort_by(|a, b| a.package.cmp(&b.package));
     write_lock(&ctx, &lock);

@@ -384,7 +384,7 @@ fn pinned_generate_is_byte_identical_across_runs() {
 /// matching version) does.
 #[test]
 fn generate_prunes_pins_for_packages_no_longer_declared() {
-    use knixl_lock::model::{FormatterPin, OraclePin, Pin};
+    use knixl_lock::model::{FormatterPin, OraclePin, Pin, PinStrategy};
     use knixl_lock::Plan;
     use knixl_pipeline::gather::gather;
 
@@ -403,8 +403,8 @@ fn generate_prunes_pins_for_packages_no_longer_declared() {
     pins.insert(
         "app".to_string(),
         vec![
-            Pin { package: "jq".into(), version: "1.7".into(), nixpkgs_rev: rev.clone() },
-            Pin { package: "htop".into(), version: "3.2.1".into(), nixpkgs_rev: rev },
+            Pin { package: "jq".into(), version: "1.7".into(), nixpkgs_rev: rev.clone(), strategy: PinStrategy::CommitMix },
+            Pin { package: "htop".into(), version: "3.2.1".into(), nixpkgs_rev: rev, strategy: PinStrategy::CommitMix },
         ],
     );
     let lock = Lock {

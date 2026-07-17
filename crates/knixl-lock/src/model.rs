@@ -37,6 +37,18 @@ pub struct Pin {
     pub package: String,
     pub version: String,
     pub nixpkgs_rev: String,
+    pub strategy: PinStrategy,
+}
+
+/// How a pinned package is emitted from its `nixpkgs-rev`. `CommitMix` (the default) imports
+/// the whole package from the historical commit; `Override` builds the baseline package with
+/// the historical `version` and `src` via `overrideAttrs`. Both record the same rev; only the
+/// generated Nix differs. `Override` renders a `strategy="override"` attr; `CommitMix` renders
+/// no attr at all, so existing locks (predating this field) round-trip byte-for-byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinStrategy {
+    CommitMix,
+    Override,
 }
 
 impl Lock {
@@ -103,6 +115,7 @@ impl Lock {
                                 package: arg_str(p, 0)?,
                                 version: prop_str(p, "version")?,
                                 nixpkgs_rev: prop_str(p, "nixpkgs-rev")?,
+                                strategy: parse_pin_strategy(p)?,
                             });
                         }
                     }
@@ -165,9 +178,13 @@ impl Lock {
             s.push_str(&format!("    host \"{}\" {{\n", esc(host)));
             for p in list {
                 s.push_str(&format!(
-                    "        pin \"{}\" version=\"{}\" nixpkgs-rev=\"{}\"\n",
+                    "        pin \"{}\" version=\"{}\" nixpkgs-rev=\"{}\"",
                     esc(&p.package), esc(&p.version), esc(&p.nixpkgs_rev),
                 ));
+                if p.strategy == PinStrategy::Override {
+                    s.push_str(" strategy=\"override\"");
+                }
+                s.push('\n');
             }
             s.push_str("    }\n");
         }
@@ -225,6 +242,18 @@ fn prop_str(node: &KdlNode, key: &str) -> Result<String, LockError> {
         .ok_or_else(|| {
             LockError::Malformed(format!("`{}` missing string prop `{key}`", node.name().value()))
         })
+}
+
+/// The pin's `strategy` attr: absent means `CommitMix` (the default), `"override"` means
+/// `Override`, anything else is malformed.
+fn parse_pin_strategy(node: &KdlNode) -> Result<PinStrategy, LockError> {
+    match node.get("strategy").and_then(|v| v.as_string()) {
+        None => Ok(PinStrategy::CommitMix),
+        Some("override") => Ok(PinStrategy::Override),
+        Some(other) => Err(LockError::Malformed(format!(
+            "pin has unknown strategy `{other}` (expected `override`)"
+        ))),
+    }
 }
 
 /// The nth positional (unnamed) argument, as a string.
@@ -361,5 +390,61 @@ mod tests {
 "#;
         let lock = Lock::parse(src).expect("parse");
         assert!(lock.pins.is_empty(), "back-compat: no host block means no pins");
+    }
+
+    #[test]
+    fn pin_strategy_override_round_trips() {
+        let src = r#"lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
+    host "laptop" {
+        pin "htop" version="3.2.1" nixpkgs-rev="abc123" strategy="override"
+    }
+}
+"#;
+        let lock = Lock::parse(src).expect("parse");
+        let pins = lock.pins.get("laptop").expect("laptop pins");
+        assert_eq!(pins[0].strategy, PinStrategy::Override);
+        let rendered = lock.render();
+        assert!(rendered.contains(
+            "pin \"htop\" version=\"3.2.1\" nixpkgs-rev=\"abc123\" strategy=\"override\"\n"
+        ));
+        assert_eq!(Lock::parse(&rendered).expect("reparse").pins, lock.pins);
+    }
+
+    #[test]
+    fn pin_strategy_absent_defaults_to_commit_mix_and_renders_without_attr() {
+        let src = r#"lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
+    host "laptop" {
+        pin "htop" version="3.2.1" nixpkgs-rev="abc123"
+    }
+}
+"#;
+        let lock = Lock::parse(src).expect("parse");
+        let pins = lock.pins.get("laptop").expect("laptop pins");
+        assert_eq!(pins[0].strategy, PinStrategy::CommitMix);
+        // Back-compat: no `strategy` attr in, none out.
+        let rendered = lock.render();
+        assert!(rendered.contains("pin \"htop\" version=\"3.2.1\" nixpkgs-rev=\"abc123\"\n"));
+        assert!(!rendered.contains("strategy"));
+        assert_eq!(Lock::parse(&rendered).expect("reparse").pins, lock.pins);
+    }
+
+    #[test]
+    fn pin_strategy_unknown_value_is_a_parse_error() {
+        let src = r#"lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
+    host "laptop" {
+        pin "htop" version="3.2.1" nixpkgs-rev="abc123" strategy="bogus"
+    }
+}
+"#;
+        assert!(Lock::parse(src).is_err());
     }
 }
