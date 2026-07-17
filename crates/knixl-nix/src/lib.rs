@@ -1,6 +1,7 @@
 //! Formatter invocation (pinned nixfmt) and content hashing. Both sit on the
 //! reproducibility boundary. SPEC-GRADE SKETCH.
 
+pub mod baseline;
 pub mod nixeval;
 pub mod pin;
 
