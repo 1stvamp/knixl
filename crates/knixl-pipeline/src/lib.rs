@@ -11,6 +11,9 @@
 
 pub mod gather;
 pub mod install;
+pub mod strategy;
+
+pub use strategy::{commit_mix_test_expr, override_test_expr, select_strategy, SelectError};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -103,6 +106,10 @@ fn generate_one(
                     package: p.package.clone(),
                     version: p.version.clone(),
                     nixpkgs_rev: p.nixpkgs_rev.clone(),
+                    strategy: match p.strategy {
+                        knixl_lock::model::PinStrategy::CommitMix => knixl_modules::PinStrategy::CommitMix,
+                        knixl_lock::model::PinStrategy::Override => knixl_modules::PinStrategy::Override,
+                    },
                 })
                 .collect()
         })

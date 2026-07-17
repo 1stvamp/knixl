@@ -237,6 +237,15 @@ pub struct ResolvedPin {
     pub package: String,
     pub version: String,
     pub nixpkgs_rev: String,
+    pub strategy: PinStrategy,
+}
+
+/// Mirrors `knixl_lock::model::PinStrategy`. Duplicated rather than shared because
+/// knixl-modules must not depend on knixl-lock; the pipeline converts between the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinStrategy {
+    CommitMix,
+    Override,
 }
 
 pub struct LowerCtx<'a> {

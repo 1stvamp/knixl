@@ -116,6 +116,28 @@ impl NixEval {
             Err(NixError::Failed(String::from_utf8_lossy(&out.stderr).trim().to_string()))
         }
     }
+
+    /// Build a raw expression, proving it evaluates and its derivation builds. Used at pin time
+    /// to feasibility-test a candidate emit strategy. `--no-out-link` avoids a `result` symlink.
+    pub fn builds_expr(&self, expr: &str) -> Result<(), NixError> {
+        let out = crate::output_retrying_etxtbsy(|| {
+            let mut c = Command::new(&self.build_bin);
+            c.args(["--no-out-link", "-E", expr]);
+            c
+        })
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                NixError::Unavailable(format!("{} not found", self.build_bin.display()))
+            } else {
+                NixError::Unavailable(e.to_string())
+            }
+        })?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(NixError::Failed(String::from_utf8_lossy(&out.stderr).trim().to_string()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -207,5 +229,26 @@ mod tests {
             build_bin: PathBuf::from("/nonexistent/knixl-no-such-nix-build"),
         };
         assert!(matches!(e.builds(&Nixpkgs::Ambient, "x"), Err(NixError::Unavailable(_))));
+    }
+
+    #[test]
+    fn builds_expr_ok_when_shim_exits_zero() {
+        let e = NixEval { bin: PathBuf::from("nix-instantiate"), build_bin: build_shim("beok", true) };
+        assert!(e.builds_expr("1 + 1").is_ok());
+    }
+
+    #[test]
+    fn builds_expr_failed_when_shim_exits_nonzero() {
+        let e = NixEval { bin: PathBuf::from("nix-instantiate"), build_bin: build_shim("bebad", false) };
+        assert!(matches!(e.builds_expr("1 + 1"), Err(NixError::Failed(_))));
+    }
+
+    #[test]
+    fn builds_expr_unavailable_when_binary_missing() {
+        let e = NixEval {
+            bin: PathBuf::from("nix-instantiate"),
+            build_bin: PathBuf::from("/nonexistent/knixl-no-such-nix-build"),
+        };
+        assert!(matches!(e.builds_expr("1 + 1"), Err(NixError::Unavailable(_))));
     }
 }

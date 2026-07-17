@@ -379,12 +379,36 @@ fn pinned_generate_is_byte_identical_across_runs() {
     assert_eq!(run(), run(), "two generate runs produced different bytes for the pinned host");
 }
 
+/// The override emit path (issue #23): a host with one version-pinned package (htop) whose
+/// lock pin carries `strategy="override"`, so the package is bound to `pkgs.htop.overrideAttrs`
+/// against the historical `src`/`version` rather than imported wholesale.
+#[test]
+fn pinned_override_matches_golden() {
+    if !formatter_available() {
+        eprintln!("skipping pinned_override_matches_golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
+    let examples = examples_dir();
+    let path = PathBuf::from("hosts/pinned-override.kdl");
+    let src = fs::read_to_string(examples.join(&path)).expect("read pinned-override host kdl");
+    let pins = pinned_pins();
+    let tool = "0.3.1".parse().unwrap();
+
+    let files = generate(&[HostSource { path, src }], &build_registry(), &formatter(), &tool, None, &pins)
+        .expect("generate");
+
+    assert_eq!(files.len(), 1, "pinned-override host has no side-files");
+    let expected = fs::read_to_string(examples.join("expected/pinned-override.nix"))
+        .expect("no expected output at examples/expected/pinned-override.nix");
+    assert_eq!(files[0].text, expected, "pinned-override.nix does not match golden");
+}
+
 /// GC (issue #24): a pin for a package no longer declared in the host's KDL must not
 /// survive into `lock_next`, while a pin whose package is still declared (with a
 /// matching version) does.
 #[test]
 fn generate_prunes_pins_for_packages_no_longer_declared() {
-    use knixl_lock::model::{FormatterPin, OraclePin, Pin};
+    use knixl_lock::model::{FormatterPin, OraclePin, Pin, PinStrategy};
     use knixl_lock::Plan;
     use knixl_pipeline::gather::gather;
 
@@ -403,8 +427,8 @@ fn generate_prunes_pins_for_packages_no_longer_declared() {
     pins.insert(
         "app".to_string(),
         vec![
-            Pin { package: "jq".into(), version: "1.7".into(), nixpkgs_rev: rev.clone() },
-            Pin { package: "htop".into(), version: "3.2.1".into(), nixpkgs_rev: rev },
+            Pin { package: "jq".into(), version: "1.7".into(), nixpkgs_rev: rev.clone(), strategy: PinStrategy::CommitMix },
+            Pin { package: "htop".into(), version: "3.2.1".into(), nixpkgs_rev: rev, strategy: PinStrategy::CommitMix },
         ],
     );
     let lock = Lock {

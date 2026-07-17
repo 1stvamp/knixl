@@ -88,6 +88,10 @@ pub struct InstallModel {
     hosts: Vec<HostInfo>,
     host_sel: usize,
     strict: bool,
+    /// Threaded from the entry point (`--no-abi-check`), carried unchanged through to
+    /// `Nav::Apply` for the CLI to pass on to strategy selection at commit time. Never
+    /// toggled from within the screen: there is no UI control for it.
+    no_abi_check: bool,
     focus: Focus,
     resolves: Resolve,
     parses: Parse,
@@ -135,15 +139,15 @@ impl InstallModel {
     /// verify. Reads `config()` (hosts, entry, verify), so it runs under the program only.
     pub fn enter(size: (u16, u16)) -> (Self, Option<Cmd>) {
         let cfg = config();
-        let (host_sel, pkg_value, strict, version) = match &cfg.entry {
-            Entry::Install { pkg, strict, host, version } => {
+        let (host_sel, pkg_value, strict, version, no_abi_check) = match &cfg.entry {
+            Entry::Install { pkg, strict, host, version, no_abi_check } => {
                 let idx = host
                     .as_ref()
                     .and_then(|n| cfg.hosts.iter().position(|h| &h.name == n))
                     .unwrap_or(0);
-                (idx, pkg.clone(), *strict, version.clone())
+                (idx, pkg.clone(), *strict, version.clone(), *no_abi_check)
             }
-            Entry::Hub => (0, String::new(), false, None),
+            Entry::Hub => (0, String::new(), false, None, false),
         };
 
         let mut pkg = textinput::new();
@@ -163,6 +167,7 @@ impl InstallModel {
             hosts: cfg.hosts.clone(),
             host_sel,
             strict,
+            no_abi_check,
             focus: Focus::Package,
             resolves: Resolve::Skipped,
             parses: Parse::Skipped,
@@ -470,6 +475,7 @@ impl InstallModel {
                     strict: self.strict,
                     version: self.version.clone(),
                     pin: self.pin_resolved.clone(),
+                    no_abi_check: self.no_abi_check,
                 }),
                 _ => Step::stay(),
             },
@@ -697,6 +703,7 @@ mod tests {
             hosts: (0..hosts).map(|i| host(&format!("h{i}"))).collect(),
             host_sel: 0,
             strict: false,
+            no_abi_check: false,
             focus: Focus::Package,
             resolves: Resolve::Yes,
             parses: Parse::Ok,

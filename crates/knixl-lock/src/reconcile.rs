@@ -415,14 +415,14 @@ mod tests {
 
     #[test]
     fn build_lock_next_prunes_unreferenced_pins() {
-        use crate::model::Pin;
+        use crate::model::{Pin, PinStrategy};
         let mut pins = BTreeMap::new();
         pins.insert("web".to_string(), vec![
-            Pin { package: "htop".into(), version: "3.2.1".into(), nixpkgs_rev: "r1".into() },
-            Pin { package: "jq".into(), version: "1.7".into(), nixpkgs_rev: "r2".into() }, // unreferenced
+            Pin { package: "htop".into(), version: "3.2.1".into(), nixpkgs_rev: "r1".into(), strategy: PinStrategy::CommitMix },
+            Pin { package: "jq".into(), version: "1.7".into(), nixpkgs_rev: "r2".into(), strategy: PinStrategy::CommitMix }, // unreferenced
         ]);
         pins.insert("db".to_string(), vec![ // whole host gone from KDL
-            Pin { package: "ripgrep".into(), version: "14".into(), nixpkgs_rev: "r3".into() },
+            Pin { package: "ripgrep".into(), version: "14".into(), nixpkgs_rev: "r3".into(), strategy: PinStrategy::CommitMix },
         ]);
         let lock = Lock { pins, ..empty_lock() };
 
