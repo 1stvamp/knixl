@@ -30,6 +30,10 @@ pub struct Project {
     /// Non-fatal lints from generation (unclaimed nodes, value conflicts), each prefixed
     /// with the host source it came from. Reported but not gated on.
     pub warnings: Vec<String>,
+    /// Per-host oracle, keyed by host name (issue #22): a host with a declared baseline is
+    /// validated against its own rev's option set, one without falls back to the lock's
+    /// default rev. Absent entry means best-effort skip (nothing cached for that rev).
+    pub oracles: BTreeMap<String, knixl_oracle::Oracle>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -67,18 +71,30 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         },
     };
 
-    // Resolve the oracle option set. KNIXL_OPTIONS_JSON wins (explicit override, and the
-    // path tests use). Otherwise fall back to the set cached for the lock's pinned nixpkgs
-    // rev, so a `check` validates against the locked options without a manual env var. If
-    // neither is present, generation proceeds without option checks (best-effort).
-    let oracle = match std::env::var("KNIXL_OPTIONS_JSON") {
-        Ok(p) => knixl_oracle::Oracle::from_options_json(Path::new(&p)).ok(),
-        Err(_) => knixl_oracle::Oracle::from_rev_cache(&lock.oracle.nixpkgs_rev).ok().flatten(),
+    // Resolve each host's oracle option set (issue #22). KNIXL_OPTIONS_JSON wins (explicit
+    // override, and the path tests use): every host maps to that one options file. Otherwise
+    // each host's rev is its lock baseline if declared, else the lock's default nixpkgs rev,
+    // and the set cached for that rev validates it. If nothing is cached for a host's rev, that
+    // host is simply absent from the map: generation proceeds without option checks for it
+    // (best-effort, now per host rather than project-wide).
+    let names = host_names(&hosts);
+    let oracles: BTreeMap<String, knixl_oracle::Oracle> = match std::env::var("KNIXL_OPTIONS_JSON") {
+        Ok(p) => names
+            .iter()
+            .filter_map(|n| knixl_oracle::Oracle::from_options_json(Path::new(&p)).ok().map(|o| (n.clone(), o)))
+            .collect(),
+        Err(_) => names
+            .iter()
+            .filter_map(|n| {
+                let rev = lock.baselines.get(n).map(|b| b.nixpkgs_rev.as_str()).unwrap_or(&lock.oracle.nixpkgs_rev);
+                knixl_oracle::Oracle::from_rev_cache(rev).ok().flatten().map(|o| (n.clone(), o))
+            })
+            .collect(),
     };
 
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
-    let (expected, validation_errors) = match generate(&hosts, &registry, formatter, &tool, oracle.as_ref(), &lock.pins) {
+    let (expected, validation_errors) = match generate(&hosts, &registry, formatter, &tool, &oracles, &lock.pins) {
         Ok(files) => {
             let expected = files
                 .into_iter()
@@ -122,7 +138,22 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         root: root.to_path_buf(),
         generated,
         warnings,
+        oracles,
     })
+}
+
+/// Every host's own name (its `host "<name>"` positional arg, falling back to "host" the same
+/// way `generate_one` does), so the oracle map is keyed exactly as `generate_one` will look it
+/// up. A host that fails to parse is simply absent; `generate` will surface the parse error.
+fn host_names(hosts: &[HostSource]) -> Vec<String> {
+    hosts
+        .iter()
+        .filter_map(|h| {
+            let doc = knixl_kdl::parse(&h.src).ok()?;
+            let node = doc.nodes().first()?;
+            Some(crate::first_arg_str(node).unwrap_or_else(|| "host".to_string()))
+        })
+        .collect()
 }
 
 fn read_hosts(root: &Path) -> Result<Vec<HostSource>, GatherError> {

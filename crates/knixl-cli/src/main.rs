@@ -522,7 +522,7 @@ fn make_verify(root: std::path::PathBuf) -> tui::VerifyFn {
         match knixl_pipeline::gather::gather(&root, &formatter, tool.clone()) {
             Ok(project) => {
                 let (preview, parses) =
-                    preview_host(&project.registry, &formatter, &tool, host, pkg);
+                    preview_host(&project.registry, &formatter, &tool, host, pkg, &project.oracles);
                 let resolves = resolve_package_rev(&project.lock.oracle.nixpkgs_rev, pkg);
                 tui::Verified { preview, resolves, parses }
             }
@@ -636,6 +636,7 @@ fn preview_host(
     tool: &semver::Version,
     host: &knixl_pipeline::install::HostInfo,
     pkg: &str,
+    oracles: &std::collections::BTreeMap<String, knixl_oracle::Oracle>,
 ) -> (String, tui::Parse) {
     use knixl_pipeline::{generate, install::add_package, HostSource};
     let src = std::fs::read_to_string(&host.path).unwrap_or_default();
@@ -649,7 +650,7 @@ fn preview_host(
         registry,
         formatter,
         tool,
-        None,
+        oracles,
         &no_pins,
     )
     .ok()
