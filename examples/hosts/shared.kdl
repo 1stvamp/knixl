@@ -4,6 +4,7 @@
 
 host "shared" {
     system "x86_64-linux"
+    nixpkgs release="25.05"
 
     security-headers {
         vhost "a.example.com"

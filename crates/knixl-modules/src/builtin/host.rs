@@ -19,8 +19,10 @@ impl Module for Host {
         if let Some(sys) = child_arg_str(node, "system") {
             units.push(unit_default(assign(&["nixpkgs", "hostPlatform"], NixExpr::Str(sys))));
         }
-        // delegate everything except the fields host consumes itself
-        for out in ctx.lower_children(node, &["system"])? {
+        // delegate everything except the fields host consumes itself. `nixpkgs` is
+        // metadata (the declared baseline release, read by the pipeline's gather scan);
+        // it contributes no `Unit` and must not be dispatched or linted.
+        for out in ctx.lower_children(node, &["system", "nixpkgs"])? {
             units.extend(out.units);
             raw.extend(out.raw);
         }
@@ -52,8 +54,23 @@ fn schema() -> NodeSchema {
             doc: "The Nix system double, e.g. x86_64-linux.".into(),
             args: vec![],
             props: vec![],
+        }, Child {
+            name: "nixpkgs".into(),
+            ty: ValueTy::Node,
+            required: false,
+            repeated: false,
+            delegate: false,
+            doc: "Declares this host's baseline nixpkgs release, e.g. `nixpkgs release=\"25.05\"`. \
+                  Metadata only: read by the pipeline, never emitted.".into(),
+            args: vec![],
+            props: vec![Field {
+                name: "release".into(),
+                ty: ValueTy::Str,
+                required: false,
+                doc: "The declared nixpkgs release, e.g. \"25.05\".".into(),
+            }],
         }],
-        // Everything other than `system` is a service, delegated to its own module.
+        // Everything other than `system`/`nixpkgs` is a service, delegated to its own module.
         open_children: true,
     }
 }
@@ -109,5 +126,28 @@ mod tests {
         }).collect();
         assert_eq!(keys, vec!["nixpkgs", "hostPlatform"]);
         assert!(matches!(&a.value, NixExpr::Str(s) if s == "x86_64-linux"));
+    }
+
+    #[test]
+    fn host_recognises_nixpkgs_release_as_metadata_only() {
+        let host = Host::new();
+        let n = node(
+            "host \"web\" {\n    system \"x86_64-linux\"\n    nixpkgs release=\"25.05\"\n}",
+        );
+        assert!(host.schema().validate(&n).is_ok(), "nixpkgs release should validate");
+
+        let reg = Registry::new();
+        let mut diags = Vec::new();
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
+        let out = host.lower(&n, &mut ctx).unwrap();
+
+        assert!(diags.iter().all(|d| !d.message.contains("nixpkgs")),
+            "no diagnostic should mention nixpkgs, got: {diags:?}");
+        // Only the hostPlatform assignment from `system`; nixpkgs contributes nothing.
+        assert_eq!(out.units.len(), 1);
+        let a = &out.units[0].assignment;
+        let rendered = format!("{a:?}");
+        assert!(!rendered.contains("nixpkgs release"), "release node must not be emitted");
+        assert!(!rendered.contains("25.05"), "release value must not be emitted");
     }
 }

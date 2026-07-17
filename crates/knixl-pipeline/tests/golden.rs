@@ -66,7 +66,8 @@ fn generate_host(host_file: &str) -> Vec<knixl_pipeline::GeneratedFile> {
     let src = fs::read_to_string(examples.join(&path)).expect("read host kdl");
     let tool = "0.3.1".parse().unwrap();
     let no_pins = std::collections::BTreeMap::new();
-    generate(&[HostSource { path, src }], &build_registry(), &identity_formatter(), &tool, None, &no_pins)
+    let no_oracles = std::collections::BTreeMap::new();
+    generate(&[HostSource { path, src }], &build_registry(), &identity_formatter(), &tool, &no_oracles, &no_pins)
         .expect("generate")
 }
 
@@ -122,12 +123,13 @@ fn unknown_child_node_surfaces_as_a_warning_not_an_error() {
     let src = "host \"web\" {\n    system \"x86_64-linux\"\n    mystery-service\n}".to_string();
     let tool = "0.3.1".parse().unwrap();
     let no_pins = std::collections::BTreeMap::new();
+    let no_oracles = std::collections::BTreeMap::new();
     let files = generate(
         &[HostSource { path: PathBuf::from("hosts/web.kdl"), src }],
         &build_registry(),
         &identity_formatter(),
         &tool,
-        None,
+        &no_oracles,
         &no_pins,
     )
     .expect("generate");
@@ -238,7 +240,8 @@ fn assert_host_matches(host_file: &str) {
     let registry = build_registry();
     let tool = "0.3.1".parse().unwrap();
     let no_pins = std::collections::BTreeMap::new();
-    let files = generate(&[HostSource { path, src }], &registry, &formatter(), &tool, None, &no_pins)
+    let no_oracles = std::collections::BTreeMap::new();
+    let files = generate(&[HostSource { path, src }], &registry, &formatter(), &tool, &no_oracles, &no_pins)
         .expect("generate");
 
     assert!(!files.is_empty(), "generate produced no files for {host_file}");
@@ -291,6 +294,7 @@ fn generate_is_byte_identical_across_runs() {
     let src = fs::read_to_string(examples.join(&path)).expect("read host kdl");
     let tool = "0.3.1".parse().unwrap();
     let no_pins = std::collections::BTreeMap::new();
+    let no_oracles = std::collections::BTreeMap::new();
 
     let run = || {
         generate(
@@ -298,7 +302,7 @@ fn generate_is_byte_identical_across_runs() {
             &build_registry(),
             &formatter(),
             &tool,
-            None,
+            &no_oracles,
             &no_pins,
         )
         .expect("generate")
@@ -339,8 +343,9 @@ fn pinned_matches_golden() {
     let src = fs::read_to_string(examples.join(&path)).expect("read pinned host kdl");
     let pins = pinned_pins();
     let tool = "0.3.1".parse().unwrap();
+    let no_oracles = std::collections::BTreeMap::new();
 
-    let files = generate(&[HostSource { path, src }], &build_registry(), &formatter(), &tool, None, &pins)
+    let files = generate(&[HostSource { path, src }], &build_registry(), &formatter(), &tool, &no_oracles, &pins)
         .expect("generate");
 
     assert_eq!(files.len(), 1, "pinned host has no side-files");
@@ -360,6 +365,7 @@ fn pinned_generate_is_byte_identical_across_runs() {
     let src = fs::read_to_string(examples.join(&path)).expect("read pinned host kdl");
     let pins = pinned_pins();
     let tool = "0.3.1".parse().unwrap();
+    let no_oracles = std::collections::BTreeMap::new();
 
     let run = || {
         generate(
@@ -367,7 +373,7 @@ fn pinned_generate_is_byte_identical_across_runs() {
             &build_registry(),
             &formatter(),
             &tool,
-            None,
+            &no_oracles,
             &pins,
         )
         .expect("generate")
@@ -393,8 +399,9 @@ fn pinned_override_matches_golden() {
     let src = fs::read_to_string(examples.join(&path)).expect("read pinned-override host kdl");
     let pins = pinned_pins();
     let tool = "0.3.1".parse().unwrap();
+    let no_oracles = std::collections::BTreeMap::new();
 
-    let files = generate(&[HostSource { path, src }], &build_registry(), &formatter(), &tool, None, &pins)
+    let files = generate(&[HostSource { path, src }], &build_registry(), &formatter(), &tool, &no_oracles, &pins)
         .expect("generate");
 
     assert_eq!(files.len(), 1, "pinned-override host has no side-files");
@@ -440,6 +447,7 @@ fn generate_prunes_pins_for_packages_no_longer_declared() {
         modules: std::collections::BTreeMap::new(),
         outputs: Vec::new(),
         pins,
+        baselines: std::collections::BTreeMap::new(),
     };
     fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();
 

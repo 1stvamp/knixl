@@ -54,20 +54,21 @@ pub enum GenerateError {
     Format(#[from] FormatError),
 }
 
-/// Generate every output file for the given hosts, deterministically. When `oracle` is
-/// Some, every emitted option path is validated against the real NixOS option set. `pins`
-/// carries the lock's resolved package pins, keyed by host name.
+/// Generate every output file for the given hosts, deterministically. `oracles` is a
+/// per-host oracle map (issue #22): when a host has an entry, every option path it emits is
+/// validated against that host's NixOS option set; a host absent from the map is skipped
+/// (best-effort). `pins` carries the lock's resolved package pins, keyed by host name.
 pub fn generate(
     hosts: &[HostSource],
     registry: &Registry,
     formatter: &Formatter,
     tool: &Version,
-    oracle: Option<&knixl_oracle::Oracle>,
+    oracles: &BTreeMap<String, knixl_oracle::Oracle>,
     pins: &BTreeMap<String, Vec<knixl_lock::model::Pin>>,
 ) -> Result<Vec<GeneratedFile>, GenerateError> {
     let mut out = Vec::new();
     for host in hosts {
-        out.extend(generate_one(host, registry, formatter, tool, oracle, pins)?);
+        out.extend(generate_one(host, registry, formatter, tool, oracles, pins)?);
     }
     Ok(out)
 }
@@ -77,7 +78,7 @@ fn generate_one(
     registry: &Registry,
     formatter: &Formatter,
     tool: &Version,
-    oracle: Option<&knixl_oracle::Oracle>,
+    oracles: &BTreeMap<String, knixl_oracle::Oracle>,
     pins: &BTreeMap<String, Vec<knixl_lock::model::Pin>>,
 ) -> Result<Vec<GeneratedFile>, GenerateError> {
     let doc: KdlDocument = parse(&host.src)?;
@@ -151,8 +152,8 @@ fn generate_one(
 
     let module_versions = registry.module_versions();
 
-    // Oracle: validate every emitted option path against the real NixOS option set.
-    if let Some(oracle) = oracle {
+    // Oracle: validate every emitted option path against this host's real NixOS option set.
+    if let Some(oracle) = oracles.get(&host_name) {
         let mut errors = Vec::new();
         for body in files.values() {
             for a in body {

@@ -30,6 +30,10 @@ pub struct Project {
     /// Non-fatal lints from generation (unclaimed nodes, value conflicts), each prefixed
     /// with the host source it came from. Reported but not gated on.
     pub warnings: Vec<String>,
+    /// Per-host oracle, keyed by host name (issue #22): a host with a declared baseline is
+    /// validated against its own rev's option set, one without falls back to the lock's
+    /// default rev. Absent entry means best-effort skip (nothing cached for that rev).
+    pub oracles: BTreeMap<String, knixl_oracle::Oracle>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -63,21 +67,34 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
             modules: registry.module_versions(),
             outputs: Vec::new(),
             pins: BTreeMap::new(),
+            baselines: BTreeMap::new(),
         },
     };
 
-    // Resolve the oracle option set. KNIXL_OPTIONS_JSON wins (explicit override, and the
-    // path tests use). Otherwise fall back to the set cached for the lock's pinned nixpkgs
-    // rev, so a `check` validates against the locked options without a manual env var. If
-    // neither is present, generation proceeds without option checks (best-effort).
-    let oracle = match std::env::var("KNIXL_OPTIONS_JSON") {
-        Ok(p) => knixl_oracle::Oracle::from_options_json(Path::new(&p)).ok(),
-        Err(_) => knixl_oracle::Oracle::from_rev_cache(&lock.oracle.nixpkgs_rev).ok().flatten(),
+    // Resolve each host's oracle option set (issue #22). KNIXL_OPTIONS_JSON wins (explicit
+    // override, and the path tests use): every host maps to that one options file. Otherwise
+    // each host's rev is its lock baseline if declared, else the lock's default nixpkgs rev,
+    // and the set cached for that rev validates it. If nothing is cached for a host's rev, that
+    // host is simply absent from the map: generation proceeds without option checks for it
+    // (best-effort, now per host rather than project-wide).
+    let names = host_names(&hosts);
+    let oracles: BTreeMap<String, knixl_oracle::Oracle> = match std::env::var("KNIXL_OPTIONS_JSON") {
+        Ok(p) => names
+            .iter()
+            .filter_map(|n| knixl_oracle::Oracle::from_options_json(Path::new(&p)).ok().map(|o| (n.clone(), o)))
+            .collect(),
+        Err(_) => names
+            .iter()
+            .filter_map(|n| {
+                let rev = lock.baselines.get(n).map(|b| b.nixpkgs_rev.as_str()).unwrap_or(&lock.oracle.nixpkgs_rev);
+                knixl_oracle::Oracle::from_rev_cache(rev).ok().flatten().map(|o| (n.clone(), o))
+            })
+            .collect(),
     };
 
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
-    let (expected, validation_errors) = match generate(&hosts, &registry, formatter, &tool, oracle.as_ref(), &lock.pins) {
+    let (expected, mut validation_errors) = match generate(&hosts, &registry, formatter, &tool, &oracles, &lock.pins) {
         Ok(files) => {
             let expected = files
                 .into_iter()
@@ -100,6 +117,20 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         Err(other) => return Err(other.into()),
     };
 
+    // A declared baseline that is not yet resolved (no lock entry) or that has moved to a
+    // different release than what is now declared, is a validation error naming the fix
+    // (issue #22). Checked here rather than in `generate` because it compares declared KDL
+    // state against the lock, not against the oracle's option set.
+    let declared_baselines = declared_baselines(&hosts);
+    for (host, release) in &declared_baselines {
+        let resolved = lock.baselines.get(host).is_some_and(|b| &b.release == release);
+        if !resolved {
+            validation_errors.push(format!(
+                "host \"{host}\": nixpkgs release \"{release}\" is not resolved: run knixl upgrade"
+            ));
+        }
+    }
+
     let input_hashes: BTreeMap<PathBuf, String> =
         hosts.iter().map(|h| (h.path.clone(), hash(h.src.as_bytes()))).collect();
 
@@ -113,7 +144,13 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     let referenced_pins = referenced_pins(&hosts);
 
     Ok(Project {
-        inputs: Inputs { expected, input_hashes, validation_errors, referenced_pins },
+        inputs: Inputs {
+            expected,
+            input_hashes,
+            validation_errors,
+            referenced_pins,
+            declared_baselines: declared_baselines.into_keys().collect(),
+        },
         disk: read_disk(root)?,
         lock,
         versions,
@@ -121,7 +158,22 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         root: root.to_path_buf(),
         generated,
         warnings,
+        oracles,
     })
+}
+
+/// Every host's own name (its `host "<name>"` positional arg, falling back to "host" the same
+/// way `generate_one` does), so the oracle map is keyed exactly as `generate_one` will look it
+/// up. A host that fails to parse is simply absent; `generate` will surface the parse error.
+fn host_names(hosts: &[HostSource]) -> Vec<String> {
+    hosts
+        .iter()
+        .filter_map(|h| {
+            let doc = knixl_kdl::parse(&h.src).ok()?;
+            let node = doc.nodes().first()?;
+            Some(crate::first_arg_str(node).unwrap_or_else(|| "host".to_string()))
+        })
+        .collect()
 }
 
 fn read_hosts(root: &Path) -> Result<Vec<HostSource>, GatherError> {
@@ -165,6 +217,26 @@ fn referenced_pins(hosts: &[HostSource]) -> BTreeMap<String, BTreeSet<String>> {
                         set.insert(pkg);
                     }
                 }
+            }
+        }
+    }
+    out
+}
+
+/// Declared per-host baseline nixpkgs release, scanned straight from the gathered KDL.
+/// Keyed by the host's own name, present only for hosts with a `nixpkgs release="..."`
+/// child; a host that doesn't declare one is simply absent from the map (issue #22).
+pub fn declared_baselines(hosts: &[HostSource]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for host in hosts {
+        let Ok(doc) = knixl_kdl::parse(&host.src) else { continue };
+        for node in doc.nodes() {
+            if node.name().value() != "host" {
+                continue;
+            }
+            let Some(name) = crate::first_arg_str(node) else { continue };
+            if let Some(release) = knixl_kdl::child_prop_str(node, "nixpkgs", "release") {
+                out.insert(name, release);
             }
         }
     }
@@ -239,4 +311,29 @@ fn read_lock(root: &Path) -> Result<Option<Lock>, GatherError> {
     }
     let src = std::fs::read_to_string(&path)?;
     Lock::parse(&src).map(Some).map_err(|e| GatherError::Lock(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn declared_baselines_reads_only_declaring_hosts() {
+        let hosts = vec![
+            HostSource {
+                path: PathBuf::from("hosts/web.kdl"),
+                src: "host \"web\" {\n    system \"x86_64-linux\"\n    nixpkgs release=\"25.05\"\n}".into(),
+            },
+            HostSource {
+                path: PathBuf::from("hosts/db.kdl"),
+                src: "host \"db\" {\n    system \"x86_64-linux\"\n}".into(),
+            },
+        ];
+
+        let baselines = declared_baselines(&hosts);
+
+        let expected: BTreeMap<String, String> =
+            BTreeMap::from([("web".to_string(), "25.05".to_string())]);
+        assert_eq!(baselines, expected);
+    }
 }
