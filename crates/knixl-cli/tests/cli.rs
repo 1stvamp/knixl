@@ -298,11 +298,16 @@ fn install_pkg_at_version_resolves_writes_the_pin_and_regenerates() {
     let root = temp_project("install-version-ok");
     let ok_eval = nix_shim("version-ok-eval", true); // package resolves + parses
     let resolver = resolver_shim("ok", "abc123", "", 0);
+    // A resolved rev differs from the (empty, fresh-project) baseline, so pin-strategy
+    // selection would otherwise build-test for real: shim the build oracle to say yes,
+    // deterministically choosing commit-mix without touching the network.
+    let ok_build = build_shim("version-ok-build", true);
     let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
         .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
         .env("KNIXL_NIX", &ok_eval)
+        .env("KNIXL_NIX_BUILD", &ok_build)
         .env("KNIXL_PIN_RESOLVER", &resolver)
         .output()
         .expect("run knixl install");
@@ -321,6 +326,7 @@ fn install_pkg_at_version_resolves_writes_the_pin_and_regenerates() {
 
     let _ = fs::remove_file(&ok_eval);
     let _ = fs::remove_file(&resolver);
+    let _ = fs::remove_file(&ok_build);
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -346,11 +352,15 @@ fn install_pkg_at_version_reverts_the_pin_when_commit_fails_after_write_pin() {
     let root = temp_project("install-version-revert");
     let parse_fail_eval = nix_shim_parse_fails("revert");
     let resolver = resolver_shim("revert-ok", "abc123", "", 0);
+    // As above: shim the build oracle so strategy selection deterministically picks
+    // commit-mix without a real (network-dependent) build test.
+    let ok_build = build_shim("version-revert-build", true);
     let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
         .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
         .env("KNIXL_NIX", &parse_fail_eval)
+        .env("KNIXL_NIX_BUILD", &ok_build)
         .env("KNIXL_PIN_RESOLVER", &resolver)
         .output()
         .expect("run knixl install");
@@ -369,6 +379,82 @@ fn install_pkg_at_version_reverts_the_pin_when_commit_fails_after_write_pin() {
 
     let _ = fs::remove_file(&parse_fail_eval);
     let _ = fs::remove_file(&resolver);
+    let _ = fs::remove_file(&ok_build);
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// A shim mimicking `nix-build` for pin-strategy selection: fails the commit-mix candidate,
+/// passes the override candidate. The two expressions are distinguished by `overrideAttrs`,
+/// which only `override_test_expr` emits.
+fn strategy_build_shim(tag: &str) -> PathBuf {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let path = std::env::temp_dir().join(format!("knixl-cli-strategybuildshim-{}-{tag}", std::process::id()));
+    let script = "#!/bin/sh\ncase \"$*\" in\n  *overrideAttrs*) exit 0 ;;\n  *) exit 1 ;;\nesac\n";
+    let mut f = fs::File::create(&path).unwrap();
+    f.write_all(script.as_bytes()).unwrap();
+    f.flush().unwrap();
+    drop(f); // close before exec, or spawning races with ETXTBSY
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[test]
+fn install_pkg_at_version_falls_back_to_override_when_commit_mix_build_fails() {
+    let root = temp_project("install-strategy-override");
+    let ok_eval = nix_shim("strategy-override-eval", true); // package resolves + parses
+    let resolver = resolver_shim("strategy-override", "abc123", "", 0);
+    let build = strategy_build_shim("override");
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &ok_eval)
+        .env("KNIXL_NIX_BUILD", &build)
+        .env("KNIXL_PIN_RESOLVER", &resolver)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let lock = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert!(lock.contains("strategy=\"override\""), "override strategy recorded: {lock}");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("via override"), "status line names the strategy: {stdout}");
+
+    let _ = fs::remove_file(&ok_eval);
+    let _ = fs::remove_file(&resolver);
+    let _ = fs::remove_file(&build);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn install_pkg_at_version_no_abi_check_skips_the_build_shim() {
+    let root = temp_project("install-no-abi-check");
+    let ok_eval = nix_shim("no-abi-check-eval", true); // package resolves + parses
+    let resolver = resolver_shim("no-abi-check", "abc123", "", 0);
+    // A build shim that always fails: if --no-abi-check really skips the check, it is never
+    // invoked, and the install still succeeds with commit-mix (the run would exit 5 with
+    // both candidates failing if the shim were called).
+    let never_build = build_shim("no-abi-check-build", false);
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "htop@3.2.1", "--host", "web", "--yes", "--no-abi-check"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &ok_eval)
+        .env("KNIXL_NIX_BUILD", &never_build)
+        .env("KNIXL_PIN_RESOLVER", &resolver)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let lock = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert!(lock.contains("pin \"htop\""), "pin recorded: {lock}");
+    assert!(!lock.contains("strategy=\"override\""), "commit-mix recorded (no strategy attr): {lock}");
+
+    let _ = fs::remove_file(&ok_eval);
+    let _ = fs::remove_file(&resolver);
+    let _ = fs::remove_file(&never_build);
     let _ = fs::remove_dir_all(&root);
 }
 

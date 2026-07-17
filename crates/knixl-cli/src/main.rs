@@ -46,6 +46,9 @@ enum Cmd {
         /// Also build the package derivation (proves it builds, not just resolves).
         #[arg(long)]
         build: bool,
+        /// Skip the build-feasibility check that picks the pin strategy: always commit-mix.
+        #[arg(long)]
+        no_abi_check: bool,
     },
     /// Open the interactive TUI (install, browse modules, scaffold a module).
     Tui,
@@ -140,23 +143,15 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
 
         Cmd::Doc { node } => { print_doc(ctx, &node, cli.json); Code::Clean }
 
-        Cmd::Install { pkg, host, yes, strict, build } => {
-            install(ctx, &pkg, host.as_deref(), yes, strict, build)
+        Cmd::Install { pkg, host, yes, strict, build, no_abi_check } => {
+            install(ctx, &pkg, host.as_deref(), yes, strict, build, no_abi_check)
         }
 
         Cmd::Tui => unreachable!("tui is dispatched before Ctx::load"),
     }
 }
 
-/// `knixl install <pkg>` or `knixl install <pkg>@<version>`: resolve a host, then either open
-/// the interactive Install screen (TTY, no `--yes`) or take the plain path (verify, confirm,
-/// commit). The host KDL is reverted on any failure or a declined confirm.
-///
-/// A version pin is resolved up front (plain path) or asynchronously by the TUI: unlike the
-/// ambient nix package check (which can be skipped when nix is unavailable, absent
-/// `--strict`), an unresolved pin always refuses, since generation would be blocked otherwise
-/// (a `package` node with a `version` prop but no matching lock pin is a validation error).
-fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, build: bool) -> Code {
+fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, build: bool, no_abi_check: bool) -> Code {
     use knixl_pipeline::install::{list_hosts, select_host};
     use knixl_nix::pin::{PinError, PinResolver};
 
@@ -193,19 +188,47 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, bu
         };
     }
 
-    // A version cannot be pinned without a resolved commit: refuse before anything else.
-    let resolved = match version {
-        Some(v) => match PinResolver::resolve().lookup(name, v) {
-            Ok(r) => Some(r),
-            Err(e @ (PinError::NotFound(_) | PinError::Failed(_))) => {
-                eprintln!("knixl: {e}");
-                return Code::Validation;
-            }
-            Err(e @ PinError::Unavailable(_)) => {
-                eprintln!("knixl: cannot resolve {name}@{v}: {e}");
-                return Code::Validation;
-            }
-        },
+    // A version cannot be pinned without a resolved commit and a decided strategy: refuse
+    // before anything else. A pin already on record for this exact (host, package, version)
+    // is reused verbatim (its rev and strategy), skipping both resolution and selection: an
+    // idempotent repeat install touches neither the network nor nix.
+    let mut build_tested = false;
+    let version_pin = match version {
+        Some(v) => {
+            let cached = ctx
+                .lock
+                .pins
+                .get(&initial.name)
+                .and_then(|pins| pins.iter().find(|p| p.package == name && p.version == v));
+            let (resolved, strategy, reason) = if let Some(p) = cached {
+                (knixl_nix::pin::Resolved { nixpkgs_rev: p.nixpkgs_rev.clone() }, p.strategy, "cached".to_string())
+            } else {
+                let resolved = match PinResolver::resolve().lookup(name, v) {
+                    Ok(r) => r,
+                    Err(e @ (PinError::NotFound(_) | PinError::Failed(_))) => {
+                        eprintln!("knixl: {e}");
+                        return Code::Validation;
+                    }
+                    Err(e @ PinError::Unavailable(_)) => {
+                        eprintln!("knixl: cannot resolve {name}@{v}: {e}");
+                        return Code::Validation;
+                    }
+                };
+                let baseline_rev = ctx.lock.oracle.nixpkgs_rev.clone();
+                match choose_strategy(name, &resolved.nixpkgs_rev, &baseline_rev, no_abi_check) {
+                    Ok((strategy, reason, tested)) => {
+                        build_tested = tested;
+                        (resolved, strategy, reason)
+                    }
+                    Err((commit_mix, over)) => {
+                        eprintln!("knixl: cannot pin {name}@{v}: commit-mix build failed: {commit_mix}");
+                        eprintln!("knixl: cannot pin {name}@{v}: override build failed: {over}");
+                        return Code::Validation;
+                    }
+                }
+            };
+            Some((v, resolved, strategy, reason))
+        }
         None => None,
     };
 
@@ -225,7 +248,9 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, bu
         }
         tui::Resolve::Yes => {}
     }
-    if build {
+    // A freshly build-tested version pin already proves `name` builds at the pinned rev:
+    // reuse that instead of a second, separate build of the ambient package.
+    if build && !build_tested {
         use knixl_nix::nixeval::{NixError, NixEval, Nixpkgs};
         let rev = &ctx.lock.oracle.nixpkgs_rev;
         let src = if rev.is_empty() { Nixpkgs::Ambient } else { Nixpkgs::PinnedRev(rev.clone()) };
@@ -248,21 +273,20 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, bu
         println!("cancelled");
         return Code::Clean;
     }
-    let version_pin = version.zip(resolved.as_ref());
-    commit_install(&initial, name, version_pin, strict)
+    let pin_args = version_pin.as_ref().map(|(v, resolved, strategy, _)| (*v, resolved, *strategy));
+    let code = commit_install(&initial, name, pin_args, strict);
+    if code == Code::Clean {
+        if let Some((v, _, strategy, reason)) = &version_pin {
+            println!("pinned {name} {v} via {} ({reason})", strategy_label(*strategy));
+        }
+    }
+    code
 }
 
-/// Write the drafted package into the chosen host, verify it generates and parses, then
-/// regenerate. Reverts the KDL on any failure. Shared by the TUI (after Apply) and the
-/// plain path (after confirm).
-///
-/// `version_pin`, when present, is the requested version and its resolved nixpkgs commit: the
-/// KDL gains a `version` prop and the lock gains the matching pin, both written before
-/// regenerating so `generate` sees a `package` node with a pin already on record.
 fn commit_install(
     chosen: &knixl_pipeline::install::HostInfo,
     pkg: &str,
-    version_pin: Option<(&str, &knixl_nix::pin::Resolved)>,
+    version_pin: Option<(&str, &knixl_nix::pin::Resolved, knixl_lock::model::PinStrategy)>,
     strict: bool,
 ) -> Code {
     use knixl_pipeline::install::add_package;
@@ -271,7 +295,7 @@ fn commit_install(
         Ok(s) => s,
         Err(e) => { eprintln!("knixl: {}: {e}", chosen.path.display()); return Code::Internal; }
     };
-    let draft = match add_package(&original, pkg, version_pin.map(|(v, _)| v)) {
+    let draft = match add_package(&original, pkg, version_pin.map(|(v, _, _)| v)) {
         Ok(Some(d)) => d,
         Ok(None) => { println!("{pkg} is already installed on {}", chosen.name); return Code::Clean; }
         Err(e) => { eprintln!("knixl: cannot edit {}: {e}", chosen.path.display()); return Code::Internal; }
@@ -281,8 +305,8 @@ fn commit_install(
     // with a `version` prop and no matching lock pin as an error, so writing the KDL first
     // would (briefly, but for real, since the next line's gather sees it) make the project
     // fail to generate even on the success path.
-    if let Some((v, resolved)) = version_pin {
-        write_pin(&chosen.name, pkg, v, resolved);
+    if let Some((v, resolved, strategy)) = version_pin {
+        write_pin(&chosen.name, pkg, v, resolved, strategy);
     }
 
     if let Err(e) = std::fs::write(&chosen.path, &draft) {
@@ -336,7 +360,13 @@ fn commit_install(
 /// back to disk. Dedups by package name, so re-pinning an already-pinned package replaces the
 /// old entry rather than accumulating one per version. Loads the lock through `Ctx::load` so a
 /// fresh project with no lock yet gets the same seeded default `gather` uses elsewhere.
-fn write_pin(host: &str, package: &str, version: &str, resolved: &knixl_nix::pin::Resolved) {
+fn write_pin(
+    host: &str,
+    package: &str,
+    version: &str,
+    resolved: &knixl_nix::pin::Resolved,
+    strategy: knixl_lock::model::PinStrategy,
+) {
     let ctx = Ctx::load();
     let mut lock = ctx.lock.clone();
     let pins = lock.pins.entry(host.to_string()).or_default();
@@ -345,8 +375,7 @@ fn write_pin(host: &str, package: &str, version: &str, resolved: &knixl_nix::pin
         package: package.to_string(),
         version: version.to_string(),
         nixpkgs_rev: resolved.nixpkgs_rev.clone(),
-        // Task 5 replaces this with the strategy chosen by select_strategy.
-        strategy: knixl_lock::model::PinStrategy::CommitMix,
+        strategy,
     });
     pins.sort_by(|a, b| a.package.cmp(&b.package));
     write_lock(&ctx, &lock);
@@ -365,8 +394,11 @@ fn remove_pin(host: &str, package: &str) {
 }
 
 /// Turn the TUI's `Outcome::Install` pin payload (the rev as a plain string, since the TUI
-/// module stays decoupled from `knixl_nix`) into `commit_install`'s `version_pin` argument,
-/// then commit. Shared by the interactive `install` branch and the Hub flow.
+/// module stays decoupled from `knixl_nix`) into `commit_install`'s `version_pin` argument.
+/// The TUI has no `--no-abi-check` flag yet, so strategy selection always runs the build
+/// gate here; on success, print the same `pinned ... via ...` status line as the plain path
+/// once the TUI has restored the terminal (there is no in-TUI status row for this yet: see
+/// the Task 5 report). Shared by the interactive `install` branch and the Hub flow.
 fn commit_tui_install(
     host: knixl_pipeline::install::HostInfo,
     pkg: String,
@@ -374,9 +406,29 @@ fn commit_tui_install(
     version: Option<String>,
     pin: Option<String>,
 ) -> Code {
-    let resolved = pin.map(|rev| knixl_nix::pin::Resolved { nixpkgs_rev: rev });
-    let version_pin = version.as_deref().zip(resolved.as_ref());
-    commit_install(&host, &pkg, version_pin, strict)
+    let version_pin = match (version.as_deref(), pin) {
+        (Some(v), Some(rev)) => {
+            let resolved = knixl_nix::pin::Resolved { nixpkgs_rev: rev };
+            let ctx = Ctx::load();
+            match choose_strategy(&pkg, &resolved.nixpkgs_rev, &ctx.lock.oracle.nixpkgs_rev, false) {
+                Ok((strategy, reason, _)) => Some((v, resolved, strategy, reason)),
+                Err((commit_mix, over)) => {
+                    eprintln!("knixl: cannot pin {pkg}@{v}: commit-mix build failed: {commit_mix}");
+                    eprintln!("knixl: cannot pin {pkg}@{v}: override build failed: {over}");
+                    return Code::Validation;
+                }
+            }
+        }
+        _ => None,
+    };
+    let pin_args = version_pin.as_ref().map(|(v, resolved, strategy, _)| (*v, resolved, *strategy));
+    let code = commit_install(&host, &pkg, pin_args, strict);
+    if code == Code::Clean {
+        if let Some((v, _, strategy, reason)) = &version_pin {
+            println!("pinned {pkg} {v} via {} ({reason})", strategy_label(*strategy));
+        }
+    }
+    code
 }
 
 /// Open the TUI for the given entry: discover the project, list hosts, and inject a verify
@@ -503,6 +555,62 @@ fn make_pin() -> tui::PinFn {
         Err(PinError::Unavailable(_)) => tui::PinOutcome::Unavailable,
         Err(PinError::Failed(_)) => tui::PinOutcome::Failed,
     })
+}
+
+/// Decide the strategy for pinning `name` at `rev`, then explain why in a short phrase for the
+/// `pinned ... via ...` status line. The third element of the `Ok` tuple is whether a real
+/// build attempt happened (as opposed to a skip on `no_abi_check`, absent nix, or `rev`
+/// matching the baseline): callers reuse that to avoid a second, redundant build when `--build`
+/// was also requested. `Err` carries both candidate build failures, verbatim from
+/// `SelectError::NeitherBuilds` (which has no Display impl), for the caller to report.
+fn choose_strategy(
+    name: &str,
+    rev: &str,
+    baseline_rev: &str,
+    no_abi_check: bool,
+) -> Result<(knixl_lock::model::PinStrategy, String, bool), (String, String)> {
+    use knixl_lock::model::PinStrategy;
+    use knixl_nix::nixeval::NixEval;
+    use knixl_pipeline::{select_strategy, SelectError};
+
+    let nix_available = nix_build_available();
+    let skipped = no_abi_check || !nix_available || rev == baseline_rev;
+    let nix = NixEval::resolve();
+    let build = |expr: &str| nix.builds_expr(expr).map_err(|e| e.to_string());
+    match select_strategy(rev, baseline_rev, name, nix_available, no_abi_check, &build) {
+        Ok(PinStrategy::Override) => {
+            Ok((PinStrategy::Override, "commit-mix build failed".to_string(), true))
+        }
+        Ok(PinStrategy::CommitMix) if skipped => {
+            let reason = if no_abi_check {
+                "--no-abi-check"
+            } else if !nix_available {
+                "nix unavailable"
+            } else {
+                "matches baseline"
+            };
+            Ok((PinStrategy::CommitMix, reason.to_string(), false))
+        }
+        Ok(PinStrategy::CommitMix) => Ok((PinStrategy::CommitMix, "build ok".to_string(), true)),
+        Err(SelectError::NeitherBuilds { commit_mix, over }) => Err((commit_mix, over)),
+    }
+}
+
+/// Whether nix's build oracle (the same binary `NixEval::builds_expr` would use,
+/// `KNIXL_NIX_BUILD` injectable) is present at all. Probed with `--version` rather than a real
+/// evaluation, so detecting absence never touches the network. Feeds `select_strategy`'s
+/// `nix_available` gate.
+fn nix_build_available() -> bool {
+    let nix = knixl_nix::nixeval::NixEval::resolve();
+    std::process::Command::new(&nix.build_bin).arg("--version").output().is_ok()
+}
+
+/// Human-readable name for a `PinStrategy`, for the `pinned ... via ...` status line.
+fn strategy_label(strategy: knixl_lock::model::PinStrategy) -> &'static str {
+    match strategy {
+        knixl_lock::model::PinStrategy::CommitMix => "commit-mix",
+        knixl_lock::model::PinStrategy::Override => "override",
+    }
 }
 
 /// The lock's pinned nixpkgs rev for `root`, or empty if unavailable.
