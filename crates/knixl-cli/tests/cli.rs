@@ -458,6 +458,69 @@ fn install_pkg_at_version_no_abi_check_skips_the_build_shim() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// Declares a `nixpkgs release="25.05"` baseline on the copied `web` host, in place.
+fn declare_baseline_release(root: &Path, release: &str) {
+    let path = root.join("hosts/web.kdl");
+    let src = fs::read_to_string(&path).unwrap();
+    let edited = src.replacen(
+        "system \"x86_64-linux\"",
+        &format!("system \"x86_64-linux\"\n    nixpkgs release=\"{release}\""),
+        1,
+    );
+    assert_ne!(src, edited, "system line not found to anchor the nixpkgs node");
+    fs::write(&path, edited).unwrap();
+}
+
+#[test]
+fn install_with_a_declared_release_resolves_and_writes_the_baseline() {
+    let root = temp_project("install-baseline");
+    declare_baseline_release(&root, "25.05");
+
+    let ok_eval = nix_shim("baseline-eval", true); // package resolves + parses
+    let pin_resolver = resolver_shim("baseline-pin", "abc123", "", 0);
+    let baseline_resolver = resolver_shim("baseline-rev", "deadbeef", "", 0);
+    // Distinct pin/baseline revs would otherwise build-test for real; shim it to succeed.
+    let ok_build = build_shim("baseline-build", true);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &ok_eval)
+        .env("KNIXL_NIX_BUILD", &ok_build)
+        .env("KNIXL_PIN_RESOLVER", &pin_resolver)
+        .env("KNIXL_BASELINE_RESOLVER", &baseline_resolver)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("25.05") && stdout.contains("deadbeef"), "status line: {stdout}");
+
+    let lock = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert!(lock.contains("baseline release=\"25.05\""), "baseline recorded: {lock}");
+    assert!(lock.contains("nixpkgs-rev=\"deadbeef\""), "resolved rev recorded: {lock}");
+
+    let _ = fs::remove_file(&ok_eval);
+    let _ = fs::remove_file(&pin_resolver);
+    let _ = fs::remove_file(&baseline_resolver);
+    let _ = fs::remove_file(&ok_build);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn check_reports_a_validation_error_for_an_unresolved_declared_release() {
+    let root = temp_project("check-baseline-unresolved");
+    declare_baseline_release(&root, "25.05");
+
+    let out = knixl(&root, &["check"]);
+    assert_eq!(out.status.code(), Some(5), "stdout: {}", String::from_utf8_lossy(&out.stdout));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("web") && stderr.contains("25.05") && stderr.contains("knixl upgrade"), "stderr: {stderr}");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn generate_writes_files_then_check_is_clean() {
     let root = temp_project("gen");

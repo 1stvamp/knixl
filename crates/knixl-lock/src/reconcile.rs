@@ -69,6 +69,11 @@ pub struct Inputs {
     /// KDL. Drives pin GC in `build_lock_next`: a pin whose package is not in its host's
     /// set (or whose host is absent entirely) is dropped.
     pub referenced_pins: BTreeMap<String, BTreeSet<String>>,
+    /// Host names that currently declare a `nixpkgs release=".."` node (issue #22), from
+    /// `declared_baselines`. Drives baseline GC in `build_lock_next`: a lock baseline whose
+    /// host is not in this set (host removed from the KDL, or its `nixpkgs` node removed)
+    /// is dropped.
+    pub declared_baselines: BTreeSet<String>,
 }
 
 /// The knixl-generated files currently on disk (header present) and their hashes.
@@ -206,7 +211,7 @@ fn build_lock_next(inputs: &Inputs, lock: &Lock, running: &Versions) -> Lock {
         modules: running.modules.clone(),
         outputs,
         pins: prune_pins(&lock.pins, &inputs.referenced_pins),
-        baselines: lock.baselines.clone(),
+        baselines: prune_baselines(&lock.baselines, &inputs.declared_baselines),
     }
 }
 
@@ -227,6 +232,17 @@ fn prune_pins(
         }
     }
     out
+}
+
+/// Drop baselines for hosts that no longer declare a `nixpkgs release=".."` node: a host
+/// absent from `declared` (removed from the KDL, or its `nixpkgs` node removed) loses its
+/// lock baseline. Release mismatch is not GC's concern (that is the generate-time
+/// validation error alongside `prune_pins`'s pin version mismatch).
+fn prune_baselines(
+    baselines: &BTreeMap<String, crate::model::HostBaseline>,
+    declared: &BTreeSet<String>,
+) -> BTreeMap<String, crate::model::HostBaseline> {
+    baselines.iter().filter(|(host, _)| declared.contains(*host)).map(|(h, b)| (h.clone(), b.clone())).collect()
 }
 
 /// What the command layer did to a file.
@@ -272,6 +288,7 @@ mod tests {
             input_hashes: BTreeMap::new(),
             validation_errors: vec![],
             referenced_pins: BTreeMap::new(),
+            declared_baselines: BTreeSet::new(),
         }
     }
     fn disk_with(entries: &[(&str, &str)]) -> DiskState {
@@ -436,11 +453,36 @@ mod tests {
             input_hashes: BTreeMap::new(),
             validation_errors: vec![],
             referenced_pins: referenced,
+            declared_baselines: BTreeSet::new(),
         };
 
         let next = build_lock_next(&inputs, &lock, &versions());
         assert_eq!(next.pins.get("web").map(Vec::len), Some(1));
         assert_eq!(next.pins["web"][0].package, "htop");
         assert!(!next.pins.contains_key("db"), "removed host drops its pins");
+    }
+
+    #[test]
+    fn build_lock_next_prunes_baselines_for_hosts_that_dropped_nixpkgs() {
+        use crate::model::HostBaseline;
+        let mut baselines = BTreeMap::new();
+        baselines.insert("web".to_string(), HostBaseline {
+            release: "25.05".into(),
+            nixpkgs_rev: "abc123".into(),
+            options_hash: "blake3:opts".into(),
+        });
+        baselines.insert("db".to_string(), HostBaseline {
+            release: "25.05".into(),
+            nixpkgs_rev: "def456".into(),
+            options_hash: "blake3:opts2".into(),
+        }); // host dropped its `nixpkgs` node (or the host itself)
+        let lock = Lock { baselines, ..empty_lock() };
+
+        let mut inputs = inputs_with(vec![]);
+        inputs.declared_baselines = BTreeSet::from(["web".to_string()]); // only "web" still declares one
+
+        let next = build_lock_next(&inputs, &lock, &versions());
+        assert!(next.baselines.contains_key("web"), "still-declaring host keeps its baseline");
+        assert!(!next.baselines.contains_key("db"), "dropped nixpkgs node loses its baseline");
     }
 }

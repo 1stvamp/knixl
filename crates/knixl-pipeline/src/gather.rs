@@ -94,7 +94,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
 
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
-    let (expected, validation_errors) = match generate(&hosts, &registry, formatter, &tool, &oracles, &lock.pins) {
+    let (expected, mut validation_errors) = match generate(&hosts, &registry, formatter, &tool, &oracles, &lock.pins) {
         Ok(files) => {
             let expected = files
                 .into_iter()
@@ -117,6 +117,20 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         Err(other) => return Err(other.into()),
     };
 
+    // A declared baseline that is not yet resolved (no lock entry) or that has moved to a
+    // different release than what is now declared, is a validation error naming the fix
+    // (issue #22). Checked here rather than in `generate` because it compares declared KDL
+    // state against the lock, not against the oracle's option set.
+    let declared_baselines = declared_baselines(&hosts);
+    for (host, release) in &declared_baselines {
+        let resolved = lock.baselines.get(host).is_some_and(|b| &b.release == release);
+        if !resolved {
+            validation_errors.push(format!(
+                "host \"{host}\": nixpkgs release \"{release}\" is not resolved: run knixl upgrade"
+            ));
+        }
+    }
+
     let input_hashes: BTreeMap<PathBuf, String> =
         hosts.iter().map(|h| (h.path.clone(), hash(h.src.as_bytes()))).collect();
 
@@ -130,7 +144,13 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     let referenced_pins = referenced_pins(&hosts);
 
     Ok(Project {
-        inputs: Inputs { expected, input_hashes, validation_errors, referenced_pins },
+        inputs: Inputs {
+            expected,
+            input_hashes,
+            validation_errors,
+            referenced_pins,
+            declared_baselines: declared_baselines.into_keys().collect(),
+        },
         disk: read_disk(root)?,
         lock,
         versions,

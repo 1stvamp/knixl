@@ -80,6 +80,22 @@ fn verdict(plan: &Plan) -> Code {
 }
 
 fn run(cli: Cli, ctx: &Ctx) -> Code {
+    // #22: `install` and `upgrade` are the commands that resolve a declared-but-unresolved
+    // nixpkgs baseline (the validation error below names `upgrade` as the fix for every
+    // other command); this must run before the validation gate, or neither could ever reach
+    // its own remedy. Reload only if a baseline was actually written, so the common case
+    // (nothing declared, or already resolved) costs nothing extra.
+    let reloaded = if matches!(cli.cmd, Cmd::Upgrade { .. } | Cmd::Install { .. }) {
+        match resolve_declared_baselines(ctx) {
+            Ok(true) => Some(Ctx::load()),
+            Ok(false) => None,
+            Err(code) => return code,
+        }
+    } else {
+        None
+    };
+    let ctx = reloaded.as_ref().unwrap_or(ctx);
+
     // Plan::compute is pure; validation errors ride on the plan (verdict maps them to
     // the Validation exit code), so there is no fallible generation step here.
     let plan = Plan::compute(&ctx.inputs, &ctx.disk, &ctx.lock, &ctx.running);
@@ -215,7 +231,10 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, bu
                         return Code::Validation;
                     }
                 };
-                let baseline_rev = ctx.lock.oracle.nixpkgs_rev.clone();
+                let baseline_rev = match resolve_host_baseline(ctx, &initial.name, &initial.path) {
+                    Ok((rev, _)) => rev,
+                    Err(code) => return code,
+                };
                 match choose_strategy(name, &resolved.nixpkgs_rev, &baseline_rev, no_abi_check) {
                     Ok((strategy, reason, tested)) => {
                         build_tested = tested;
@@ -394,6 +413,91 @@ fn remove_pin(host: &str, package: &str) {
     write_lock(&ctx, &lock);
 }
 
+/// Insert or replace the resolved baseline for `host` in the lock, then write it back to
+/// disk. Mirrors `write_pin`.
+fn write_baseline(host: &str, release: &str, rev: &str, options_hash: &str) {
+    let ctx = Ctx::load();
+    let mut lock = ctx.lock.clone();
+    lock.baselines.insert(
+        host.to_string(),
+        knixl_lock::model::HostBaseline {
+            release: release.to_string(),
+            nixpkgs_rev: rev.to_string(),
+            options_hash: options_hash.to_string(),
+        },
+    );
+    write_lock(&ctx, &lock);
+}
+
+/// The `nixpkgs release=".."` a host's own KDL declares, if any (issue #22). Scanned
+/// straight from the file rather than the gathered project, since a target host is often
+/// resolved before (or independently of) a full `gather`.
+fn declared_release(host_path: &std::path::Path) -> Option<String> {
+    let src = std::fs::read_to_string(host_path).ok()?;
+    let doc = knixl_kdl::parse(&src).ok()?;
+    let node = doc.nodes().iter().find(|n| n.name().value() == "host")?;
+    knixl_kdl::child_prop_str(node, "nixpkgs", "release")
+}
+
+/// The blake3 hash of the options.json cached for `rev`, or an empty string when nothing is
+/// cached (best-effort, same convention as an unresolved oracle rev).
+fn options_hash_for_rev(rev: &str) -> String {
+    knixl_oracle::cache_path(rev)
+        .filter(|p| p.is_file())
+        .and_then(|p| std::fs::read(&p).ok())
+        .map(|bytes| knixl_nix::hash(&bytes))
+        .unwrap_or_default()
+}
+
+/// Resolve and record `host`'s declared `nixpkgs release` baseline if the lock does not
+/// already have it resolved to that exact release, then return the rev `choose_strategy`
+/// should treat as this host's baseline (the freshly-recorded or already-recorded baseline
+/// rev, or the project's global oracle rev when the host declares no release), plus whether
+/// a baseline was newly written. `Err(Code::Validation)` on a resolver failure; the message
+/// is already printed, so the caller only needs to return the code.
+fn resolve_host_baseline(
+    ctx: &Ctx,
+    host: &str,
+    host_path: &std::path::Path,
+) -> Result<(String, bool), Code> {
+    let Some(release) = declared_release(host_path) else {
+        return Ok((ctx.lock.oracle.nixpkgs_rev.clone(), false));
+    };
+    if let Some(b) = ctx.lock.baselines.get(host) {
+        if b.release == release {
+            return Ok((b.nixpkgs_rev.clone(), false));
+        }
+    }
+    let rev = knixl_nix::baseline::BaselineResolver::resolve().lookup(&release).map_err(|e| {
+        eprintln!("knixl: cannot resolve nixpkgs release \"{release}\" for host \"{host}\": {e}");
+        Code::Validation
+    })?;
+    let options_hash = options_hash_for_rev(&rev);
+    write_baseline(host, &release, &rev, &options_hash);
+    println!("resolved nixpkgs release \"{release}\" for host \"{host}\" -> {rev}");
+    Ok((rev, true))
+}
+
+/// For every host under `ctx.root` whose KDL declares a `nixpkgs release=".."` not already
+/// resolved to that exact release in the lock, resolve it via `resolve_host_baseline` and
+/// record it. Called by `run`'s `Cmd::Upgrade`/`Cmd::Install` pre-pass, before the shared
+/// validation gate: the "not resolved" validation error names `upgrade` as the fix, and
+/// `install` needs a resolved baseline for `choose_strategy`, so neither could reach its own
+/// remedy if the gate refused first. Returns `Ok(true)` if anything was written (the caller
+/// should reload `Ctx` before re-planning), `Ok(false)` if every declared release already
+/// matched, or `Err(Code::Validation)` on the first resolver failure (message already
+/// printed).
+fn resolve_declared_baselines(ctx: &Ctx) -> Result<bool, Code> {
+    use knixl_pipeline::install::list_hosts;
+    let hosts = list_hosts(&ctx.root).unwrap_or_default();
+    let mut wrote = false;
+    for h in &hosts {
+        let (_, wrote_one) = resolve_host_baseline(ctx, &h.name, &h.path)?;
+        wrote = wrote || wrote_one;
+    }
+    Ok(wrote)
+}
+
 /// Turn the TUI's `Outcome::Install` pin payload (the rev as a plain string, since the TUI
 /// module stays decoupled from `knixl_nix`) into `commit_install`'s `version_pin` argument.
 /// `no_abi_check` is threaded from the interactive `install()` call (the Hub flow has no such
@@ -413,11 +517,15 @@ fn commit_tui_install(
         (Some(v), Some(rev)) => {
             let resolved = knixl_nix::pin::Resolved { nixpkgs_rev: rev };
             let ctx = Ctx::load();
+            let baseline_rev = match resolve_host_baseline(&ctx, &host.name, &host.path) {
+                Ok((rev, _)) => rev,
+                Err(code) => return code,
+            };
             // TODO(#23): the TUI's --build check (if requested) already build-tested `pkg`
             // before Apply; this build-tests again for strategy selection. Reusing the earlier
             // result would need strategy selection threaded into the async verify step, which
             // is a bigger restructure than this fix warrants.
-            match choose_strategy(&pkg, &resolved.nixpkgs_rev, &ctx.lock.oracle.nixpkgs_rev, no_abi_check) {
+            match choose_strategy(&pkg, &resolved.nixpkgs_rev, &baseline_rev, no_abi_check) {
                 Ok((strategy, reason, _)) => Some((v, resolved, strategy, reason)),
                 Err((commit_mix, over)) => {
                     eprintln!("knixl: cannot pin {pkg}@{v}: commit-mix build failed: {commit_mix}");
