@@ -63,6 +63,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
             modules: registry.module_versions(),
             outputs: Vec::new(),
             pins: BTreeMap::new(),
+            baselines: BTreeMap::new(),
         },
     };
 

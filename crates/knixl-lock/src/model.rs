@@ -17,12 +17,22 @@ pub struct Lock {
     pub modules: BTreeMap<String, Version>,
     pub outputs: Vec<OutputEntry>,
     pub pins: BTreeMap<String, Vec<Pin>>,
+    pub baselines: BTreeMap<String, HostBaseline>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatterPin { pub name: String, pub version: String }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OraclePin { pub nixpkgs_rev: String, pub options_hash: Hash }
+
+/// The oracle rev and release a host was last generated against, recorded per host so a
+/// host can move to a newer nixpkgs baseline independently of the others (issue #22).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostBaseline {
+    pub release: String,
+    pub nixpkgs_rev: String,
+    pub options_hash: Hash,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputEntry {
@@ -77,6 +87,7 @@ impl Lock {
         let mut modules = BTreeMap::new();
         let mut outputs = Vec::new();
         let mut pins: BTreeMap<String, Vec<Pin>> = BTreeMap::new();
+        let mut baselines: BTreeMap<String, HostBaseline> = BTreeMap::new();
 
         for node in body.nodes() {
             match node.name().value() {
@@ -103,24 +114,41 @@ impl Lock {
                 "host" => {
                     let host = arg_str(node, 0)?;
                     let mut list = Vec::new();
+                    let mut baseline: Option<HostBaseline> = None;
                     if let Some(body) = node.children() {
                         for p in body.nodes() {
-                            if p.name().value() != "pin" {
-                                return Err(LockError::Malformed(format!(
-                                    "unexpected `{}` in host block (expected `pin`)",
-                                    p.name().value()
-                                )));
+                            match p.name().value() {
+                                "pin" => list.push(Pin {
+                                    package: arg_str(p, 0)?,
+                                    version: prop_str(p, "version")?,
+                                    nixpkgs_rev: prop_str(p, "nixpkgs-rev")?,
+                                    strategy: parse_pin_strategy(p)?,
+                                }),
+                                "baseline" => {
+                                    if baseline.is_some() {
+                                        return Err(LockError::Malformed(format!(
+                                            "host `{host}` has more than one `baseline`"
+                                        )));
+                                    }
+                                    baseline = Some(HostBaseline {
+                                        release: prop_str(p, "release")?,
+                                        nixpkgs_rev: prop_str(p, "nixpkgs-rev")?,
+                                        options_hash: prop_str(p, "options-hash")?,
+                                    });
+                                }
+                                other => {
+                                    return Err(LockError::Malformed(format!(
+                                        "unexpected `{other}` in host block (expected `pin` or `baseline`)"
+                                    )));
+                                }
                             }
-                            list.push(Pin {
-                                package: arg_str(p, 0)?,
-                                version: prop_str(p, "version")?,
-                                nixpkgs_rev: prop_str(p, "nixpkgs-rev")?,
-                                strategy: parse_pin_strategy(p)?,
-                            });
                         }
                     }
                     list.sort_by(|a, b| a.package.cmp(&b.package));
-                    pins.insert(host, list);
+                    pins.insert(host.clone(), list);
+                    if let Some(baseline) = baseline {
+                        baselines.insert(host, baseline);
+                    }
                 }
                 other => {
                     return Err(LockError::Malformed(format!("unexpected node `{other}` in lock")))
@@ -137,6 +165,7 @@ impl Lock {
             modules,
             outputs,
             pins,
+            baselines,
         })
     }
     pub fn render(&self) -> String {
@@ -172,11 +201,18 @@ impl Lock {
             ));
         }
 
-        for (host, list) in &self.pins {
-            if list.is_empty() { continue; }
+        let mut hosts: std::collections::BTreeSet<&String> = self.baselines.keys().collect();
+        hosts.extend(self.pins.iter().filter(|(_, list)| !list.is_empty()).map(|(host, _)| host));
+        for host in hosts {
             s.push('\n');
             s.push_str(&format!("    host \"{}\" {{\n", esc(host)));
-            for p in list {
+            if let Some(baseline) = self.baselines.get(host) {
+                s.push_str(&format!(
+                    "        baseline release=\"{}\" nixpkgs-rev=\"{}\" options-hash=\"{}\"\n",
+                    esc(&baseline.release), esc(&baseline.nixpkgs_rev), esc(&baseline.options_hash),
+                ));
+            }
+            for p in self.pins.get(host).into_iter().flatten() {
                 s.push_str(&format!(
                     "        pin \"{}\" version=\"{}\" nixpkgs-rev=\"{}\"",
                     esc(&p.package), esc(&p.version), esc(&p.nixpkgs_rev),
@@ -330,6 +366,7 @@ mod tests {
                 },
             ],
             pins: BTreeMap::new(),
+            baselines: BTreeMap::new(),
         }
     }
 
@@ -442,6 +479,86 @@ mod tests {
     oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
     host "laptop" {
         pin "htop" version="3.2.1" nixpkgs-rev="abc123" strategy="bogus"
+    }
+}
+"#;
+        assert!(Lock::parse(src).is_err());
+    }
+
+    #[test]
+    fn baseline_round_trips_before_pin_and_lands_in_baselines_map() {
+        let src = r#"lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
+    host "web" {
+        baseline release="25.05" nixpkgs-rev="abc" options-hash="blake3:x"
+        pin "htop" version="3.2.1" nixpkgs-rev="abc"
+    }
+}
+"#;
+        let lock = Lock::parse(src).expect("parse");
+        let baseline = lock.baselines.get("web").expect("web baseline");
+        assert_eq!(baseline.release, "25.05");
+        assert_eq!(baseline.nixpkgs_rev, "abc");
+        assert_eq!(baseline.options_hash, "blake3:x");
+        let pins = lock.pins.get("web").expect("web pins");
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].package, "htop");
+
+        let rendered = lock.render();
+        let baseline_idx = rendered.find("baseline").expect("baseline line present");
+        let pin_idx = rendered.find("pin \"htop\"").expect("pin line present");
+        assert!(baseline_idx < pin_idx, "baseline must render before pin");
+        assert_eq!(Lock::parse(&rendered).expect("reparse"), lock);
+    }
+
+    #[test]
+    fn host_with_only_pins_has_no_baseline_and_renders_unchanged() {
+        let src = r#"lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
+    host "laptop" {
+        pin "htop" version="3.2.1" nixpkgs-rev="abc123"
+    }
+}
+"#;
+        let lock = Lock::parse(src).expect("parse");
+        assert!(lock.baselines.is_empty(), "back-compat: no baseline line means no baselines");
+        // Byte-for-byte back-compat: a host with no baseline renders exactly the same
+        // host block as before this field existed, with no `baseline` line at all.
+        let rendered = lock.render();
+        assert!(!rendered.contains("baseline"));
+        assert!(rendered.contains(
+            "    host \"laptop\" {\n        pin \"htop\" version=\"3.2.1\" nixpkgs-rev=\"abc123\"\n    }\n"
+        ));
+        assert_eq!(Lock::parse(&rendered).expect("reparse"), lock);
+    }
+
+    #[test]
+    fn two_baselines_in_one_host_is_a_parse_error() {
+        let src = r#"lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
+    host "web" {
+        baseline release="25.05" nixpkgs-rev="abc" options-hash="blake3:x"
+        baseline release="25.11" nixpkgs-rev="def" options-hash="blake3:y"
+    }
+}
+"#;
+        assert!(Lock::parse(src).is_err());
+    }
+
+    #[test]
+    fn unknown_child_in_host_block_is_a_parse_error() {
+        let src = r#"lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
+    host "web" {
+        mystery "wat"
     }
 }
 "#;

@@ -440,6 +440,7 @@ fn generate_prunes_pins_for_packages_no_longer_declared() {
         modules: std::collections::BTreeMap::new(),
         outputs: Vec::new(),
         pins,
+        baselines: std::collections::BTreeMap::new(),
     };
     fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();
 
