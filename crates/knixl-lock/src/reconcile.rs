@@ -61,11 +61,14 @@ pub struct ExpectedFile {
     pub modules: Vec<String>,
 }
 
-/// The result of generating from the committed KDL under the locked versions.
 pub struct Inputs {
     pub expected: Vec<ExpectedFile>,
     pub input_hashes: BTreeMap<PathBuf, Hash>,
     pub validation_errors: Vec<String>,
+    /// Host name -> set of package names with a versioned `package` node in that host's
+    /// KDL. Drives pin GC in `build_lock_next`: a pin whose package is not in its host's
+    /// set (or whose host is absent entirely) is dropped.
+    pub referenced_pins: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// The knixl-generated files currently on disk (header present) and their hashes.
@@ -182,9 +185,6 @@ fn compute_skew(lock: &Lock, running: &Versions) -> Option<VersionSkew> {
     }
 }
 
-/// The lock a clean apply would write: running versions plus the freshly generated outputs,
-/// ordered deterministically by path. Pins carry forward unchanged from `lock`: nothing here
-/// resolves or revokes them, so a clean apply must not silently drop the pins `install` wrote.
 fn build_lock_next(inputs: &Inputs, lock: &Lock, running: &Versions) -> Lock {
     let mut outputs: Vec<OutputEntry> = inputs
         .expected
@@ -205,8 +205,27 @@ fn build_lock_next(inputs: &Inputs, lock: &Lock, running: &Versions) -> Lock {
         inputs: inputs.input_hashes.clone(),
         modules: running.modules.clone(),
         outputs,
-        pins: lock.pins.clone(),
+        pins: prune_pins(&lock.pins, &inputs.referenced_pins),
     }
+}
+
+/// Drop pins with no referencing versioned `package` node: a host absent from
+/// `referenced` loses all its pins; within a host, a pin whose package is not in the
+/// referenced set is dropped. Hosts left with no pins are removed. Version mismatch is
+/// not GC's concern (that is a generate-time validation error).
+fn prune_pins(
+    pins: &BTreeMap<String, Vec<crate::model::Pin>>,
+    referenced: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeMap<String, Vec<crate::model::Pin>> {
+    let mut out = BTreeMap::new();
+    for (host, list) in pins {
+        let Some(refs) = referenced.get(host) else { continue };
+        let kept: Vec<_> = list.iter().filter(|p| refs.contains(&p.package)).cloned().collect();
+        if !kept.is_empty() {
+            out.insert(host.clone(), kept);
+        }
+    }
+    out
 }
 
 /// What the command layer did to a file.
@@ -246,7 +265,12 @@ mod tests {
         ExpectedFile { path: p(path), hash: hash.into(), from: p("hosts/x.kdl"), modules: vec!["host".into()] }
     }
     fn inputs_with(exp: Vec<ExpectedFile>) -> Inputs {
-        Inputs { expected: exp, input_hashes: BTreeMap::new(), validation_errors: vec![] }
+        Inputs {
+            expected: exp,
+            input_hashes: BTreeMap::new(),
+            validation_errors: vec![],
+            referenced_pins: BTreeMap::new(),
+        }
     }
     fn disk_with(entries: &[(&str, &str)]) -> DiskState {
         DiskState { files: entries.iter().map(|(pa, h)| (p(pa), h.to_string())).collect() }
@@ -386,5 +410,35 @@ mod tests {
         let plan = Plan::compute(&inputs, &disk_with(&[]), &empty_lock(), &versions());
         assert!(plan.has_validation_errors());
         assert_eq!(plan.validation_errors.len(), 1);
+    }
+
+
+    #[test]
+    fn build_lock_next_prunes_unreferenced_pins() {
+        use crate::model::Pin;
+        let mut pins = BTreeMap::new();
+        pins.insert("web".to_string(), vec![
+            Pin { package: "htop".into(), version: "3.2.1".into(), nixpkgs_rev: "r1".into() },
+            Pin { package: "jq".into(), version: "1.7".into(), nixpkgs_rev: "r2".into() }, // unreferenced
+        ]);
+        pins.insert("db".to_string(), vec![ // whole host gone from KDL
+            Pin { package: "ripgrep".into(), version: "14".into(), nixpkgs_rev: "r3".into() },
+        ]);
+        let lock = Lock { pins, ..empty_lock() };
+
+        let mut referenced = BTreeMap::new();
+        referenced.insert("web".to_string(), BTreeSet::from(["htop".to_string()]));
+        // "db" absent entirely -> all its pins pruned.
+        let inputs = Inputs {
+            expected: vec![],
+            input_hashes: BTreeMap::new(),
+            validation_errors: vec![],
+            referenced_pins: referenced,
+        };
+
+        let next = build_lock_next(&inputs, &lock, &versions());
+        assert_eq!(next.pins.get("web").map(Vec::len), Some(1));
+        assert_eq!(next.pins["web"][0].package, "htop");
+        assert!(!next.pins.contains_key("db"), "removed host drops its pins");
     }
 }

@@ -3,7 +3,7 @@
 //! running versions. This is the read side of `Plan::compute`, reusable by the CLI and
 //! (later) an LSP or GitHub Action. It does I/O but no writes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use knixl_lock::model::{FormatterPin, OraclePin};
@@ -110,8 +110,10 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         modules: registry.module_versions(),
     };
 
+    let referenced_pins = referenced_pins(&hosts);
+
     Ok(Project {
-        inputs: Inputs { expected, input_hashes, validation_errors },
+        inputs: Inputs { expected, input_hashes, validation_errors, referenced_pins },
         disk: read_disk(root)?,
         lock,
         versions,
@@ -140,6 +142,33 @@ fn read_hosts(root: &Path) -> Result<Vec<HostSource>, GatherError> {
         hosts.push(HostSource { path, src });
     }
     Ok(hosts)
+}
+
+/// Package names declared with a versioned `package` node, per host, scanned straight
+/// from the gathered KDL. Keyed by the host's own name (its `host "<name>"` positional
+/// arg), with an entry for every host present, even an empty set, so a host that dropped
+/// a package still prunes that pin in `build_lock_next`. A host missing from `hosts`
+/// entirely is simply absent from the map, which drops all of its pins.
+fn referenced_pins(hosts: &[HostSource]) -> BTreeMap<String, BTreeSet<String>> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for host in hosts {
+        let Ok(doc) = knixl_kdl::parse(&host.src) else { continue };
+        for node in doc.nodes() {
+            if node.name().value() != "host" {
+                continue;
+            }
+            let Some(name) = crate::first_arg_str(node) else { continue };
+            let set = out.entry(name).or_default();
+            for child in knixl_kdl::children_named(node, "package") {
+                if child.get("version").is_some() {
+                    if let Some(pkg) = crate::first_arg_str(child) {
+                        set.insert(pkg);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Build just the module registry for `root` (built-ins plus declarative modules under
