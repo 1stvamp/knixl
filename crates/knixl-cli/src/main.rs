@@ -877,6 +877,29 @@ fn nix_build_available() -> bool {
     std::process::Command::new(&nix.build_bin).arg("--version").output().is_ok()
 }
 
+/// Maps `choose_strategy`'s decision to the TUI's `StrategyOutcome`, so `make_strategy`'s
+/// closure shares `choose_strategy`'s decision logic (and the plain path's error text) instead
+/// of a second copy that could drift.
+// Unused until #28 Task 3 wires `make_strategy` into the TUI.
+#[allow(dead_code)]
+fn strategy_outcome(name: &str, rev: &str, baseline_rev: &str, no_abi_check: bool) -> tui::StrategyOutcome {
+    match choose_strategy(name, rev, baseline_rev, no_abi_check) {
+        Ok((strategy, label, _tested)) => tui::StrategyOutcome::Chosen { strategy, label },
+        Err((commit_mix, over)) => {
+            tui::StrategyOutcome::Failed(format!("commit-mix: {commit_mix}; override: {over}"))
+        }
+    }
+}
+
+/// Builds the TUI's strategy-selection closure (#28): given `(name, rev)`, runs the same
+/// decision `choose_strategy` runs for the plain path, closing over `baseline_rev` and
+/// `no_abi_check`. Not yet injected into the TUI (unused until Task 3 wires it into the
+/// Install screen's Apply step, replacing the CLI's second, redundant build-test).
+#[allow(dead_code)]
+fn make_strategy(baseline_rev: String, no_abi_check: bool) -> tui::StrategyFn {
+    Arc::new(move |name: &str, rev: &str| strategy_outcome(name, rev, &baseline_rev, no_abi_check))
+}
+
 /// Human-readable name for a `PinStrategy`, for the `pinned ... via ...` status line.
 fn strategy_label(strategy: knixl_lock::model::PinStrategy) -> &'static str {
     match strategy {
@@ -1304,7 +1327,8 @@ fn write_lock(ctx: &Ctx, lock: &knixl_lock::Lock) {
 
 #[cfg(test)]
 mod tests {
-    use super::choose_formatter_bin;
+    use super::{choose_formatter_bin, make_strategy};
+    use crate::tui;
 
     #[test]
     fn env_override_wins() {
@@ -1325,5 +1349,61 @@ mod tests {
     #[test]
     fn defaults_to_nixfmt_when_none_run() {
         assert_eq!(choose_formatter_bin(None, |_| false), "nixfmt");
+    }
+
+    /// A shim mimicking `nix-build`: exits 0 when `build_ok`, else 1. Mirrors
+    /// `tests/cli.rs`'s `build_shim`; this test stubs `KNIXL_NIX_BUILD` in-process (no
+    /// subprocess) since `make_strategy`'s closure runs directly, not via the `knixl` binary.
+    fn build_shim(tag: &str, build_ok: bool) -> std::path::PathBuf {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("knixl-cli-mainshim-{}-{tag}", std::process::id()));
+        let exit = if build_ok { 0 } else { 1 };
+        let script = format!("#!/bin/sh\nexit {exit}\n");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(script.as_bytes()).unwrap();
+        f.flush().unwrap();
+        drop(f); // close before exec, or spawning races with ETXTBSY
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// `make_strategy`'s closure maps `choose_strategy`'s two outcomes: override builds ->
+    /// `Chosen { Override, .. }`, neither builds -> `Failed(..)`. Both cases live in one test
+    /// (rather than two `#[test]` fns) because `KNIXL_NIX_BUILD` is process-global and cargo
+    /// runs tests in this binary concurrently; sharing one thread's sequential env-var swap
+    /// avoids a race with itself.
+    #[test]
+    fn make_strategy_maps_build_outcomes() {
+        let prior = std::env::var_os("KNIXL_NIX_BUILD");
+
+        let ok_build = build_shim("override-ok", true);
+        std::env::set_var("KNIXL_NIX_BUILD", &ok_build);
+        let strategy_fn = make_strategy("baseline-rev".to_string(), false);
+        match strategy_fn("pkg", "new-rev") {
+            tui::StrategyOutcome::Chosen { strategy, label } => {
+                assert_eq!(strategy, knixl_lock::model::PinStrategy::Override);
+                assert_eq!(label, "build ok");
+            }
+            tui::StrategyOutcome::Failed(msg) => panic!("expected Chosen, got Failed({msg})"),
+        }
+        let _ = std::fs::remove_file(&ok_build);
+
+        let never_build = build_shim("neither-builds", false);
+        std::env::set_var("KNIXL_NIX_BUILD", &never_build);
+        let strategy_fn = make_strategy("baseline-rev".to_string(), false);
+        match strategy_fn("pkg", "new-rev") {
+            tui::StrategyOutcome::Failed(msg) => {
+                assert!(msg.contains("commit-mix"), "got: {msg}");
+                assert!(msg.contains("override"), "got: {msg}");
+            }
+            tui::StrategyOutcome::Chosen { .. } => panic!("expected Failed, got Chosen"),
+        }
+        let _ = std::fs::remove_file(&never_build);
+
+        match prior {
+            Some(v) => std::env::set_var("KNIXL_NIX_BUILD", v),
+            None => std::env::remove_var("KNIXL_NIX_BUILD"),
+        }
     }
 }

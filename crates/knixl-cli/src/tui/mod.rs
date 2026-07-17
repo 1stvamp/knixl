@@ -70,6 +70,24 @@ pub enum PinOutcome {
 /// version was requested; `Send + Sync` so the Install screen runs it off the event loop.
 pub type PinFn = Arc<dyn Fn(&str, &str) -> PinOutcome + Send + Sync>;
 
+/// The result of deciding a pin strategy for `name` at a resolved commit (#28: this replaces
+/// the CLI's post-Apply, second build-test with a decision made once, inside the TUI, before
+/// commit time). Unused until Task 3 wires `TuiConfig.strategy` into the Install screen.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub enum StrategyOutcome {
+    /// A strategy was chosen; `label` is the same short phrase the `pinned ... via ...` status
+    /// line prints (e.g. "build ok", "override build failed").
+    Chosen { strategy: knixl_lock::model::PinStrategy, label: String },
+    /// Neither candidate strategy build-tested successfully; carries a message for display.
+    Failed(String),
+}
+
+/// Decides a pin strategy for `name@version` resolved to `rev` (host-independent). Injected
+/// only when a version was requested; `Send + Sync` so the Install screen runs it off the
+/// event loop. Not yet injected as of #28 Task 1 (wired in Task 3).
+pub type StrategyFn = Arc<dyn Fn(&str, &str) -> StrategyOutcome + Send + Sync>;
+
 /// A registered module as the Browse screen sees it: its claimed node, a kind tag, the
 /// rendered schema doc, and a skeleton to splice into a host. Precomputed by the CLI so the
 /// TUI never touches the (non-`Send`) registry.
@@ -132,6 +150,9 @@ pub struct TuiConfig {
     pub modules: Vec<BrowseModule>,
     pub build: Option<BuildFn>,
     pub pin: Option<PinFn>,
+    /// Unused until #28 Task 3 wires it into the Install screen's Apply step.
+    #[allow(dead_code)]
+    pub strategy: Option<StrategyFn>,
 }
 
 fn config() -> &'static TuiConfig {
@@ -295,7 +316,7 @@ pub fn run(
     build: Option<BuildFn>,
     pin: Option<PinFn>,
 ) -> Result<Outcome, String> {
-    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify, modules, build, pin });
+    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify, modules, build, pin, strategy: None });
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
