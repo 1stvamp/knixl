@@ -172,6 +172,26 @@ fn referenced_pins(hosts: &[HostSource]) -> BTreeMap<String, BTreeSet<String>> {
     out
 }
 
+/// Declared per-host baseline nixpkgs release, scanned straight from the gathered KDL.
+/// Keyed by the host's own name, present only for hosts with a `nixpkgs release="..."`
+/// child; a host that doesn't declare one is simply absent from the map (issue #22).
+pub fn declared_baselines(hosts: &[HostSource]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for host in hosts {
+        let Ok(doc) = knixl_kdl::parse(&host.src) else { continue };
+        for node in doc.nodes() {
+            if node.name().value() != "host" {
+                continue;
+            }
+            let Some(name) = crate::first_arg_str(node) else { continue };
+            if let Some(release) = knixl_kdl::child_prop_str(node, "nixpkgs", "release") {
+                out.insert(name, release);
+            }
+        }
+    }
+    out
+}
+
 /// Build just the module registry for `root` (built-ins plus declarative modules under
 /// `modules/`). Unlike `gather` this needs no formatter or oracle, so listing modules works
 /// even where nix/nixfmt are absent.
@@ -240,4 +260,29 @@ fn read_lock(root: &Path) -> Result<Option<Lock>, GatherError> {
     }
     let src = std::fs::read_to_string(&path)?;
     Lock::parse(&src).map(Some).map_err(|e| GatherError::Lock(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn declared_baselines_reads_only_declaring_hosts() {
+        let hosts = vec![
+            HostSource {
+                path: PathBuf::from("hosts/web.kdl"),
+                src: "host \"web\" {\n    system \"x86_64-linux\"\n    nixpkgs release=\"25.05\"\n}".into(),
+            },
+            HostSource {
+                path: PathBuf::from("hosts/db.kdl"),
+                src: "host \"db\" {\n    system \"x86_64-linux\"\n}".into(),
+            },
+        ];
+
+        let baselines = declared_baselines(&hosts);
+
+        let expected: BTreeMap<String, String> =
+            BTreeMap::from([("web".to_string(), "25.05".to_string())]);
+        assert_eq!(baselines, expected);
+    }
 }
