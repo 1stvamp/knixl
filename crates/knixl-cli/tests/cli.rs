@@ -509,6 +509,132 @@ fn install_with_a_declared_release_resolves_and_writes_the_baseline() {
 }
 
 #[test]
+fn install_ambient_with_a_declared_release_writes_the_baseline() {
+    // issue #22 review fix: the baseline used to be resolved and written by a pre-pass for
+    // every host regardless of command, so an ambient (unversioned) install never exercised
+    // the write itself; now `commit_install` writes it for ambient installs too.
+    let root = temp_project("install-baseline-ambient");
+    declare_baseline_release(&root, "25.05");
+
+    let ok_eval = nix_shim("baseline-ambient-eval", true); // package resolves + parses
+    let baseline_resolver = resolver_shim("baseline-ambient-rev", "deadbeef", "", 0);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "ripgrep", "--host", "web", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &ok_eval)
+        .env("KNIXL_BASELINE_RESOLVER", &baseline_resolver)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let lock = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert!(lock.contains("baseline release=\"25.05\""), "baseline recorded: {lock}");
+    assert!(lock.contains("nixpkgs-rev=\"deadbeef\""), "resolved rev recorded: {lock}");
+
+    let _ = fs::remove_file(&ok_eval);
+    let _ = fs::remove_file(&baseline_resolver);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn install_reverts_the_baseline_when_commit_fails_after_write_baseline() {
+    // Mirrors `install_pkg_at_version_reverts_the_pin_when_commit_fails_after_write_pin`,
+    // but for the baseline write (issue #22 review fix): a baseline resolved during a
+    // confirmed install must not linger if the commit fails after it was written.
+    let root = temp_project("install-baseline-revert");
+    declare_baseline_release(&root, "25.05");
+
+    let parse_fail_eval = nix_shim_parse_fails("baseline-revert");
+    let baseline_resolver = resolver_shim("baseline-revert-rev", "deadbeef", "", 0);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "ripgrep", "--host", "web", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &parse_fail_eval)
+        .env("KNIXL_BASELINE_RESOLVER", &baseline_resolver)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(out.status.code(), Some(5), "parse failure after the baseline write: {out:?}");
+
+    let kdl = fs::read_to_string(root.join("hosts/web.kdl")).unwrap();
+    assert!(!kdl.contains("ripgrep"), "kdl reverted: {kdl}");
+
+    let lock_path = root.join("knixl.lock.kdl");
+    if lock_path.exists() {
+        let lock = fs::read_to_string(&lock_path).unwrap();
+        assert!(!lock.contains("baseline"), "baseline not left dangling after revert: {lock}");
+    }
+
+    let _ = fs::remove_file(&parse_fail_eval);
+    let _ = fs::remove_file(&baseline_resolver);
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// issue #22 review fix: `upgrade` without `--yes` must preview a pending baseline
+/// resolution (a network lookup, but read-only) and never write it, and must not report
+/// "already up to date" when there is a baseline pending.
+#[test]
+fn upgrade_without_yes_previews_a_pending_baseline_without_writing_the_lock() {
+    let root = temp_project("upgrade-baseline-preview");
+    assert_eq!(knixl(&root, &["generate"]).status.code(), Some(0));
+    declare_baseline_release(&root, "25.05");
+
+    let lock_path = root.join("knixl.lock.kdl");
+    let lock_before = fs::read_to_string(&lock_path).unwrap();
+
+    let baseline_resolver = resolver_shim("upgrade-preview-rev", "deadbeef", "", 0);
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["upgrade"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_BASELINE_RESOLVER", &baseline_resolver)
+        .output()
+        .expect("run knixl upgrade");
+    assert_eq!(out.status.code(), Some(4), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("already up to date"), "a pending baseline is work to do: {stdout}");
+    assert!(
+        stdout.contains("would resolve") && stdout.contains("25.05") && stdout.contains("deadbeef"),
+        "preview line: {stdout}"
+    );
+
+    let lock_after = fs::read_to_string(&lock_path).unwrap();
+    assert_eq!(lock_before, lock_after, "no --yes must not touch the lock");
+
+    let _ = fs::remove_file(&baseline_resolver);
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// issue #22 review fix: `upgrade --yes` commits a pending baseline resolution to the lock.
+#[test]
+fn upgrade_with_yes_writes_a_pending_baseline() {
+    let root = temp_project("upgrade-baseline-apply");
+    assert_eq!(knixl(&root, &["generate"]).status.code(), Some(0));
+    declare_baseline_release(&root, "25.05");
+
+    let baseline_resolver = resolver_shim("upgrade-apply-rev", "deadbeef", "", 0);
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["upgrade", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_BASELINE_RESOLVER", &baseline_resolver)
+        .output()
+        .expect("run knixl upgrade --yes");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let lock = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert!(lock.contains("baseline release=\"25.05\""), "baseline recorded: {lock}");
+    assert!(lock.contains("nixpkgs-rev=\"deadbeef\""), "resolved rev recorded: {lock}");
+
+    let _ = fs::remove_file(&baseline_resolver);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn check_reports_a_validation_error_for_an_unresolved_declared_release() {
     let root = temp_project("check-baseline-unresolved");
     declare_baseline_release(&root, "25.05");

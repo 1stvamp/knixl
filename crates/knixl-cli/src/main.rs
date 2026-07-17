@@ -4,10 +4,12 @@
 
 mod tui;
 
+use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use knixl_lock::model::HostBaseline;
 use knixl_lock::{FileState, Plan};
 
 #[derive(Parser)]
@@ -83,22 +85,38 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
     // #22: `install` and `upgrade` are the commands that resolve a declared-but-unresolved
     // nixpkgs baseline (the validation error below names `upgrade` as the fix for every
     // other command); this must run before the validation gate, or neither could ever reach
-    // its own remedy. Reload only if a baseline was actually written, so the common case
-    // (nothing declared, or already resolved) costs nothing extra.
-    let reloaded = if matches!(cli.cmd, Cmd::Upgrade { .. } | Cmd::Install { .. }) {
-        match resolve_declared_baselines(ctx) {
-            Ok(true) => Some(Ctx::load()),
-            Ok(false) => None,
-            Err(code) => return code,
-        }
-    } else {
-        None
-    };
-    let ctx = reloaded.as_ref().unwrap_or(ctx);
+    // its own remedy. Resolved IN MEMORY only (a network lookup is read-only, so that part is
+    // safe here) and never written: writing before the `--yes`/confirm gate let a preview
+    // mutate the lock and a cancelled install leave a baseline behind with no revert (review
+    // finding on #22). `pending` carries what would be written; `Cmd::Upgrade` writes it on
+    // `--yes`, `install`/`commit_install` write it in the confirmed, revertable commit path.
+    let pending: BTreeMap<String, HostBaseline> =
+        if matches!(cli.cmd, Cmd::Upgrade { .. } | Cmd::Install { .. }) {
+            match resolve_pending_baselines(ctx) {
+                Ok(p) => p,
+                Err(code) => return code,
+            }
+        } else {
+            BTreeMap::new()
+        };
+
+    // Plan off a lock/inputs patched with `pending` merged in, so the "not resolved: run
+    // knixl upgrade" validation error does not block the very commands that would resolve it,
+    // and `lock_next` (built from this patched lock) carries the pending baselines for
+    // `Cmd::Upgrade` to write verbatim. `check`/`generate`/`plan` never populate `pending`, so
+    // they always plan off the on-disk lock and inputs unchanged.
+    let patched_lock = (!pending.is_empty()).then(|| {
+        let mut lock = ctx.lock.clone();
+        lock.baselines.extend(pending.iter().map(|(host, b)| (host.clone(), b.clone())));
+        lock
+    });
+    let patched_inputs = (!pending.is_empty()).then(|| patch_inputs_for_pending(&ctx.inputs, &pending));
+    let lock_for_plan = patched_lock.as_ref().unwrap_or(&ctx.lock);
+    let inputs_for_plan = patched_inputs.as_ref().unwrap_or(&ctx.inputs);
 
     // Plan::compute is pure; validation errors ride on the plan (verdict maps them to
     // the Validation exit code), so there is no fallible generation step here.
-    let plan = Plan::compute(&ctx.inputs, &ctx.disk, &ctx.lock, &ctx.running);
+    let plan = Plan::compute(inputs_for_plan, &ctx.disk, lock_for_plan, &ctx.running);
     if plan.has_validation_errors() {
         report_validation(&plan.validation_errors, cli.json);
         return Code::Validation;
@@ -143,31 +161,63 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
         }
 
         Cmd::Upgrade { yes } => {
-            if !plan.requires_ack() && !plan.any(FileState::is_dirty) {
+            // A pending baseline resolution is work to do even when every file is Clean and
+            // nothing needs ack: skip the "up to date" short-circuit so it gets previewed
+            // (and, on --yes, written) below instead of silently vanishing.
+            if !plan.requires_ack() && !plan.any(FileState::is_dirty) && pending.is_empty() {
                 println!("already up to date");
                 return Code::Clean;
             }
             print_migration_notes(&plan, &ctx.registry); // per (module, version delta)
             print_plan(&plan, cli.json);
-            if !yes { eprintln!("re-run with --yes to apply"); return Code::NeedsAck; }
+            if !yes {
+                for (host, b) in &pending {
+                    println!(
+                        "would resolve nixpkgs release \"{}\" for host \"{host}\" -> {}",
+                        b.release, b.nixpkgs_rev,
+                    );
+                }
+                eprintln!("re-run with --yes to apply");
+                return Code::NeedsAck;
+            }
             for f in &plan.files {
                 if !matches!(f.state, FileState::Clean) { write_file(ctx, f); }
             }
-            write_lock(ctx, &plan.lock_next); // bump tool/module/formatter/oracle together
+            for (host, b) in &pending {
+                println!(
+                    "resolved nixpkgs release \"{}\" for host \"{host}\" -> {}",
+                    b.release, b.nixpkgs_rev,
+                );
+            }
+            // `plan.lock_next` was built from the lock already patched with `pending` (see
+            // `run`'s planning step above), so this one write commits the baselines too.
+            write_lock(ctx, &plan.lock_next); // bump tool/module/formatter/oracle/baselines
             Code::Clean
         }
 
         Cmd::Doc { node } => { print_doc(ctx, &node, cli.json); Code::Clean }
 
         Cmd::Install { pkg, host, yes, strict, build, no_abi_check } => {
-            install(ctx, &pkg, host.as_deref(), yes, strict, build, no_abi_check)
+            install(ctx, &pkg, host.as_deref(), yes, strict, build, no_abi_check, &pending)
         }
 
         Cmd::Tui => unreachable!("tui is dispatched before Ctx::load"),
     }
 }
 
-fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, build: bool, no_abi_check: bool) -> Code {
+// One argument per `Cmd::Install` field, plus `ctx` and the pending-baseline map threaded
+// from `run`'s pre-pass: splitting these into a struct would obscure more than it saves here.
+#[allow(clippy::too_many_arguments)]
+fn install(
+    ctx: &Ctx,
+    pkg: &str,
+    host: Option<&str>,
+    yes: bool,
+    strict: bool,
+    build: bool,
+    no_abi_check: bool,
+    pending: &BTreeMap<String, HostBaseline>,
+) -> Code {
     use knixl_pipeline::install::{list_hosts, select_host};
     use knixl_nix::pin::{PinError, PinResolver};
 
@@ -198,12 +248,20 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, bu
         let pin_fn = version.is_some().then(make_pin);
         return match open_tui(entry, build_fn, pin_fn) {
             Ok(tui::Outcome::Install { host, pkg, strict, version, pin, no_abi_check }) => {
-                commit_tui_install(host, pkg, strict, version, pin, no_abi_check)
+                // The TUI may switch the target host from `initial`: look the pending
+                // resolution up for whichever host was actually chosen.
+                let baseline_pending = pending.get(&host.name).cloned();
+                commit_tui_install(host, pkg, strict, version, pin, no_abi_check, baseline_pending)
             }
             Ok(_) => { println!("cancelled"); Code::Clean }
             Err(e) => { eprintln!("knixl: tui: {e}"); Code::Internal }
         };
     }
+
+    // The pending baseline resolution for the target host, if `run`'s pre-pass resolved one
+    // (issue #22 review fix): written alongside the pin by `commit_install`, in the same
+    // committed/revertable step, rather than up front by a pre-pass.
+    let baseline_pending = pending.get(&initial.name).cloned();
 
     // A version cannot be pinned without a resolved commit and a decided strategy: refuse
     // before anything else. A pin already on record for this exact (host, package, version)
@@ -231,10 +289,8 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, bu
                         return Code::Validation;
                     }
                 };
-                let baseline_rev = match resolve_host_baseline(ctx, &initial.name, &initial.path) {
-                    Ok((rev, _)) => rev,
-                    Err(code) => return code,
-                };
+                let baseline_rev =
+                    effective_baseline_rev(ctx, &initial.path, &initial.name, baseline_pending.as_ref());
                 match choose_strategy(name, &resolved.nixpkgs_rev, &baseline_rev, no_abi_check) {
                     Ok((strategy, reason, tested)) => {
                         build_tested = tested;
@@ -294,8 +350,14 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, bu
         return Code::Clean;
     }
     let pin_args = version_pin.as_ref().map(|(v, resolved, strategy, _)| (*v, resolved, *strategy));
-    let code = commit_install(&initial, name, pin_args, strict);
+    let code = commit_install(&initial, name, pin_args, baseline_pending.as_ref(), strict);
     if code == Code::Clean {
+        if let Some(b) = &baseline_pending {
+            println!(
+                "resolved nixpkgs release \"{}\" for host \"{}\" -> {}",
+                b.release, initial.name, b.nixpkgs_rev,
+            );
+        }
         if let Some((v, _, strategy, reason)) = &version_pin {
             println!("pinned {name} {v} via {} ({reason})", strategy_label(*strategy));
         }
@@ -307,6 +369,7 @@ fn commit_install(
     chosen: &knixl_pipeline::install::HostInfo,
     pkg: &str,
     version_pin: Option<(&str, &knixl_nix::pin::Resolved, knixl_lock::model::PinStrategy)>,
+    baseline_pending: Option<&HostBaseline>,
     strict: bool,
 ) -> Code {
     use knixl_pipeline::install::add_package;
@@ -321,29 +384,41 @@ fn commit_install(
         Err(e) => { eprintln!("knixl: cannot edit {}: {e}", chosen.path.display()); return Code::Internal; }
     };
 
-    // Record the pin before the versioned KDL hits disk: `generate` treats a `package` node
-    // with a `version` prop and no matching lock pin as an error, so writing the KDL first
-    // would (briefly, but for real, since the next line's gather sees it) make the project
-    // fail to generate even on the success path.
+    // Record the pin and any pending baseline resolution before the versioned KDL hits disk
+    // (issue #22 review fix: a baseline resolved for this install used to be written by a
+    // pre-pass before confirmation; it is now written here, in the same committed/revertable
+    // step as the pin): `generate` treats a `package` node with a `version` prop and no
+    // matching lock pin as an error, so writing the KDL first would (briefly, but for real,
+    // since the next line's gather sees it) make the project fail to generate even on the
+    // success path.
     if let Some((v, resolved, strategy)) = version_pin {
         write_pin(&chosen.name, pkg, v, resolved, strategy);
+    }
+    if let Some(b) = baseline_pending {
+        write_baseline(&chosen.name, &b.release, &b.nixpkgs_rev, &b.options_hash);
     }
 
     if let Err(e) = std::fs::write(&chosen.path, &draft) {
         eprintln!("knixl: {}: {e}", chosen.path.display());
-        // The pin above may already be on disk even though the KDL write failed: undo it so a
-        // failed install never leaves a dangling pin behind.
+        // The pin/baseline above may already be on disk even though the KDL write failed:
+        // undo them so a failed install never leaves either dangling.
         if version_pin.is_some() {
             remove_pin(&chosen.name, pkg);
         }
+        if baseline_pending.is_some() {
+            remove_baseline(&chosen.name);
+        }
         return Code::Internal;
     }
-    // Undo the pin along with the KDL: a version_pin was written above, before the KDL hit
-    // disk, so an abort past this point must not leave it dangling in the lock.
+    // Undo the pin and baseline along with the KDL: both may have been written above, before
+    // the KDL hit disk, so an abort past this point must not leave either dangling in the lock.
     let revert = || {
         let _ = std::fs::write(&chosen.path, &original);
         if version_pin.is_some() {
             remove_pin(&chosen.name, pkg);
+        }
+        if baseline_pending.is_some() {
+            remove_baseline(&chosen.name);
         }
     };
 
@@ -420,12 +495,24 @@ fn write_baseline(host: &str, release: &str, rev: &str, options_hash: &str) {
     let mut lock = ctx.lock.clone();
     lock.baselines.insert(
         host.to_string(),
-        knixl_lock::model::HostBaseline {
+        HostBaseline {
             release: release.to_string(),
             nixpkgs_rev: rev.to_string(),
             options_hash: options_hash.to_string(),
         },
     );
+    write_lock(&ctx, &lock);
+}
+
+/// Undo `write_baseline`: drop the baseline for `host`, then write the lock back. Mirrors
+/// `remove_pin`. Called on `commit_install`'s revert path (a validation, parse, or drift
+/// failure after the baseline was already written, or a plain disk-write failure), so a
+/// cancelled/failed install never leaves a freshly resolved baseline dangling. A no-op when
+/// no baseline exists for that host.
+fn remove_baseline(host: &str) {
+    let ctx = Ctx::load();
+    let mut lock = ctx.lock.clone();
+    lock.baselines.remove(host);
     write_lock(&ctx, &lock);
 }
 
@@ -449,23 +536,24 @@ fn options_hash_for_rev(rev: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Resolve and record `host`'s declared `nixpkgs release` baseline if the lock does not
-/// already have it resolved to that exact release, then return the rev `choose_strategy`
-/// should treat as this host's baseline (the freshly-recorded or already-recorded baseline
-/// rev, or the project's global oracle rev when the host declares no release), plus whether
-/// a baseline was newly written. `Err(Code::Validation)` on a resolver failure; the message
-/// is already printed, so the caller only needs to return the code.
-fn resolve_host_baseline(
+/// Resolve `host`'s declared `nixpkgs release` baseline IN MEMORY ONLY: no write (issue #22
+/// review fix; the pre-pass used to write straight to the lock here, before the validation
+/// gate and before `--yes`/confirmation). `Ok(None)` when the host declares no release, or
+/// its release already matches the lock's recorded baseline (the idempotent skip); otherwise
+/// `Ok(Some(baseline))` with the freshly resolved value, for the caller to plan around and
+/// decide whether to keep. `Err(Code::Validation)` on a resolver failure; the message is
+/// already printed, so the caller only needs to return the code.
+fn resolve_pending_baseline(
     ctx: &Ctx,
     host: &str,
     host_path: &std::path::Path,
-) -> Result<(String, bool), Code> {
+) -> Result<Option<HostBaseline>, Code> {
     let Some(release) = declared_release(host_path) else {
-        return Ok((ctx.lock.oracle.nixpkgs_rev.clone(), false));
+        return Ok(None);
     };
     if let Some(b) = ctx.lock.baselines.get(host) {
         if b.release == release {
-            return Ok((b.nixpkgs_rev.clone(), false));
+            return Ok(None);
         }
     }
     let rev = knixl_nix::baseline::BaselineResolver::resolve().lookup(&release).map_err(|e| {
@@ -473,38 +561,102 @@ fn resolve_host_baseline(
         Code::Validation
     })?;
     let options_hash = options_hash_for_rev(&rev);
-    write_baseline(host, &release, &rev, &options_hash);
-    println!("resolved nixpkgs release \"{release}\" for host \"{host}\" -> {rev}");
-    Ok((rev, true))
+    Ok(Some(HostBaseline { release, nixpkgs_rev: rev, options_hash }))
 }
 
 /// For every host under `ctx.root` whose KDL declares a `nixpkgs release=".."` not already
-/// resolved to that exact release in the lock, resolve it via `resolve_host_baseline` and
-/// record it. Called by `run`'s `Cmd::Upgrade`/`Cmd::Install` pre-pass, before the shared
-/// validation gate: the "not resolved" validation error names `upgrade` as the fix, and
-/// `install` needs a resolved baseline for `choose_strategy`, so neither could reach its own
-/// remedy if the gate refused first. Returns `Ok(true)` if anything was written (the caller
-/// should reload `Ctx` before re-planning), `Ok(false)` if every declared release already
-/// matched, or `Err(Code::Validation)` on the first resolver failure (message already
-/// printed).
-fn resolve_declared_baselines(ctx: &Ctx) -> Result<bool, Code> {
+/// resolved to that exact release in the lock, resolve it via `resolve_pending_baseline`
+/// (in memory only). Called by `run`'s `Cmd::Upgrade`/`Cmd::Install` pre-pass, before the
+/// shared validation gate: the "not resolved" validation error names `upgrade` as the fix,
+/// and `install` needs a resolved baseline for `choose_strategy`, so neither could reach its
+/// own remedy if the gate refused first. Returns the pending resolutions keyed by host name
+/// (empty if every declared release already matched), or `Err(Code::Validation)` on the first
+/// resolver failure (message already printed). Nothing here is written; see `Cmd::Upgrade`
+/// and `commit_install` for where a caller commits (or discards) what this returns.
+fn resolve_pending_baselines(ctx: &Ctx) -> Result<BTreeMap<String, HostBaseline>, Code> {
     use knixl_pipeline::install::list_hosts;
     let hosts = list_hosts(&ctx.root).unwrap_or_default();
-    let mut wrote = false;
+    let mut pending = BTreeMap::new();
     for h in &hosts {
-        let (_, wrote_one) = resolve_host_baseline(ctx, &h.name, &h.path)?;
-        wrote = wrote || wrote_one;
+        if let Some(b) = resolve_pending_baseline(ctx, &h.name, &h.path)? {
+            pending.insert(h.name.clone(), b);
+        }
     }
-    Ok(wrote)
+    Ok(pending)
+}
+
+/// The nixpkgs rev `choose_strategy` should treat as `host`'s baseline: `pending`'s rev if
+/// the caller already has a pending resolution for this host in hand (issue #22 review fix:
+/// no network lookup happens here any more), else the lock's already-recorded baseline for a
+/// host that declares a release, else the project's global oracle rev for a host that
+/// declares none.
+fn effective_baseline_rev(
+    ctx: &Ctx,
+    host_path: &std::path::Path,
+    host: &str,
+    pending: Option<&HostBaseline>,
+) -> String {
+    if let Some(b) = pending {
+        return b.nixpkgs_rev.clone();
+    }
+    if declared_release(host_path).is_none() {
+        return ctx.lock.oracle.nixpkgs_rev.clone();
+    }
+    ctx.lock
+        .baselines
+        .get(host)
+        .map(|b| b.nixpkgs_rev.clone())
+        .unwrap_or_else(|| ctx.lock.oracle.nixpkgs_rev.clone())
+}
+
+/// The `Inputs` `run` should plan `Cmd::Upgrade`/`Cmd::Install` against once `pending` has
+/// resolutions in hand (issue #22 review fix): the same inputs, minus the "is not resolved:
+/// run knixl upgrade" validation error for each host now pending, so those two commands can
+/// reach the remedy the error names instead of being refused by it. `check`/`generate`/`plan`
+/// never call this (their `pending` is always empty), so their validation error still fires.
+fn patch_inputs_for_pending(
+    inputs: &knixl_lock::reconcile::Inputs,
+    pending: &BTreeMap<String, HostBaseline>,
+) -> knixl_lock::reconcile::Inputs {
+    use knixl_lock::reconcile::{ExpectedFile, Inputs};
+    let validation_errors = inputs
+        .validation_errors
+        .iter()
+        .filter(|e| {
+            !pending.keys().any(|host| {
+                e.starts_with(&format!("host \"{host}\": nixpkgs release \""))
+                    && e.ends_with("is not resolved: run knixl upgrade")
+            })
+        })
+        .cloned()
+        .collect();
+    Inputs {
+        expected: inputs
+            .expected
+            .iter()
+            .map(|e| ExpectedFile {
+                path: e.path.clone(),
+                hash: e.hash.clone(),
+                from: e.from.clone(),
+                modules: e.modules.clone(),
+            })
+            .collect(),
+        input_hashes: inputs.input_hashes.clone(),
+        validation_errors,
+        referenced_pins: inputs.referenced_pins.clone(),
+        declared_baselines: inputs.declared_baselines.clone(),
+    }
 }
 
 /// Turn the TUI's `Outcome::Install` pin payload (the rev as a plain string, since the TUI
-/// module stays decoupled from `knixl_nix`) into `commit_install`'s `version_pin` argument.
-/// `no_abi_check` is threaded from the interactive `install()` call (the Hub flow has no such
-/// flag, so it passes `false`, matching prior behaviour); on success, print the same
-/// `pinned ... via ...` status line as the plain path once the TUI has restored the terminal
-/// (there is no in-TUI status row for this yet: see the Task 5 report). Shared by the
-/// interactive `install` branch and the Hub flow.
+/// module stays decoupled from `knixl_nix`) into `commit_install`'s `version_pin` argument,
+/// and commit `baseline_pending` (already resolved in memory by the caller: `run`'s pre-pass
+/// for the interactive-install branch, `finish_tui_outcome`'s own resolve for the Hub flow,
+/// which has no pre-pass) alongside it. `no_abi_check` is threaded from the interactive
+/// `install()` call (the Hub flow has no such flag, so it passes `false`, matching prior
+/// behaviour); on success, print the same status lines as the plain path once the TUI has
+/// restored the terminal (there is no in-TUI status row for this yet: see the Task 5 report).
+/// Shared by the interactive `install` branch and the Hub flow.
 fn commit_tui_install(
     host: knixl_pipeline::install::HostInfo,
     pkg: String,
@@ -512,15 +664,14 @@ fn commit_tui_install(
     version: Option<String>,
     pin: Option<String>,
     no_abi_check: bool,
+    baseline_pending: Option<HostBaseline>,
 ) -> Code {
     let version_pin = match (version.as_deref(), pin) {
         (Some(v), Some(rev)) => {
             let resolved = knixl_nix::pin::Resolved { nixpkgs_rev: rev };
             let ctx = Ctx::load();
-            let baseline_rev = match resolve_host_baseline(&ctx, &host.name, &host.path) {
-                Ok((rev, _)) => rev,
-                Err(code) => return code,
-            };
+            let baseline_rev =
+                effective_baseline_rev(&ctx, &host.path, &host.name, baseline_pending.as_ref());
             // TODO(#23): the TUI's --build check (if requested) already build-tested `pkg`
             // before Apply; this build-tests again for strategy selection. Reusing the earlier
             // result would need strategy selection threaded into the async verify step, which
@@ -537,8 +688,14 @@ fn commit_tui_install(
         _ => None,
     };
     let pin_args = version_pin.as_ref().map(|(v, resolved, strategy, _)| (*v, resolved, *strategy));
-    let code = commit_install(&host, &pkg, pin_args, strict);
+    let code = commit_install(&host, &pkg, pin_args, baseline_pending.as_ref(), strict);
     if code == Code::Clean {
+        if let Some(b) = &baseline_pending {
+            println!(
+                "resolved nixpkgs release \"{}\" for host \"{}\" -> {}",
+                b.release, host.name, b.nixpkgs_rev,
+            );
+        }
         if let Some((v, _, strategy, reason)) = &version_pin {
             println!("pinned {pkg} {v} via {} ({reason})", strategy_label(*strategy));
         }
@@ -886,9 +1043,17 @@ fn dispatch() -> Code {
 fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
     match outcome {
         // `knixl tui` (the Hub flow) has no `--no-abi-check` flag: `Entry::Hub` seeds it
-        // `false` in `InstallModel::enter`, matching prior behaviour.
+        // `false` in `InstallModel::enter`, matching prior behaviour. The Hub flow also has
+        // no `run` pre-pass (`Cmd::Tui` is dispatched before `Ctx::load`), so it resolves
+        // this one host's pending baseline itself before committing (issue #22 review fix:
+        // this used to be skipped entirely for an ambient install here).
         tui::Outcome::Install { host, pkg, strict, version, pin, no_abi_check } => {
-            commit_tui_install(host, pkg, strict, version, pin, no_abi_check)
+            let ctx = Ctx::load();
+            let baseline_pending = match resolve_pending_baseline(&ctx, &host.name, &host.path) {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            commit_tui_install(host, pkg, strict, version, pin, no_abi_check, baseline_pending)
         }
         tui::Outcome::Insert { host, node, skeleton } => commit_insert(&host, &node, &skeleton),
         tui::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),
