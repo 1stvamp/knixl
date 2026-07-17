@@ -300,7 +300,7 @@ fn install_pkg_at_version_resolves_writes_the_pin_and_regenerates() {
     let resolver = resolver_shim("ok", "abc123", "", 0);
     // A resolved rev differs from the (empty, fresh-project) baseline, so pin-strategy
     // selection would otherwise build-test for real: shim the build oracle to say yes,
-    // deterministically choosing commit-mix without touching the network.
+    // deterministically choosing override (tried first) without touching the network.
     let ok_build = build_shim("version-ok-build", true);
     let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
         .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
@@ -353,7 +353,7 @@ fn install_pkg_at_version_reverts_the_pin_when_commit_fails_after_write_pin() {
     let parse_fail_eval = nix_shim_parse_fails("revert");
     let resolver = resolver_shim("revert-ok", "abc123", "", 0);
     // As above: shim the build oracle so strategy selection deterministically picks
-    // commit-mix without a real (network-dependent) build test.
+    // override (tried first) without a real (network-dependent) build test.
     let ok_build = build_shim("version-revert-build", true);
     let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
         .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
@@ -383,8 +383,8 @@ fn install_pkg_at_version_reverts_the_pin_when_commit_fails_after_write_pin() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// A shim mimicking `nix-build` for pin-strategy selection: fails the commit-mix candidate,
-/// passes the override candidate. The two expressions are distinguished by `overrideAttrs`,
+/// A shim mimicking `nix-build` for pin-strategy selection: passes the override candidate,
+/// fails the commit-mix candidate. The two expressions are distinguished by `overrideAttrs`,
 /// which only `override_test_expr` emits.
 fn strategy_build_shim(tag: &str) -> PathBuf {
     use std::io::Write;
@@ -400,7 +400,7 @@ fn strategy_build_shim(tag: &str) -> PathBuf {
 }
 
 #[test]
-fn install_pkg_at_version_falls_back_to_override_when_commit_mix_build_fails() {
+fn install_pkg_at_version_prefers_override_when_it_builds() {
     let root = temp_project("install-strategy-override");
     let ok_eval = nix_shim("strategy-override-eval", true); // package resolves + parses
     let resolver = resolver_shim("strategy-override", "abc123", "", 0);

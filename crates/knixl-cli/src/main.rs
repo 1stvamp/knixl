@@ -176,12 +176,13 @@ fn install(ctx: &Ctx, pkg: &str, host: Option<&str>, yes: bool, strict: bool, bu
             strict,
             host: Some(initial.name.clone()),
             version: version.map(str::to_string),
+            no_abi_check,
         };
         let build_fn = build.then(|| make_build(ctx.root.clone()));
         let pin_fn = version.is_some().then(make_pin);
         return match open_tui(entry, build_fn, pin_fn) {
-            Ok(tui::Outcome::Install { host, pkg, strict, version, pin }) => {
-                commit_tui_install(host, pkg, strict, version, pin)
+            Ok(tui::Outcome::Install { host, pkg, strict, version, pin, no_abi_check }) => {
+                commit_tui_install(host, pkg, strict, version, pin, no_abi_check)
             }
             Ok(_) => { println!("cancelled"); Code::Clean }
             Err(e) => { eprintln!("knixl: tui: {e}"); Code::Internal }
@@ -395,22 +396,28 @@ fn remove_pin(host: &str, package: &str) {
 
 /// Turn the TUI's `Outcome::Install` pin payload (the rev as a plain string, since the TUI
 /// module stays decoupled from `knixl_nix`) into `commit_install`'s `version_pin` argument.
-/// The TUI has no `--no-abi-check` flag yet, so strategy selection always runs the build
-/// gate here; on success, print the same `pinned ... via ...` status line as the plain path
-/// once the TUI has restored the terminal (there is no in-TUI status row for this yet: see
-/// the Task 5 report). Shared by the interactive `install` branch and the Hub flow.
+/// `no_abi_check` is threaded from the interactive `install()` call (the Hub flow has no such
+/// flag, so it passes `false`, matching prior behaviour); on success, print the same
+/// `pinned ... via ...` status line as the plain path once the TUI has restored the terminal
+/// (there is no in-TUI status row for this yet: see the Task 5 report). Shared by the
+/// interactive `install` branch and the Hub flow.
 fn commit_tui_install(
     host: knixl_pipeline::install::HostInfo,
     pkg: String,
     strict: bool,
     version: Option<String>,
     pin: Option<String>,
+    no_abi_check: bool,
 ) -> Code {
     let version_pin = match (version.as_deref(), pin) {
         (Some(v), Some(rev)) => {
             let resolved = knixl_nix::pin::Resolved { nixpkgs_rev: rev };
             let ctx = Ctx::load();
-            match choose_strategy(&pkg, &resolved.nixpkgs_rev, &ctx.lock.oracle.nixpkgs_rev, false) {
+            // TODO(#23): the TUI's --build check (if requested) already build-tested `pkg`
+            // before Apply; this build-tests again for strategy selection. Reusing the earlier
+            // result would need strategy selection threaded into the async verify step, which
+            // is a bigger restructure than this fix warrants.
+            match choose_strategy(&pkg, &resolved.nixpkgs_rev, &ctx.lock.oracle.nixpkgs_rev, no_abi_check) {
                 Ok((strategy, reason, _)) => Some((v, resolved, strategy, reason)),
                 Err((commit_mix, over)) => {
                     eprintln!("knixl: cannot pin {pkg}@{v}: commit-mix build failed: {commit_mix}");
@@ -578,9 +585,7 @@ fn choose_strategy(
     let nix = NixEval::resolve();
     let build = |expr: &str| nix.builds_expr(expr).map_err(|e| e.to_string());
     match select_strategy(rev, baseline_rev, name, nix_available, no_abi_check, &build) {
-        Ok(PinStrategy::Override) => {
-            Ok((PinStrategy::Override, "commit-mix build failed".to_string(), true))
-        }
+        Ok(PinStrategy::Override) => Ok((PinStrategy::Override, "build ok".to_string(), true)),
         Ok(PinStrategy::CommitMix) if skipped => {
             let reason = if no_abi_check {
                 "--no-abi-check"
@@ -591,7 +596,9 @@ fn choose_strategy(
             };
             Ok((PinStrategy::CommitMix, reason.to_string(), false))
         }
-        Ok(PinStrategy::CommitMix) => Ok((PinStrategy::CommitMix, "build ok".to_string(), true)),
+        Ok(PinStrategy::CommitMix) => {
+            Ok((PinStrategy::CommitMix, "override build failed".to_string(), true))
+        }
         Err(SelectError::NeitherBuilds { commit_mix, over }) => Err((commit_mix, over)),
     }
 }
@@ -769,8 +776,10 @@ fn dispatch() -> Code {
 /// or cancel does nothing.
 fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
     match outcome {
-        tui::Outcome::Install { host, pkg, strict, version, pin } => {
-            commit_tui_install(host, pkg, strict, version, pin)
+        // `knixl tui` (the Hub flow) has no `--no-abi-check` flag: `Entry::Hub` seeds it
+        // `false` in `InstallModel::enter`, matching prior behaviour.
+        tui::Outcome::Install { host, pkg, strict, version, pin, no_abi_check } => {
+            commit_tui_install(host, pkg, strict, version, pin, no_abi_check)
         }
         tui::Outcome::Insert { host, node, skeleton } => commit_insert(&host, &node, &skeleton),
         tui::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),

@@ -87,7 +87,16 @@ pub enum Entry {
     Hub,
     /// `knixl install <pkg>` or `knixl install <pkg>@<version>`: open the Install screen with
     /// the package prefilled, and the version (if any) to be resolved and pinned on Apply.
-    Install { pkg: String, strict: bool, host: Option<String>, version: Option<String> },
+    Install {
+        pkg: String,
+        strict: bool,
+        host: Option<String>,
+        version: Option<String>,
+        /// Threaded from `install()`'s `--no-abi-check` flag, so the strategy build-gate is
+        /// honoured on the interactive path too (it was previously hardcoded to `false` at
+        /// commit time, silently ignoring the flag).
+        no_abi_check: bool,
+    },
 }
 
 /// What the session decided, returned by `run` for the CLI to act on.
@@ -98,7 +107,14 @@ pub enum Outcome {
     Cancelled,
     /// Apply this package to this host. `version`/`pin` are set only when a version was
     /// requested and resolved: the CLI writes the pin (rev) before committing.
-    Install { host: HostInfo, pkg: String, strict: bool, version: Option<String>, pin: Option<String> },
+    Install {
+        host: HostInfo,
+        pkg: String,
+        strict: bool,
+        version: Option<String>,
+        pin: Option<String>,
+        no_abi_check: bool,
+    },
     /// Scaffold this module's node into this host's KDL.
     Insert { host: HostInfo, node: String, skeleton: String },
     /// Write a new declarative module manifest (`modules/<name>/knixl-module.kdl`).
@@ -131,7 +147,14 @@ pub enum Nav {
     /// Open another screen by key.
     Goto(&'static str),
     /// Commit the install and end the session.
-    Apply { host: HostInfo, pkg: String, strict: bool, version: Option<String>, pin: Option<String> },
+    Apply {
+        host: HostInfo,
+        pkg: String,
+        strict: bool,
+        version: Option<String>,
+        pin: Option<String>,
+        no_abi_check: bool,
+    },
     /// Scaffold a module node into a host and end the session.
     Insert { host: HostInfo, node: String, skeleton: String },
     /// Write a new module manifest and end the session.
@@ -220,8 +243,8 @@ impl App {
         match step.nav {
             Nav::Stay => step.cmd,
             Nav::Quit => Some(command::quit()),
-            Nav::Apply { host, pkg, strict, version, pin } => {
-                self.outcome = Outcome::Install { host, pkg, strict, version, pin };
+            Nav::Apply { host, pkg, strict, version, pin, no_abi_check } => {
+                self.outcome = Outcome::Install { host, pkg, strict, version, pin, no_abi_check };
                 Some(command::quit())
             }
             Nav::Insert { host, node, skeleton } => {

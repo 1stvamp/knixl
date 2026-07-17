@@ -5,9 +5,9 @@ Status: approved, ready for implementation plan
 Issue: #23
 Builds on: ADR 0005, ADR 0006, docs/superpowers/specs/2026-07-17-cross-rev-resolution-spike.md
 
-Give `knixl install pkg@version` a second emit strategy (`override`) as an automatic
-fallback to commit-mix, chosen at pin time by build-testing the candidates against the
-host baseline and recording the winner in the lock. "Prepare for the worst": a cross-rev
+Give `knixl install pkg@version` a second emit strategy (`override`), preferred when its
+build succeeds and falling back to commit-mix otherwise, chosen at pin time by build-testing
+the candidates and recording the winner in the lock. "Prepare for the worst": a cross-rev
 pin that commit-mix cannot integrate is served by `override` without a broken host.
 
 ## Grounding (current state)
@@ -27,13 +27,13 @@ pin that commit-mix cannot integrate is served by `override` without a broken ho
 
 Both derive from the same resolved commit (`rev`). Only the emit differs.
 
-### commit-mix (default, preferred, unchanged)
+### commit-mix (robust fallback + safe default when selection cannot run, unchanged emit)
 
 ```nix
 (import (builtins.fetchGit { rev = "<rev>"; shallow = true; url = "https://github.com/NixOS/nixpkgs"; }) { system = pkgs.system; }).<name>
 ```
 
-### override (fallback)
+### override (preferred when it builds)
 
 `version` and `src` are pulled from the historical commit's package, so no separate source
 hash is resolved. Emitted as a let-bound historical package, overridden onto the baseline:
@@ -100,16 +100,21 @@ install neither hits the resolver nor builds:
 
 Then, given a freshly resolved `(name, rev)` and the host baseline:
 
-1. **Skip conditions (no build), result = `CommitMix`:**
+1. **Skip conditions (no build), result = `CommitMix`** (the safe default when we cannot test):
    - `rev == baseline_rev` (no cross-rev);
    - nix is unavailable (cannot build-test): `CommitMix` with a warning (as `--build` does);
    - `--no-abi-check` was passed: `CommitMix`.
-2. Otherwise **build-test commit-mix as emitted into the host**. If it builds => `CommitMix`.
-3. Else **build-test override**. If it builds => `Override`.
+2. Otherwise **build-test override first**. If it builds => `Override` (the lean result).
+3. Else **build-test commit-mix**. If it builds => `CommitMix` (the robust fallback).
 4. Else the pin cannot be satisfied: refuse (exit 5), reporting both build failures.
 
-When `--build` is set, the commit-mix feasibility build and the `--build` package build are
-the same build: run it once and reuse the result.
+Override is tried first on purpose: commit-mix is a self-contained historical closure that
+builds by construction, so trying it first would make it the perpetual winner and leave
+override as dead code. Override (old source, baseline deps) is the one that can genuinely
+fail, so testing it first is what lets the picker choose between them.
+
+When `--build` is set, the feasibility build and the `--build` package build are the same
+build: run it once and reuse the result.
 
 ### The feasibility build
 
@@ -118,10 +123,10 @@ Add `NixEval::builds_expr(&self, expr: &str) -> Result<(), NixError>` running
 expressions:
 
 - commit-mix test: `(import (builtins.fetchGit { rev = "<rev>"; shallow = true; url = ...; }) { system = builtins.currentSystem; }).<name>` (self-contained; `currentSystem` since there is no host `pkgs` in the test harness).
-- override test: `let pkgs = import <nixpkgs> {}; _pin = (import (builtins.fetchGit { rev = "<rev>"; ... }) { system = pkgs.system; }).<name>; in pkgs.<name>.overrideAttrs ({ ... }: { version = _pin.version; src = _pin.src; })`.
+- override test: `let pkgs = <baseline>; _pin = (import (builtins.fetchGit { rev = "<rev>"; ... }) { system = pkgs.system; }).<name>; in pkgs.<name>.overrideAttrs ({ ... }: { version = _pin.version; src = _pin.src; })`, where `<baseline>` is `import (builtins.fetchGit { rev = "<baseline_rev>"; ... }) {}` when the oracle baseline rev is recorded, else `import <nixpkgs> {}`.
 
-The baseline `pkgs` for the override test is `import <nixpkgs> {}` (the builder's nixpkgs)
-while per-host baseline revs (#22) do not exist; this is a feasibility heuristic, documented
+The baseline `pkgs` for the override test is the oracle baseline rev when recorded, else the
+builder's `<nixpkgs>`, while per-host baseline revs (#22) do not exist; this is a feasibility heuristic, documented
 as such. It is good enough to catch the "old src will not build against current deps" break
 that `override` risks.
 

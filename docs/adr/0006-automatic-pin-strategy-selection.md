@@ -22,16 +22,28 @@ Introduce a **pin strategy** recorded per pin, selected automatically at pin tim
 build-testing the emitted expression against the host baseline.
 
 - Two strategies, both derived from the same resolved commit:
-  - **commit-mix** (ADR 0005, unchanged, the default and preferred): the whole package
-    from the historical commit, built against its own era's dependencies.
   - **override**: `pkgs.<name>.overrideAttrs` with `version` and `src` inherited from the
-    historical commit's package, built against the baseline's dependencies. No separate
-    source hash is resolved or prefetched: `src` comes from the pinned commit.
-- **Selection is automatic** at pin time (`install`/`upgrade`): resolve the commit, then
-  build-test the strategies **as they would be emitted into the host** (catching eval and
-  collision failures, not just isolated builds). commit-mix is tried first; `override` is
-  the fallback, used only when commit-mix's build fails. The winning strategy is recorded
-  in the lock. Neither builds again at `generate`/`check`: those stay offline and pure.
+    historical commit's package, built against the *baseline's* dependencies. No separate
+    source hash is resolved or prefetched: `src` comes from the pinned commit. This is the
+    lean result (one nixpkgs, integrated with the baseline), but old source against newer
+    dependencies is what can genuinely fail to build.
+  - **commit-mix** (ADR 0005): the whole package from the historical commit, built against
+    its *own* era's dependencies. Robust (a self-contained historical closure that builds by
+    construction), at the cost of pulling in a second nixpkgs.
+- **Selection is automatic** at pin time (`install`/`upgrade`) and prefers the lean option
+  that actually builds: resolve the commit, then build-test **override first**; if it builds,
+  use it; otherwise fall back to commit-mix; if neither builds, refuse. Preferring override
+  is deliberate: commit-mix almost always builds (its own deps), so trying it first would
+  make it the perpetual winner and override dead code. The winning strategy is recorded in
+  the lock. Nothing builds again at `generate`/`check`: those stay offline and pure.
+- When selection cannot run (see skip conditions) **commit-mix is the safe default**: it is
+  the option that builds without a feasibility test.
+- The chosen strategy is stored in the lock pin. An absent strategy reads as commit-mix
+  (back-compatible with ADR 0005 locks).
+- **Flakes are not part of the picker.** A flake nixpkgs-input pinned to a commit produces
+  the identical derivation as commit-mix, so it offers no different build outcome to test,
+  and it pulls the project toward a flake shape it does not target (ADR 0001). It stays
+  deferred.
 - The chosen strategy is stored in the lock pin. An absent strategy reads as commit-mix
   (back-compatible with ADR 0005 locks).
 - **Flakes are not part of the picker.** A flake nixpkgs-input pinned to a commit produces
@@ -53,15 +65,19 @@ run once. A `--no-abi-check` opt-out skips selection and takes commit-mix.
 
 ## Consequences
 
-- A pinned package that would break under commit-mix can be served by `override` without
-  user intervention, and the choice is reproducible (locked).
+- A pinned version is served by the lean `override` whenever its old source builds against
+  the baseline, and by the robust commit-mix when it does not, both without user
+  intervention, and the choice is reproducible (locked).
 - knixl builds at pin time when a cross-rev pin is created and nix is present. The skip
   conditions keep the common cases (repeat installs, same-rev, nix-absent) build-free.
-- `override` only helps when a commit ships the version (its `src` comes from that commit);
-  it does not rescue "no commit ships this version at all". Both strategies need such a
-  commit, so an unresolvable version still refuses (ADR 0005, unchanged).
+- Both strategies pull `src` from a commit that ships the version, so neither rescues "no
+  commit ships this version at all": an unresolvable version still refuses (ADR 0005,
+  unchanged).
 - The reproducibility boundary gains the strategy field: the same inputs plus the recorded
   strategy reproduce the same emit byte-for-byte.
-- `overrideAttrs` builds old source against baseline dependencies, so it can still fail;
-  that is why it is the fallback, not the default, and why it is build-tested before being
-  locked.
+- `override` is build-tested before being locked precisely because old source against
+  baseline dependencies can fail; when it does, commit-mix (which builds against its own
+  era's dependencies) is the recorded fallback.
+- The override feasibility test builds against the oracle baseline rev when one is recorded,
+  falling back to the builder's channel otherwise (per-host baseline revs are #22), so the
+  test and the emitted result can build against different nixpkgs until #22 lands.
