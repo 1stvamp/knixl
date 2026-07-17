@@ -1,0 +1,4 @@
+host "pinned-override" {
+    system "x86_64-linux"
+    package "htop" version="3.2.1"
+}
