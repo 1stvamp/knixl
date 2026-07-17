@@ -3,6 +3,10 @@ lock version=1 {
     formatter name="nixfmt-rfc-style" version="1.3.1"
     oracle nixpkgs-rev="" options-hash=""
 
+    host "pinned" {
+        pin "htop" version="3.2.1" nixpkgs-rev="0000000000000000000000000000000000000abc"
+    }
+
     input "hosts/db.kdl" hash="blake3:29d3880498a82621ef4632a73e710b565f50f2244e8da4bb502407dc31b4ea5e"
     input "hosts/shared.kdl" hash="blake3:e5134351b7d12ed90c8b6448e30cc9af6c707144db2adb9b47ee182eebea1498"
     input "hosts/web.kdl" hash="blake3:e918d383ea5e11cb6ac86a7ee17c71848e4d2521dcd1586c4942f5d189e7261b"

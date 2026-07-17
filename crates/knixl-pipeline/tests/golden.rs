@@ -319,3 +319,62 @@ fn lock_round_trips() {
     // render reproduces the same model.
     assert_eq!(Lock::parse(&lock.render()).expect("re-parse"), lock);
 }
+
+/// The pinned emit path (issue #25): a host with one version-pinned package (htop, mixed in
+/// from a historical nixpkgs commit) and one ambient package (ripgrep). The rev comes from
+/// the committed example lock, so generation stays offline and deterministic.
+fn pinned_pins() -> std::collections::BTreeMap<String, Vec<knixl_lock::model::Pin>> {
+    let lock_src = fs::read_to_string(examples_dir().join("knixl.lock.kdl")).expect("read lock");
+    Lock::parse(&lock_src).expect("parse example lock").pins
+}
+
+#[test]
+fn pinned_matches_golden() {
+    if !formatter_available() {
+        eprintln!("skipping pinned_matches_golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
+    let examples = examples_dir();
+    let path = PathBuf::from("hosts/pinned.kdl");
+    let src = fs::read_to_string(examples.join(&path)).expect("read pinned host kdl");
+    let pins = pinned_pins();
+    let tool = "0.3.1".parse().unwrap();
+
+    let files = generate(&[HostSource { path, src }], &build_registry(), &formatter(), &tool, None, &pins)
+        .expect("generate");
+
+    assert_eq!(files.len(), 1, "pinned host has no side-files");
+    let expected = fs::read_to_string(examples.join("expected/pinned.nix"))
+        .expect("no expected output at examples/expected/pinned.nix");
+    assert_eq!(files[0].text, expected, "pinned.nix does not match golden");
+}
+
+#[test]
+fn pinned_generate_is_byte_identical_across_runs() {
+    if !formatter_available() {
+        eprintln!("skipping pinned determinism golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
+    let examples = examples_dir();
+    let path = PathBuf::from("hosts/pinned.kdl");
+    let src = fs::read_to_string(examples.join(&path)).expect("read pinned host kdl");
+    let pins = pinned_pins();
+    let tool = "0.3.1".parse().unwrap();
+
+    let run = || {
+        generate(
+            &[HostSource { path: path.clone(), src: src.clone() }],
+            &build_registry(),
+            &formatter(),
+            &tool,
+            None,
+            &pins,
+        )
+        .expect("generate")
+        .into_iter()
+        .map(|f| (f.path, f.text))
+        .collect::<Vec<_>>()
+    };
+
+    assert_eq!(run(), run(), "two generate runs produced different bytes for the pinned host");
+}
