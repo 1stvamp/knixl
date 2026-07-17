@@ -175,6 +175,11 @@ pub enum Nav {
         version: Option<String>,
         pin: Option<String>,
         no_abi_check: bool,
+        /// The strategy chosen by the Install screen's strategy-selection step (#28), for a
+        /// versioned install; `None` for an unversioned one. Ignored by `Outcome::Install`'s
+        /// mapping until Task 3 threads it through to `commit_tui_install`.
+        #[allow(dead_code)]
+        strategy: Option<knixl_lock::model::PinStrategy>,
     },
     /// Scaffold a module node into a host and end the session.
     Insert { host: HostInfo, node: String, skeleton: String },
@@ -264,7 +269,8 @@ impl App {
         match step.nav {
             Nav::Stay => step.cmd,
             Nav::Quit => Some(command::quit()),
-            Nav::Apply { host, pkg, strict, version, pin, no_abi_check } => {
+            Nav::Apply { host, pkg, strict, version, pin, no_abi_check, strategy: _ } => {
+                // `strategy` is not yet threaded into `Outcome::Install` (Task 3).
                 self.outcome = Outcome::Install { host, pkg, strict, version, pin, no_abi_check };
                 Some(command::quit())
             }

@@ -13,7 +13,7 @@ use lipgloss::{join_vertical, rounded_border, Style, LEFT};
 
 use knixl_pipeline::install::HostInfo;
 
-use super::{config, theme, widgets, BuildOutcome, Entry, Nav, PinOutcome, Step, Verified};
+use super::{config, theme, widgets, BuildOutcome, Entry, Nav, PinOutcome, Step, StrategyOutcome, Verified};
 
 /// Does `pkgs.<pkg>` resolve. Host-independent, recomputed when the package changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +70,24 @@ struct PinDone {
     outcome: PinOutcome,
 }
 
+/// The pin-strategy selection status (#28). `Off` covers both "no version requested" and "a
+/// version was requested but the pin has not resolved yet, or no strategy fn was injected"
+/// (Task 3 wires the fn in); like `PinState::Off`, it never gates apply. `Selecting` replaces
+/// the ambient `--build` check for a versioned install once the pin resolves a rev.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StrategyState {
+    Off,
+    Selecting,
+    Chosen(knixl_lock::model::PinStrategy),
+    Failed,
+}
+
+/// The async strategy-selection result, delivered back to `update`.
+struct StrategyDone {
+    seq: u64,
+    outcome: StrategyOutcome,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Focus {
     Host,
@@ -111,6 +129,11 @@ pub struct InstallModel {
     /// The resolved rev, set once `pin` reaches `Resolved`. Carried through to `Nav::Apply`
     /// for the CLI to write the pin.
     pin_resolved: Option<String>,
+    strategy: StrategyState,
+    strategy_spinner: spinner::Model,
+    strategy_seq: u64,
+    /// The label (`Chosen`) or error message (`Failed`) for the strategy status row.
+    strategy_msg: Option<String>,
     dims: (usize, usize),
 }
 
@@ -159,7 +182,13 @@ impl InstallModel {
         let (w, h) = view_dims(size);
         // The injected build/pin fns are the single source of truth for whether `--build` /
         // a version were requested (Hub never injects either, so it always seeds `Off` there).
-        let build_state = if cfg.build.is_some() { BuildState::Building } else { BuildState::Off };
+        // A versioned install never gets the ambient build: strategy selection replaces it
+        // once the pin resolves (see `begin_strategy`), so `build_state` stays `Off` there.
+        let build_state = if cfg.build.is_some() && version.is_none() {
+            BuildState::Building
+        } else {
+            BuildState::Off
+        };
         let pin_state =
             if cfg.pin.is_some() && version.is_some() { PinState::Resolving } else { PinState::Off };
         let mut model = InstallModel {
@@ -184,6 +213,10 @@ impl InstallModel {
             pin_spinner: new_spinner(),
             pin_seq: 0,
             pin_resolved: None,
+            strategy: StrategyState::Off,
+            strategy_spinner: new_spinner(),
+            strategy_seq: 0,
+            strategy_msg: None,
             dims: (w, h),
         };
         let verify = model.begin_verify();
@@ -223,7 +256,13 @@ impl InstallModel {
             PinState::Off | PinState::Resolved => true,
             PinState::Resolving | PinState::Failed => false,
         };
-        resolve_ok && parse_ok && build_ok && pin_ok
+        // Mirrors pin_ok: a strategy selection in flight or failed always refuses, regardless
+        // of --strict.
+        let strategy_ok = match self.strategy {
+            StrategyState::Off | StrategyState::Chosen(_) => true,
+            StrategyState::Selecting | StrategyState::Failed => false,
+        };
+        resolve_ok && parse_ok && build_ok && pin_ok && strategy_ok
     }
 
     fn focus_index(&self) -> usize {
@@ -323,6 +362,31 @@ impl InstallModel {
         }
     }
 
+    /// Mark a new strategy selection as started and return its sequence token.
+    fn mark_selecting(&mut self) -> u64 {
+        self.strategy_seq += 1;
+        self.strategy = StrategyState::Selecting;
+        self.strategy_seq
+    }
+
+    /// Fold an async strategy-selection result into the state, ignoring a stale result from a
+    /// superseded selection (package/version edited again before this one returned).
+    fn on_strategy_done(&mut self, seq: u64, outcome: StrategyOutcome) {
+        if seq != self.strategy_seq {
+            return;
+        }
+        match outcome {
+            StrategyOutcome::Chosen { strategy, label } => {
+                self.strategy = StrategyState::Chosen(strategy);
+                self.strategy_msg = Some(label);
+            }
+            StrategyOutcome::Failed(msg) => {
+                self.strategy = StrategyState::Failed;
+                self.strategy_msg = Some(msg);
+            }
+        }
+    }
+
     fn resize(&mut self, size: (u16, u16)) {
         let dims = view_dims(size);
         if dims != self.dims {
@@ -348,8 +412,12 @@ impl InstallModel {
     }
 
     /// Start a build for the current package, if `--build` was requested. Host-independent,
-    /// so this is NOT called on a host switch.
+    /// so this is NOT called on a host switch. Never runs for a versioned install: strategy
+    /// selection (`begin_strategy`) replaces the ambient build there once the pin resolves.
     fn begin_build(&mut self) -> Option<Cmd> {
+        if self.version.is_some() {
+            return None;
+        }
         config().build.as_ref()?; // None => --build not requested
         let seq = self.mark_building();
         let pkg = self.pkg.value();
@@ -366,6 +434,19 @@ impl InstallModel {
         Some(command::batch(vec![pin_cmd(seq, pkg, version), spin_start(self.pin_spinner.tick_msg())]))
     }
 
+    /// Start strategy selection for the resolved pin, if a strategy fn was injected. Called
+    /// only from `update`'s `PinDone` handling, once the pin resolves a rev for a versioned
+    /// install; replaces the ambient build there. Host-independent.
+    fn begin_strategy(&mut self, rev: String) -> Option<Cmd> {
+        config().strategy.as_ref()?; // None => not yet wired (Task 3), or no version requested
+        let seq = self.mark_selecting();
+        let pkg = self.pkg.value();
+        Some(command::batch(vec![
+            strategy_cmd(seq, pkg, rev),
+            spin_start(self.strategy_spinner.tick_msg()),
+        ]))
+    }
+
     pub fn update(&mut self, msg: Msg, size: (u16, u16)) -> Step {
         if msg.downcast_ref::<WindowSizeMsg>().is_some() {
             self.resize(size);
@@ -380,7 +461,19 @@ impl InstallModel {
             return Step::stay();
         }
         if let Some(done) = msg.downcast_ref::<PinDone>() {
-            self.on_pin_done(done.seq, done.outcome.clone());
+            let seq = done.seq;
+            self.on_pin_done(seq, done.outcome.clone());
+            // A fresh resolve (not a stale one) for a versioned install kicks strategy
+            // selection instead of the ambient build (see `begin_build`'s guard).
+            let cmd = if seq == self.pin_seq && self.pin == PinState::Resolved {
+                self.pin_resolved.clone().and_then(|rev| self.begin_strategy(rev))
+            } else {
+                None
+            };
+            return Step { nav: Nav::Stay, cmd };
+        }
+        if let Some(done) = msg.downcast_ref::<StrategyDone>() {
+            self.on_strategy_done(done.seq, done.outcome.clone());
             return Step::stay();
         }
         if let Some(tick) = msg.downcast_ref::<spinner::TickMsg>() {
@@ -398,6 +491,13 @@ impl InstallModel {
                 return Step {
                     nav: Nav::Stay,
                     cmd: if self.pin == PinState::Resolving { cmd } else { None },
+                };
+            }
+            if tick.id == self.strategy_spinner.id() {
+                let cmd = self.strategy_spinner.update(msg);
+                return Step {
+                    nav: Nav::Stay,
+                    cmd: if self.strategy == StrategyState::Selecting { cmd } else { None },
                 };
             }
             let cmd = self.spinner.update(msg);
@@ -476,6 +576,10 @@ impl InstallModel {
                     version: self.version.clone(),
                     pin: self.pin_resolved.clone(),
                     no_abi_check: self.no_abi_check,
+                    strategy: match self.strategy {
+                        StrategyState::Chosen(s) => Some(s),
+                        _ => None,
+                    },
                 }),
                 _ => Step::stay(),
             },
@@ -547,6 +651,22 @@ impl InstallModel {
             format!("{}{}{}", marker(false), theme::dim().render("pin    "), status)
         });
 
+        let strategy_line = (self.strategy != StrategyState::Off).then(|| {
+            let status = match self.strategy {
+                StrategyState::Selecting => format!("{} selecting", self.strategy_spinner.view()),
+                StrategyState::Chosen(_) => {
+                    let label = self.strategy_msg.as_deref().unwrap_or_default();
+                    theme::good().render(&format!("\u{2713} strategy: {label}"))
+                }
+                StrategyState::Failed => {
+                    let msg = self.strategy_msg.as_deref().unwrap_or("selection failed");
+                    theme::bad().render(&format!("\u{2717} {msg}"))
+                }
+                StrategyState::Off => String::new(),
+            };
+            format!("{}{}{}", marker(false), theme::dim().render("strategy "), status)
+        });
+
         let preview_box = Style::new()
             .border(rounded_border())
             .border_foreground(theme::border(self.focus == Focus::Preview))
@@ -575,6 +695,9 @@ impl InstallModel {
         }
         if let Some(p) = pin_line {
             lines.push(p);
+        }
+        if let Some(s) = strategy_line {
+            lines.push(s);
         }
         lines.extend([preview_hdr, preview_box, buttons, hint]);
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
@@ -663,6 +786,19 @@ fn pin_cmd(seq: u64, pkg: String, version: String) -> Cmd {
     })
 }
 
+/// The strategy selection, off the event-loop thread. Resolves to a `StrategyDone` with the
+/// token so a stale selection (package/version edited again before this one returned) is
+/// discarded. Only called when `config().strategy` is `Some` and a pin has resolved.
+fn strategy_cmd(seq: u64, pkg: String, rev: String) -> Cmd {
+    let strategy = config().strategy.clone().expect("strategy fn present when begin_strategy ran");
+    Box::pin(async move {
+        match tokio::task::spawn_blocking(move || strategy(&pkg, &rev)).await {
+            Ok(outcome) => Some(Box::new(StrategyDone { seq, outcome }) as Msg),
+            Err(_) => None,
+        }
+    })
+}
+
 /// Kick the spinner by emitting its first tick; the spinner's own `update` re-arms after that.
 fn spin_start(tick: spinner::TickMsg) -> Cmd {
     Box::pin(async move { Some(Box::new(tick) as Msg) })
@@ -688,10 +824,42 @@ fn short_rev(rev: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use knixl_lock::model::PinStrategy;
     use std::path::PathBuf;
+    use std::sync::{Arc, Once};
 
     fn host(name: &str) -> HostInfo {
         HostInfo { name: name.into(), default: false, path: PathBuf::from(format!("hosts/{name}.kdl")) }
+    }
+
+    /// Sets the TUI's process-global config, once, with a `strategy` fn present (its outcome
+    /// is never actually run in these tests: `begin_strategy` only needs `config().strategy`
+    /// to be `Some` to proceed past its guard, and the tests supply their own `StrategyDone`
+    /// outcome directly via `on_strategy_done`). `CONFIG` is a `OnceLock`, so only the first
+    /// caller across the whole test binary wins; every test that drives `update`'s pin-resolve
+    /// -> strategy-selection wiring calls this first, so it never matters which one runs first
+    /// or whether it runs at all in isolation.
+    fn with_strategy_config() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let _ = crate::tui::CONFIG.set(crate::tui::TuiConfig {
+                root: PathBuf::new(),
+                hosts: vec![],
+                entry: Entry::Hub,
+                verify: Arc::new(|_: &str, _: &HostInfo| Verified {
+                    preview: String::new(),
+                    resolves: Resolve::Skipped,
+                    parses: Parse::Skipped,
+                }),
+                modules: vec![],
+                build: None,
+                pin: None,
+                strategy: Some(Arc::new(|_pkg: &str, _rev: &str| StrategyOutcome::Chosen {
+                    strategy: PinStrategy::CommitMix,
+                    label: "commit-mix".into(),
+                })),
+            });
+        });
     }
 
     /// A model built without the program's `config()` global, for testing the pure logic.
@@ -720,6 +888,10 @@ mod tests {
             pin_spinner: new_spinner(),
             pin_seq: 0,
             pin_resolved: None,
+            strategy: StrategyState::Off,
+            strategy_spinner: new_spinner(),
+            strategy_seq: 0,
+            strategy_msg: None,
             dims: (40, 5),
         }
     }
@@ -919,4 +1091,125 @@ mod tests {
         m.on_pin_done(seq, PinOutcome::Resolved("abc123".into()));
         assert_eq!(m.pin, PinState::Resolving, "stale resolve discarded");
     }
+
+    #[test]
+    fn begin_build_never_fires_for_a_versioned_install() {
+        // No config() touch here: the version guard returns before `begin_build` reads it, so
+        // this is safe to call even without `with_strategy_config`.
+        let mut m = model(1);
+        m.version = Some("1.2.3".into());
+        assert!(m.begin_build().is_none(), "a versioned install gets strategy, not the ambient build");
+        assert_eq!(m.build, BuildState::Off, "build state is left untouched, never Building");
+    }
+
+    #[test]
+    fn versioned_pin_resolve_kicks_strategy_selection_instead_of_build() {
+        with_strategy_config();
+        let mut m = model(1);
+        m.version = Some("1.2.3".into());
+        m.build = BuildState::Off; // what `enter()` seeds for a versioned install
+        let seq = m.mark_resolving();
+        let msg = Box::new(PinDone { seq, outcome: PinOutcome::Resolved("deadbeef".into()) }) as Msg;
+        let step = m.update(msg, (80, 24));
+
+        assert_eq!(m.pin, PinState::Resolved);
+        assert_eq!(m.build, BuildState::Off, "the ambient build never enters Building");
+        assert_eq!(m.strategy, StrategyState::Selecting, "the resolved pin kicks strategy selection");
+        assert!(step.cmd.is_some(), "strategy selection spawns a command");
+
+        let strat_seq = m.strategy_seq;
+        m.on_strategy_done(
+            strat_seq,
+            StrategyOutcome::Chosen { strategy: PinStrategy::CommitMix, label: "commit-mix".into() },
+        );
+        assert_eq!(m.strategy, StrategyState::Chosen(PinStrategy::CommitMix));
+    }
+
+    #[test]
+    fn stale_pin_resolve_does_not_kick_strategy_selection() {
+        with_strategy_config();
+        let mut m = model(1);
+        m.version = Some("1.2.3".into());
+        let first = m.mark_resolving();
+        m.mark_resolving(); // supersedes the first
+        let msg = Box::new(PinDone { seq: first, outcome: PinOutcome::Resolved("deadbeef".into()) }) as Msg;
+        m.update(msg, (80, 24));
+        assert_eq!(m.strategy, StrategyState::Off, "a stale pin resolve must not kick strategy selection");
+    }
+
+    #[test]
+    fn strategy_gating_blocks_apply_while_selecting_and_on_failure() {
+        let mut m = model(1);
+        m.strategy = StrategyState::Selecting;
+        assert!(!m.apply_allowed(), "in-flight strategy selection blocks apply");
+        m.strategy = StrategyState::Failed;
+        assert!(!m.apply_allowed(), "a failed strategy selection blocks apply");
+        m.strategy = StrategyState::Chosen(PinStrategy::CommitMix);
+        assert!(m.apply_allowed(), "a chosen strategy allows apply");
+    }
+
+    #[test]
+    fn strategy_off_does_not_affect_gating() {
+        let mut m = model(1);
+        m.strategy = StrategyState::Off;
+        assert!(m.apply_allowed());
+    }
+
+    #[test]
+    fn on_strategy_done_sets_state_and_ignores_stale() {
+        let mut m = model(1);
+        let seq = m.mark_selecting();
+        m.on_strategy_done(
+            seq,
+            StrategyOutcome::Chosen { strategy: PinStrategy::Override, label: "override".into() },
+        );
+        assert_eq!(m.strategy, StrategyState::Chosen(PinStrategy::Override));
+        assert_eq!(m.strategy_msg.as_deref(), Some("override"));
+
+        let stale = seq;
+        m.mark_selecting();
+        m.on_strategy_done(stale, StrategyOutcome::Failed("boom".into()));
+        assert_eq!(m.strategy, StrategyState::Selecting, "stale strategy result discarded");
+    }
+
+    #[test]
+    fn on_strategy_done_sets_failed_with_message() {
+        let mut m = model(1);
+        let seq = m.mark_selecting();
+        m.on_strategy_done(seq, StrategyOutcome::Failed("neither strategy builds".into()));
+        assert_eq!(m.strategy, StrategyState::Failed);
+        assert_eq!(m.strategy_msg.as_deref(), Some("neither strategy builds"));
+    }
+
+    #[test]
+    fn apply_carries_the_chosen_strategy_for_a_versioned_install() {
+        let mut m = model(1);
+        m.version = Some("1.2.3".into());
+        m.pin = PinState::Resolved;
+        m.pin_resolved = Some("deadbeef".into());
+        m.strategy = StrategyState::Chosen(PinStrategy::Override);
+        m.focus = Focus::Apply;
+        let key = |c| Box::new(KeyMsg { key: c, modifiers: KeyModifiers::NONE }) as Msg;
+        let step = m.update(key(KeyCode::Enter), (80, 24));
+        match step.nav {
+            Nav::Apply { strategy, version, .. } => {
+                assert_eq!(strategy, Some(PinStrategy::Override));
+                assert_eq!(version, Some("1.2.3".to_string()));
+            }
+            _ => panic!("expected Nav::Apply"),
+        }
+    }
+
+    #[test]
+    fn apply_carries_no_strategy_for_an_unversioned_install() {
+        let mut m = model(1); // version stays None, strategy stays Off
+        m.focus = Focus::Apply;
+        let key = |c| Box::new(KeyMsg { key: c, modifiers: KeyModifiers::NONE }) as Msg;
+        let step = m.update(key(KeyCode::Enter), (80, 24));
+        match step.nav {
+            Nav::Apply { strategy, .. } => assert_eq!(strategy, None),
+            _ => panic!("expected Nav::Apply"),
+        }
+    }
+
 }
