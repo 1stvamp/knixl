@@ -378,3 +378,54 @@ fn pinned_generate_is_byte_identical_across_runs() {
 
     assert_eq!(run(), run(), "two generate runs produced different bytes for the pinned host");
 }
+
+/// GC (issue #24): a pin for a package no longer declared in the host's KDL must not
+/// survive into `lock_next`, while a pin whose package is still declared (with a
+/// matching version) does.
+#[test]
+fn generate_prunes_pins_for_packages_no_longer_declared() {
+    use knixl_lock::model::{FormatterPin, OraclePin, Pin};
+    use knixl_lock::Plan;
+    use knixl_pipeline::gather::gather;
+
+    let root = std::env::temp_dir().join(format!("knixl-proj-pin-gc-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("hosts")).unwrap();
+    // htop was dropped from the host's KDL; jq stays, and remains pinned.
+    fs::write(
+        root.join("hosts/app.kdl"),
+        "host \"app\" {\n    system \"x86_64-linux\"\n    package \"jq\" version=\"1.7\"\n}\n",
+    )
+    .unwrap();
+
+    let rev = "0000000000000000000000000000000000000abc".to_string();
+    let mut pins = std::collections::BTreeMap::new();
+    pins.insert(
+        "app".to_string(),
+        vec![
+            Pin { package: "jq".into(), version: "1.7".into(), nixpkgs_rev: rev.clone() },
+            Pin { package: "htop".into(), version: "3.2.1".into(), nixpkgs_rev: rev },
+        ],
+    );
+    let lock = Lock {
+        version: 1,
+        tool: "0.3.1".parse().unwrap(),
+        formatter: FormatterPin { name: "identity".into(), version: "0".into() },
+        oracle: OraclePin { nixpkgs_rev: String::new(), options_hash: String::new() },
+        inputs: std::collections::BTreeMap::new(),
+        modules: std::collections::BTreeMap::new(),
+        outputs: Vec::new(),
+        pins,
+    };
+    fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    let plan = Plan::compute(&project.inputs, &project.disk, &project.lock, &project.versions);
+    assert!(!plan.has_validation_errors(), "unexpected validation errors: {:?}", plan.validation_errors);
+
+    let app_pins = plan.lock_next.pins.get("app").expect("app host keeps its surviving pin");
+    assert_eq!(app_pins.len(), 1, "htop's pin should have been pruned: {app_pins:?}");
+    assert_eq!(app_pins[0].package, "jq");
+
+    let _ = fs::remove_dir_all(&root);
+}
