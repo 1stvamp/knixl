@@ -70,6 +70,25 @@ pub enum PinOutcome {
 /// version was requested; `Send + Sync` so the Install screen runs it off the event loop.
 pub type PinFn = Arc<dyn Fn(&str, &str) -> PinOutcome + Send + Sync>;
 
+/// The result of deciding a pin strategy for `name` at a resolved commit (#28: this replaces
+/// the CLI's post-Apply, second build-test with a decision made once, inside the TUI, before
+/// commit time).
+#[derive(Debug, Clone)]
+pub enum StrategyOutcome {
+    /// A strategy was chosen; `label` is the same short phrase the `pinned ... via ...` status
+    /// line prints (e.g. "build ok", "override build failed").
+    Chosen { strategy: knixl_lock::model::PinStrategy, label: String },
+    /// Neither candidate strategy build-tested successfully; carries a message for display.
+    Failed(String),
+}
+
+/// Decides a pin strategy for `name@version` resolved to `rev`, against `host_name`'s own
+/// baseline (#28 review fix: the decision is host-dependent, since each host can declare its
+/// own nixpkgs baseline, so it must be recomputed for whichever host is currently selected
+/// rather than fixed at injection time). Injected only when a version was requested;
+/// `Send + Sync` so the Install screen runs it off the event loop.
+pub type StrategyFn = Arc<dyn Fn(&str, &str, &str) -> StrategyOutcome + Send + Sync>;
+
 /// A registered module as the Browse screen sees it: its claimed node, a kind tag, the
 /// rendered schema doc, and a skeleton to splice into a host. Precomputed by the CLI so the
 /// TUI never touches the (non-`Send`) registry.
@@ -114,6 +133,15 @@ pub enum Outcome {
         version: Option<String>,
         pin: Option<String>,
         no_abi_check: bool,
+        /// The strategy chosen by the Install screen's strategy-selection step (#28), for a
+        /// versioned install; `None` for an unversioned one. The CLI writes the pin with this
+        /// strategy directly, rather than build-testing a second time at commit.
+        strategy: Option<knixl_lock::model::PinStrategy>,
+        /// The reason the strategy was chosen (e.g. "build ok", "matches baseline"), the same
+        /// phrase `StrategyOutcome::Chosen` carried: threaded through so the committed status
+        /// line reads `pinned ... via ... (reason)`, matching the plain path's wording. `None`
+        /// for an unversioned install.
+        strategy_reason: Option<String>,
     },
     /// Scaffold this module's node into this host's KDL.
     Insert { host: HostInfo, node: String, skeleton: String },
@@ -132,6 +160,9 @@ pub struct TuiConfig {
     pub modules: Vec<BrowseModule>,
     pub build: Option<BuildFn>,
     pub pin: Option<PinFn>,
+    /// Injected only when a version was requested (#28): decides the pin strategy inside the
+    /// Install screen's Apply-gated verify sequence, replacing the CLI's post-Apply build-test.
+    pub strategy: Option<StrategyFn>,
 }
 
 fn config() -> &'static TuiConfig {
@@ -154,6 +185,13 @@ pub enum Nav {
         version: Option<String>,
         pin: Option<String>,
         no_abi_check: bool,
+        /// The strategy chosen by the Install screen's strategy-selection step (#28), for a
+        /// versioned install; `None` for an unversioned one. Threaded straight through to
+        /// `Outcome::Install`, for the CLI to pass to `commit_tui_install`.
+        strategy: Option<knixl_lock::model::PinStrategy>,
+        /// The reason the strategy was chosen, threaded straight through to
+        /// `Outcome::Install` alongside `strategy` (#28 review fix).
+        strategy_reason: Option<String>,
     },
     /// Scaffold a module node into a host and end the session.
     Insert { host: HostInfo, node: String, skeleton: String },
@@ -243,8 +281,17 @@ impl App {
         match step.nav {
             Nav::Stay => step.cmd,
             Nav::Quit => Some(command::quit()),
-            Nav::Apply { host, pkg, strict, version, pin, no_abi_check } => {
-                self.outcome = Outcome::Install { host, pkg, strict, version, pin, no_abi_check };
+            Nav::Apply { host, pkg, strict, version, pin, no_abi_check, strategy, strategy_reason } => {
+                self.outcome = Outcome::Install {
+                    host,
+                    pkg,
+                    strict,
+                    version,
+                    pin,
+                    no_abi_check,
+                    strategy,
+                    strategy_reason,
+                };
                 Some(command::quit())
             }
             Nav::Insert { host, node, skeleton } => {
@@ -286,6 +333,7 @@ impl App {
 
 /// Run the TUI, returning what the session decided. Sets the config, builds a tokio runtime,
 /// drives the bubbletea program, and reads the outcome off the final model.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     entry: Entry,
     root: PathBuf,
@@ -294,8 +342,9 @@ pub fn run(
     modules: Vec<BrowseModule>,
     build: Option<BuildFn>,
     pin: Option<PinFn>,
+    strategy: Option<StrategyFn>,
 ) -> Result<Outcome, String> {
-    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify, modules, build, pin });
+    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify, modules, build, pin, strategy });
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
