@@ -246,22 +246,47 @@ fn install(
         };
         let build_fn = build.then(|| make_build(ctx.root.clone()));
         let pin_fn = version.is_some().then(make_pin);
-        // #28: decide the pin strategy once, up front, and inject it into the Install
-        // screen's Apply-gated verify sequence, rather than build-testing a second time at
-        // commit (`commit_tui_install`'s old `choose_strategy` call). `initial` is the target
-        // host before the TUI runs; a host switch inside the TUI does not re-derive this
-        // (mirrors `make_build`/`make_pin`, which are also fixed at `initial`/host-independent).
+        // #28: decide the pin strategy inside the Install screen's Apply-gated verify
+        // sequence, rather than build-testing a second time at commit (`commit_tui_install`'s
+        // old `choose_strategy` call). Closes over the data needed to compute a baseline for
+        // WHICHEVER host is selected at call time (the host list, the lock's baselines, the
+        // global oracle rev, and any pending per-host resolutions), rather than a single
+        // baseline fixed to `initial` (#28 review fix: a host switch inside the TUI used to
+        // leave the strategy decided against the host that was selected when the TUI opened).
         let strategy_fn = version.is_some().then(|| {
-            let baseline_rev =
-                effective_baseline_rev(ctx, &initial.path, &initial.name, pending.get(&initial.name));
-            make_strategy(baseline_rev, no_abi_check)
+            make_strategy(
+                hosts.clone(),
+                ctx.lock.baselines.clone(),
+                ctx.lock.oracle.nixpkgs_rev.clone(),
+                pending.clone(),
+                no_abi_check,
+            )
         });
         return match open_tui(entry, build_fn, pin_fn, strategy_fn) {
-            Ok(tui::Outcome::Install { host, pkg, strict, version, pin, no_abi_check, strategy }) => {
+            Ok(tui::Outcome::Install {
+                host,
+                pkg,
+                strict,
+                version,
+                pin,
+                no_abi_check,
+                strategy,
+                strategy_reason,
+            }) => {
                 // The TUI may switch the target host from `initial`: look the pending
                 // resolution up for whichever host was actually chosen.
                 let baseline_pending = pending.get(&host.name).cloned();
-                commit_tui_install(host, pkg, strict, version, pin, no_abi_check, strategy, baseline_pending)
+                commit_tui_install(
+                    host,
+                    pkg,
+                    strict,
+                    version,
+                    pin,
+                    no_abi_check,
+                    strategy,
+                    strategy_reason,
+                    baseline_pending,
+                )
             }
             Ok(_) => { println!("cancelled"); Code::Clean }
             Err(e) => { eprintln!("knixl: tui: {e}"); Code::Internal }
@@ -299,8 +324,13 @@ fn install(
                         return Code::Validation;
                     }
                 };
-                let baseline_rev =
-                    effective_baseline_rev(ctx, &initial.path, &initial.name, baseline_pending.as_ref());
+                let baseline_rev = effective_baseline_rev(
+                    &ctx.lock.oracle.nixpkgs_rev,
+                    &ctx.lock.baselines,
+                    &initial.path,
+                    &initial.name,
+                    baseline_pending.as_ref(),
+                );
                 match choose_strategy(name, &resolved.nixpkgs_rev, &baseline_rev, no_abi_check) {
                     Ok((strategy, reason, tested)) => {
                         build_tested = tested;
@@ -599,9 +629,13 @@ fn resolve_pending_baselines(ctx: &Ctx) -> Result<BTreeMap<String, HostBaseline>
 /// the caller already has a pending resolution for this host in hand (issue #22 review fix:
 /// no network lookup happens here any more), else the lock's already-recorded baseline for a
 /// host that declares a release, else the project's global oracle rev for a host that
-/// declares none.
+/// declares none. Takes `oracle_rev`/`baselines` rather than `&Ctx` (#28 review fix): the
+/// interactive install's strategy closure (`make_strategy`) recomputes this per host, from
+/// data captured once up front rather than a borrowed `Ctx`, since it runs off the event loop
+/// and outlives any single call into `install()`.
 fn effective_baseline_rev(
-    ctx: &Ctx,
+    oracle_rev: &str,
+    baselines: &BTreeMap<String, HostBaseline>,
     host_path: &std::path::Path,
     host: &str,
     pending: Option<&HostBaseline>,
@@ -610,13 +644,9 @@ fn effective_baseline_rev(
         return b.nixpkgs_rev.clone();
     }
     if declared_release(host_path).is_none() {
-        return ctx.lock.oracle.nixpkgs_rev.clone();
+        return oracle_rev.to_string();
     }
-    ctx.lock
-        .baselines
-        .get(host)
-        .map(|b| b.nixpkgs_rev.clone())
-        .unwrap_or_else(|| ctx.lock.oracle.nixpkgs_rev.clone())
+    baselines.get(host).map(|b| b.nixpkgs_rev.clone()).unwrap_or_else(|| oracle_rev.to_string())
 }
 
 /// The `Inputs` `run` should plan `Cmd::Upgrade`/`Cmd::Install` against once `pending` has
@@ -667,10 +697,12 @@ fn patch_inputs_for_pending(
 /// straight to the lock rather than build-testing a second time (the double-build issue #28
 /// fixes). `strategy` is `None` only for an unversioned install: Apply is gated on a chosen
 /// strategy whenever a version was requested (see `InstallModel::apply_allowed`), so a
-/// versioned install here always carries `Some`. `no_abi_check` is unused now that the
-/// strategy decision has already been made by the time this runs; it stays a parameter for
-/// symmetry with `Outcome::Install`'s other fields. Shared by the interactive `install`
-/// branch and the Hub flow.
+/// versioned install here always carries `Some` (and `strategy_reason` alongside it, #28
+/// review fix: threaded through so this prints the same `via ... (reason)` form the plain
+/// path's status line does, rather than dropping the reason). `no_abi_check` is unused now
+/// that the strategy decision has already been made by the time this runs; it stays a
+/// parameter for symmetry with `Outcome::Install`'s other fields. Shared by the interactive
+/// `install` branch and the Hub flow.
 #[allow(clippy::too_many_arguments)]
 fn commit_tui_install(
     host: knixl_pipeline::install::HostInfo,
@@ -680,6 +712,7 @@ fn commit_tui_install(
     pin: Option<String>,
     _no_abi_check: bool,
     strategy: Option<knixl_lock::model::PinStrategy>,
+    strategy_reason: Option<String>,
     baseline_pending: Option<HostBaseline>,
 ) -> Code {
     let version_pin = match (version.as_deref(), pin, strategy) {
@@ -699,7 +732,10 @@ fn commit_tui_install(
             );
         }
         if let Some((v, _, strategy)) = &version_pin {
-            println!("pinned {pkg} {v} via {}", strategy_label(*strategy));
+            match &strategy_reason {
+                Some(reason) => println!("pinned {pkg} {v} via {} ({reason})", strategy_label(*strategy)),
+                None => println!("pinned {pkg} {v} via {}", strategy_label(*strategy)),
+            }
         }
     }
     code
@@ -892,12 +928,33 @@ fn strategy_outcome(name: &str, rev: &str, baseline_rev: &str, no_abi_check: boo
     }
 }
 
-/// Builds the TUI's strategy-selection closure (#28): given `(name, rev)`, runs the same
-/// decision `choose_strategy` runs for the plain path, closing over `baseline_rev` and
-/// `no_abi_check`. Injected into `TuiConfig` for a versioned interactive install, replacing
-/// the CLI's old second, redundant build-test at commit time.
-fn make_strategy(baseline_rev: String, no_abi_check: bool) -> tui::StrategyFn {
-    Arc::new(move |name: &str, rev: &str| strategy_outcome(name, rev, &baseline_rev, no_abi_check))
+/// Builds the TUI's strategy-selection closure (#28): given `(name, rev, host_name)`, computes
+/// `host_name`'s own baseline (reproducing `effective_baseline_rev`'s logic against data
+/// captured once, up front, rather than a fixed baseline decided before the TUI ran), then runs
+/// the same decision `choose_strategy` runs for the plain path. Closes over the host list (to
+/// look up `host_name`'s path, for `declared_release`), the lock's recorded baselines, the
+/// global oracle rev, any pending per-host baseline resolutions, and `no_abi_check`. Injected
+/// into `TuiConfig` for a versioned interactive install, replacing the CLI's old second,
+/// redundant build-test at commit time. Host-aware (#28 review fix) so a host switch inside the
+/// TUI re-fires this against the newly selected host's baseline, not the one selected when the
+/// TUI opened.
+fn make_strategy(
+    hosts: Vec<knixl_pipeline::install::HostInfo>,
+    baselines: BTreeMap<String, HostBaseline>,
+    oracle_rev: String,
+    pending: BTreeMap<String, HostBaseline>,
+    no_abi_check: bool,
+) -> tui::StrategyFn {
+    Arc::new(move |name: &str, rev: &str, host_name: &str| {
+        let baseline_rev = hosts
+            .iter()
+            .find(|h| h.name == host_name)
+            .map(|h| {
+                effective_baseline_rev(&oracle_rev, &baselines, &h.path, host_name, pending.get(host_name))
+            })
+            .unwrap_or_else(|| oracle_rev.clone());
+        strategy_outcome(name, rev, &baseline_rev, no_abi_check)
+    })
 }
 
 /// Human-readable name for a `PinStrategy`, for the `pinned ... via ...` status line.
@@ -1070,15 +1127,34 @@ fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
         // no `run` pre-pass (`Cmd::Tui` is dispatched before `Ctx::load`), so it resolves
         // this one host's pending baseline itself before committing (issue #22 review fix:
         // this used to be skipped entirely for an ambient install here). It also never
-        // requests a version (`Entry::Hub` seeds `version: None`), so `strategy` is always
-        // `None` here too.
-        tui::Outcome::Install { host, pkg, strict, version, pin, no_abi_check, strategy } => {
+        // requests a version (`Entry::Hub` seeds `version: None`), so `strategy` and
+        // `strategy_reason` are always `None` here too.
+        tui::Outcome::Install {
+            host,
+            pkg,
+            strict,
+            version,
+            pin,
+            no_abi_check,
+            strategy,
+            strategy_reason,
+        } => {
             let ctx = Ctx::load();
             let baseline_pending = match resolve_pending_baseline(&ctx, &host.name, &host.path) {
                 Ok(b) => b,
                 Err(code) => return code,
             };
-            commit_tui_install(host, pkg, strict, version, pin, no_abi_check, strategy, baseline_pending)
+            commit_tui_install(
+                host,
+                pkg,
+                strict,
+                version,
+                pin,
+                no_abi_check,
+                strategy,
+                strategy_reason,
+                baseline_pending,
+            )
         }
         tui::Outcome::Insert { host, node, skeleton } => commit_insert(&host, &node, &skeleton),
         tui::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),
@@ -1375,6 +1451,18 @@ mod tests {
         path
     }
 
+    /// A single-host `make_strategy` closure: `host` is not on disk, so `declared_release`
+    /// finds nothing and `effective_baseline_rev` falls straight through to `oracle_rev`,
+    /// mirroring what the old, single-baseline `make_strategy` test exercised.
+    fn single_host_strategy_fn(oracle_rev: &str, no_abi_check: bool) -> tui::StrategyFn {
+        let host = knixl_pipeline::install::HostInfo {
+            name: "h".into(),
+            default: false,
+            path: std::path::PathBuf::from("/nonexistent/knixl-cli-make-strategy-test/h.kdl"),
+        };
+        make_strategy(vec![host], std::collections::BTreeMap::new(), oracle_rev.to_string(), std::collections::BTreeMap::new(), no_abi_check)
+    }
+
     /// `make_strategy`'s closure maps `choose_strategy`'s two outcomes: override builds ->
     /// `Chosen { Override, .. }`, neither builds -> `Failed(..)`. Both cases live in one test
     /// (rather than two `#[test]` fns) because `KNIXL_NIX_BUILD` is process-global and cargo
@@ -1387,8 +1475,8 @@ mod tests {
 
         let ok_build = build_shim("override-ok", true);
         std::env::set_var("KNIXL_NIX_BUILD", &ok_build);
-        let strategy_fn = make_strategy("baseline-rev".to_string(), false);
-        match strategy_fn("pkg", "new-rev") {
+        let strategy_fn = single_host_strategy_fn("baseline-rev", false);
+        match strategy_fn("pkg", "new-rev", "h") {
             tui::StrategyOutcome::Chosen { strategy, label } => {
                 assert_eq!(strategy, knixl_lock::model::PinStrategy::Override);
                 assert_eq!(label, "build ok");
@@ -1399,8 +1487,8 @@ mod tests {
 
         let never_build = build_shim("neither-builds", false);
         std::env::set_var("KNIXL_NIX_BUILD", &never_build);
-        let strategy_fn = make_strategy("baseline-rev".to_string(), false);
-        match strategy_fn("pkg", "new-rev") {
+        let strategy_fn = single_host_strategy_fn("baseline-rev", false);
+        match strategy_fn("pkg", "new-rev", "h") {
             tui::StrategyOutcome::Failed(msg) => {
                 assert!(msg.contains("commit-mix"), "got: {msg}");
                 assert!(msg.contains("override"), "got: {msg}");
@@ -1409,6 +1497,81 @@ mod tests {
         }
         let _ = std::fs::remove_file(&never_build);
 
+        match prior {
+            Some(v) => std::env::set_var("KNIXL_NIX_BUILD", v),
+            None => std::env::remove_var("KNIXL_NIX_BUILD"),
+        }
+    }
+
+    /// #28 review fix: `make_strategy` must decide against WHICHEVER host is named at call
+    /// time, not a baseline fixed once when the closure was built. Two hosts declare the same
+    /// nixpkgs release but have different recorded baselines; the same `(name, rev)` pair
+    /// matches host b's baseline exactly (skipped, no build) but not host a's (build-tested),
+    /// proving the baseline lookup is keyed on the `host_name` argument.
+    #[test]
+    fn make_strategy_recomputes_the_baseline_for_the_selected_host() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let prior = std::env::var_os("KNIXL_NIX_BUILD");
+
+        let root =
+            std::env::temp_dir().join(format!("knixl-cli-makestrategy-hosts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let host_a_path = root.join("a.kdl");
+        let host_b_path = root.join("b.kdl");
+        std::fs::write(&host_a_path, "host \"a\" {\n    nixpkgs release=\"24.05\"\n}\n").unwrap();
+        std::fs::write(&host_b_path, "host \"b\" {\n    nixpkgs release=\"24.05\"\n}\n").unwrap();
+
+        let mut baselines = std::collections::BTreeMap::new();
+        baselines.insert(
+            "a".to_string(),
+            knixl_lock::model::HostBaseline {
+                release: "24.05".into(),
+                nixpkgs_rev: "rev-a".into(),
+                options_hash: String::new(),
+            },
+        );
+        baselines.insert(
+            "b".to_string(),
+            knixl_lock::model::HostBaseline {
+                release: "24.05".into(),
+                nixpkgs_rev: "rev-b".into(),
+                options_hash: String::new(),
+            },
+        );
+        let hosts = vec![
+            knixl_pipeline::install::HostInfo { name: "a".into(), default: false, path: host_a_path },
+            knixl_pipeline::install::HostInfo { name: "b".into(), default: false, path: host_b_path },
+        ];
+
+        // Always succeeds: a rev decided against a baseline it does NOT match runs a real
+        // override build test, which this shim always passes.
+        let build_ok = build_shim("host-baseline", true);
+        std::env::set_var("KNIXL_NIX_BUILD", &build_ok);
+        let strategy_fn =
+            make_strategy(hosts, baselines, "oracle-rev".to_string(), std::collections::BTreeMap::new(), false);
+
+        // "rev-b" IS host b's own baseline: matched without a build.
+        match strategy_fn("pkg", "rev-b", "b") {
+            tui::StrategyOutcome::Chosen { strategy, label } => {
+                assert_eq!(strategy, knixl_lock::model::PinStrategy::CommitMix);
+                assert_eq!(label, "matches baseline");
+            }
+            tui::StrategyOutcome::Failed(msg) => panic!("expected Chosen, got Failed({msg})"),
+        }
+
+        // The SAME rev, decided against host a instead: "rev-b" != host a's baseline
+        // ("rev-a"), so this one build-tests and picks Override.
+        match strategy_fn("pkg", "rev-b", "a") {
+            tui::StrategyOutcome::Chosen { strategy, label } => {
+                assert_eq!(strategy, knixl_lock::model::PinStrategy::Override);
+                assert_eq!(label, "build ok");
+            }
+            tui::StrategyOutcome::Failed(msg) => panic!("expected Chosen, got Failed({msg})"),
+        }
+
+        let _ = std::fs::remove_file(&build_ok);
+        let _ = std::fs::remove_dir_all(&root);
         match prior {
             Some(v) => std::env::set_var("KNIXL_NIX_BUILD", v),
             None => std::env::remove_var("KNIXL_NIX_BUILD"),
@@ -1483,6 +1646,7 @@ mod tests {
             Some("abc123".into()),
             false,
             Some(PinStrategy::Override),
+            Some("build ok".into()),
             None,
         );
         assert!(code == Code::Clean, "a pre-chosen strategy commits without build-testing again");

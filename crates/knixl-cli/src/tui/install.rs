@@ -281,7 +281,8 @@ impl InstallModel {
         self.focus = FOCUS_ORDER[i];
     }
 
-    /// Move the host selection; reports whether it actually changed (so the caller re-verifies).
+    /// Move the host selection; reports whether it actually changed (so the caller re-verifies
+    /// and, for a versioned install with a resolved pin, re-fires strategy selection).
     fn set_host(&mut self, idx: usize) -> bool {
         if idx < self.hosts.len() && idx != self.host_sel {
             self.host_sel = idx;
@@ -437,16 +438,36 @@ impl InstallModel {
     }
 
     /// Start strategy selection for the resolved pin, if a strategy fn was injected. Called
-    /// only from `update`'s `PinDone` handling, once the pin resolves a rev for a versioned
-    /// install; replaces the ambient build there. Host-independent.
+    /// from `update`'s `PinDone` handling once the pin resolves a rev for a versioned install
+    /// (replacing the ambient build there), and again from the `Focus::Host` handlers on a
+    /// host switch (#28 review fix: the decision is host-dependent, so it must be re-run
+    /// against whichever host is selected now, not the one selected when the pin resolved).
+    /// Always reads the *current* `host_sel`, so a re-fire after a host switch forwards the
+    /// newly selected host's name to the injected `StrategyFn`.
     fn begin_strategy(&mut self, rev: String) -> Option<Cmd> {
         config().strategy.as_ref()?; // None => no version requested (unversioned installs skip this)
         let seq = self.mark_selecting();
         let pkg = self.pkg.value();
+        let host = self.hosts[self.host_sel].name.clone();
         Some(command::batch(vec![
-            strategy_cmd(seq, pkg, rev),
+            strategy_cmd(seq, pkg, rev, host),
             spin_start(self.strategy_spinner.tick_msg()),
         ]))
+    }
+
+    /// Re-verify after a host switch, and, for a versioned install whose pin has already
+    /// resolved, re-fire strategy selection for the newly selected host too (#28 review fix):
+    /// `make_strategy`'s decision depends on the target host's own baseline, so a switch away
+    /// from the host the strategy was last decided against leaves a stale decision otherwise.
+    /// If the pin has not resolved yet, strategy selection will fire from the eventual
+    /// `PinDone` using whatever host is selected by then, so only re-verify here.
+    fn on_host_changed(&mut self) -> Option<Cmd> {
+        let verify = self.begin_verify();
+        let strategy = (self.pin == PinState::Resolved)
+            .then(|| self.pin_resolved.clone())
+            .flatten()
+            .and_then(|rev| self.begin_strategy(rev));
+        batch_all(vec![verify, strategy])
     }
 
     pub fn update(&mut self, msg: Msg, size: (u16, u16)) -> Step {
@@ -530,14 +551,14 @@ impl InstallModel {
             Focus::Host => match code {
                 KeyCode::Left => {
                     if self.host_sel > 0 && self.set_host(self.host_sel - 1) {
-                        Step { nav: Nav::Stay, cmd: self.begin_verify() }
+                        Step { nav: Nav::Stay, cmd: self.on_host_changed() }
                     } else {
                         Step::stay()
                     }
                 }
                 KeyCode::Right => {
                     if self.set_host(self.host_sel + 1) {
-                        Step { nav: Nav::Stay, cmd: self.begin_verify() }
+                        Step { nav: Nav::Stay, cmd: self.on_host_changed() }
                     } else {
                         Step::stay()
                     }
@@ -582,6 +603,7 @@ impl InstallModel {
                         StrategyState::Chosen(s) => Some(s),
                         _ => None,
                     },
+                    strategy_reason: self.strategy_msg.clone(),
                 }),
                 _ => Step::stay(),
             },
@@ -789,12 +811,14 @@ fn pin_cmd(seq: u64, pkg: String, version: String) -> Cmd {
 }
 
 /// The strategy selection, off the event-loop thread. Resolves to a `StrategyDone` with the
-/// token so a stale selection (package/version edited again before this one returned) is
-/// discarded. Only called when `config().strategy` is `Some` and a pin has resolved.
-fn strategy_cmd(seq: u64, pkg: String, rev: String) -> Cmd {
+/// token so a stale selection (package/version edited again, or a host switch, before this one
+/// returned) is discarded. Only called when `config().strategy` is `Some` and a pin has
+/// resolved. `host` is the currently selected host's name: the decision is host-dependent
+/// (#28 review fix), so it is forwarded rather than fixed at injection time.
+fn strategy_cmd(seq: u64, pkg: String, rev: String, host: String) -> Cmd {
     let strategy = config().strategy.clone().expect("strategy fn present when begin_strategy ran");
     Box::pin(async move {
-        match tokio::task::spawn_blocking(move || strategy(&pkg, &rev)).await {
+        match tokio::task::spawn_blocking(move || strategy(&pkg, &rev, &host)).await {
             Ok(outcome) => Some(Box::new(StrategyDone { seq, outcome }) as Msg),
             Err(_) => None,
         }
@@ -834,13 +858,15 @@ mod tests {
         HostInfo { name: name.into(), default: false, path: PathBuf::from(format!("hosts/{name}.kdl")) }
     }
 
-    /// Sets the TUI's process-global config, once, with a `strategy` fn present (its outcome
-    /// is never actually run in these tests: `begin_strategy` only needs `config().strategy`
-    /// to be `Some` to proceed past its guard, and the tests supply their own `StrategyDone`
-    /// outcome directly via `on_strategy_done`). `CONFIG` is a `OnceLock`, so only the first
-    /// caller across the whole test binary wins; every test that drives `update`'s pin-resolve
-    /// -> strategy-selection wiring calls this first, so it never matters which one runs first
-    /// or whether it runs at all in isolation.
+    /// Sets the TUI's process-global config, once, with a `strategy` fn present. Most tests
+    /// never actually drive the resulting `Cmd` to run it (`begin_strategy` only needs
+    /// `config().strategy` to be `Some` to proceed past its guard, and instead supply their own
+    /// `StrategyDone` outcome directly via `on_strategy_done`); the stub echoes the `host` arg
+    /// back as `label` so a test that DOES drive the `Cmd` (proving `begin_strategy` forwards
+    /// the currently selected host, #28 review fix) can tell which host it was called with.
+    /// `CONFIG` is a `OnceLock`, so only the first caller across the whole test binary wins;
+    /// every test that touches strategy selection calls this first, so it never matters which
+    /// one runs first or whether it runs at all in isolation.
     fn with_strategy_config() {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
@@ -856,9 +882,8 @@ mod tests {
                 modules: vec![],
                 build: None,
                 pin: None,
-                strategy: Some(Arc::new(|_pkg: &str, _rev: &str| StrategyOutcome::Chosen {
-                    strategy: PinStrategy::CommitMix,
-                    label: "commit-mix".into(),
+                strategy: Some(Arc::new(|_pkg: &str, _rev: &str, host: &str| {
+                    StrategyOutcome::Chosen { strategy: PinStrategy::CommitMix, label: host.to_string() }
                 })),
             });
         });
@@ -1190,13 +1215,15 @@ mod tests {
         m.pin = PinState::Resolved;
         m.pin_resolved = Some("deadbeef".into());
         m.strategy = StrategyState::Chosen(PinStrategy::Override);
+        m.strategy_msg = Some("build ok".into());
         m.focus = Focus::Apply;
         let key = |c| Box::new(KeyMsg { key: c, modifiers: KeyModifiers::NONE }) as Msg;
         let step = m.update(key(KeyCode::Enter), (80, 24));
         match step.nav {
-            Nav::Apply { strategy, version, .. } => {
+            Nav::Apply { strategy, version, strategy_reason, .. } => {
                 assert_eq!(strategy, Some(PinStrategy::Override));
                 assert_eq!(version, Some("1.2.3".to_string()));
+                assert_eq!(strategy_reason.as_deref(), Some("build ok"), "#28: the reason is carried alongside the strategy");
             }
             _ => panic!("expected Nav::Apply"),
         }
@@ -1209,9 +1236,91 @@ mod tests {
         let key = |c| Box::new(KeyMsg { key: c, modifiers: KeyModifiers::NONE }) as Msg;
         let step = m.update(key(KeyCode::Enter), (80, 24));
         match step.nav {
-            Nav::Apply { strategy, .. } => assert_eq!(strategy, None),
+            Nav::Apply { strategy, strategy_reason, .. } => {
+                assert_eq!(strategy, None);
+                assert_eq!(strategy_reason, None);
+            }
             _ => panic!("expected Nav::Apply"),
         }
     }
 
+    /// #28 review fix: switching the target host for a versioned install whose pin has
+    /// already resolved must re-fire strategy selection (not just re-verify), and discard a
+    /// stale `StrategyDone` from the host that was selected before the switch, since the
+    /// decision is host-dependent (each host can have its own baseline).
+    #[test]
+    fn host_switch_refires_strategy_selection_for_a_resolved_pin() {
+        with_strategy_config();
+        let mut m = model(2);
+        m.version = Some("1.2.3".into());
+        m.pin = PinState::Resolved;
+        m.pin_resolved = Some("deadbeef".into());
+        m.focus = Focus::Host;
+
+        // Seed a chosen strategy, as if it had already been decided for the initial host (h0).
+        let stale_seq = m.mark_selecting();
+        m.on_strategy_done(
+            stale_seq,
+            StrategyOutcome::Chosen { strategy: PinStrategy::CommitMix, label: "h0".into() },
+        );
+        assert_eq!(m.strategy, StrategyState::Chosen(PinStrategy::CommitMix));
+
+        let key = |c| Box::new(KeyMsg { key: c, modifiers: KeyModifiers::NONE }) as Msg;
+        let step = m.update(key(KeyCode::Right), (80, 24));
+        assert_eq!(m.host_sel, 1, "the host switched");
+        assert_eq!(
+            m.strategy,
+            StrategyState::Selecting,
+            "the switch re-fires strategy selection rather than leaving h0's stale decision"
+        );
+        assert_ne!(m.strategy_seq, stale_seq, "a fresh token supersedes h0's in-flight/chosen result");
+        assert!(step.cmd.is_some(), "verify and strategy selection are batched for the new host");
+
+        // A late `StrategyDone` carrying the old (stale) token must not clobber the fresh
+        // selection under way for h1.
+        m.on_strategy_done(
+            stale_seq,
+            StrategyOutcome::Chosen { strategy: PinStrategy::Override, label: "h0".into() },
+        );
+        assert_eq!(m.strategy, StrategyState::Selecting, "the stale result from h0 is discarded");
+    }
+
+    /// #28 review fix: the injected `StrategyFn` must actually be called with the newly
+    /// selected host's name, not the host that was selected when the pin resolved. Drives the
+    /// real `Cmd` `begin_strategy` returns (via the `with_strategy_config` stub, which echoes
+    /// its `host` argument back as the outcome's `label`) instead of only inspecting model
+    /// state, so this proves the host argument itself is forwarded correctly, not just that a
+    /// re-fire was scheduled.
+    #[test]
+    fn begin_strategy_forwards_the_currently_selected_host() {
+        with_strategy_config();
+        let mut m = model(3); // hosts h0, h1, h2
+        m.version = Some("1.2.3".into());
+        m.pin = PinState::Resolved;
+        m.pin_resolved = Some("deadbeef".into());
+
+        assert!(m.set_host(2), "host selection changes to h2");
+        let cmd = m.begin_strategy(m.pin_resolved.clone().unwrap()).expect("strategy fn is injected");
+
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let batch_msg = rt
+            .block_on(cmd)
+            .expect("the batched command resolves")
+            .downcast::<bubbletea_rs::event::BatchCmdMsg>()
+            .expect("begin_strategy batches the strategy call with a spinner tick");
+        let mut outcome = None;
+        for sub in batch_msg.0 {
+            if let Some(msg) = rt.block_on(sub) {
+                if let Ok(done) = msg.downcast::<StrategyDone>() {
+                    outcome = Some(done.outcome);
+                }
+            }
+        }
+        match outcome.expect("the strategy command ran and produced a StrategyDone") {
+            StrategyOutcome::Chosen { label, .. } => {
+                assert_eq!(label, "h2", "the injected StrategyFn was called with the selected host, h2");
+            }
+            StrategyOutcome::Failed(msg) => panic!("expected Chosen, got Failed({msg})"),
+        }
+    }
 }

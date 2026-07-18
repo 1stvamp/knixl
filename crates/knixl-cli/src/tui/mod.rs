@@ -82,10 +82,12 @@ pub enum StrategyOutcome {
     Failed(String),
 }
 
-/// Decides a pin strategy for `name@version` resolved to `rev` (host-independent). Injected
-/// only when a version was requested; `Send + Sync` so the Install screen runs it off the
-/// event loop.
-pub type StrategyFn = Arc<dyn Fn(&str, &str) -> StrategyOutcome + Send + Sync>;
+/// Decides a pin strategy for `name@version` resolved to `rev`, against `host_name`'s own
+/// baseline (#28 review fix: the decision is host-dependent, since each host can declare its
+/// own nixpkgs baseline, so it must be recomputed for whichever host is currently selected
+/// rather than fixed at injection time). Injected only when a version was requested;
+/// `Send + Sync` so the Install screen runs it off the event loop.
+pub type StrategyFn = Arc<dyn Fn(&str, &str, &str) -> StrategyOutcome + Send + Sync>;
 
 /// A registered module as the Browse screen sees it: its claimed node, a kind tag, the
 /// rendered schema doc, and a skeleton to splice into a host. Precomputed by the CLI so the
@@ -135,6 +137,11 @@ pub enum Outcome {
         /// versioned install; `None` for an unversioned one. The CLI writes the pin with this
         /// strategy directly, rather than build-testing a second time at commit.
         strategy: Option<knixl_lock::model::PinStrategy>,
+        /// The reason the strategy was chosen (e.g. "build ok", "matches baseline"), the same
+        /// phrase `StrategyOutcome::Chosen` carried: threaded through so the committed status
+        /// line reads `pinned ... via ... (reason)`, matching the plain path's wording. `None`
+        /// for an unversioned install.
+        strategy_reason: Option<String>,
     },
     /// Scaffold this module's node into this host's KDL.
     Insert { host: HostInfo, node: String, skeleton: String },
@@ -182,6 +189,9 @@ pub enum Nav {
         /// versioned install; `None` for an unversioned one. Threaded straight through to
         /// `Outcome::Install`, for the CLI to pass to `commit_tui_install`.
         strategy: Option<knixl_lock::model::PinStrategy>,
+        /// The reason the strategy was chosen, threaded straight through to
+        /// `Outcome::Install` alongside `strategy` (#28 review fix).
+        strategy_reason: Option<String>,
     },
     /// Scaffold a module node into a host and end the session.
     Insert { host: HostInfo, node: String, skeleton: String },
@@ -271,9 +281,17 @@ impl App {
         match step.nav {
             Nav::Stay => step.cmd,
             Nav::Quit => Some(command::quit()),
-            Nav::Apply { host, pkg, strict, version, pin, no_abi_check, strategy } => {
-                self.outcome =
-                    Outcome::Install { host, pkg, strict, version, pin, no_abi_check, strategy };
+            Nav::Apply { host, pkg, strict, version, pin, no_abi_check, strategy, strategy_reason } => {
+                self.outcome = Outcome::Install {
+                    host,
+                    pkg,
+                    strict,
+                    version,
+                    pin,
+                    no_abi_check,
+                    strategy,
+                    strategy_reason,
+                };
                 Some(command::quit())
             }
             Nav::Insert { host, node, skeleton } => {
