@@ -28,7 +28,7 @@ build-testing the emitted expression against the host baseline.
     lean result (one nixpkgs, integrated with the baseline), but old source against newer
     dependencies is what can genuinely fail to build.
   - **commit-mix** (ADR 0005): the whole package from the historical commit, built against
-    its *own* era's dependencies. Robust (a self-contained historical closure that builds by
+    its *own* era's dependencies. Reliable (a self-contained historical closure that builds by
     construction), at the cost of pulling in a second nixpkgs.
 - **Selection is automatic** at pin time (`install`/`upgrade`) and prefers the lean option
   that actually builds: resolve the commit, then build-test **override first**; if it builds,
@@ -42,13 +42,7 @@ build-testing the emitted expression against the host baseline.
   (back-compatible with ADR 0005 locks).
 - **Flakes are not part of the picker.** A flake nixpkgs-input pinned to a commit produces
   the identical derivation as commit-mix, so it offers no different build outcome to test,
-  and it pulls the project toward a flake shape it does not target (ADR 0001). It stays
-  deferred.
-- The chosen strategy is stored in the lock pin. An absent strategy reads as commit-mix
-  (back-compatible with ADR 0005 locks).
-- **Flakes are not part of the picker.** A flake nixpkgs-input pinned to a commit produces
-  the identical derivation as commit-mix, so it offers no different ABI outcome to test,
-  and it pulls the project toward a flake shape it does not target (ADR 0001). It stays
+  and it pulls the project towards a flake shape it does not target (ADR 0001). It stays
   deferred.
 
 ### Skip conditions (no build)
@@ -66,7 +60,7 @@ run once. A `--no-abi-check` opt-out skips selection and takes commit-mix.
 ## Consequences
 
 - A pinned version is served by the lean `override` whenever its old source builds against
-  the baseline, and by the robust commit-mix when it does not, both without user
+  the baseline, and by the more reliable commit-mix when it does not, both without user
   intervention, and the choice is reproducible (locked).
 - knixl builds at pin time when a cross-rev pin is created and nix is present. The skip
   conditions keep the common cases (repeat installs, same-rev, nix-absent) build-free.
@@ -81,3 +75,7 @@ run once. A `--no-abi-check` opt-out skips selection and takes commit-mix.
 - The override feasibility test builds against the oracle baseline rev when one is recorded,
   falling back to the builder's channel otherwise (per-host baseline revs are #22), so the
   test and the emitted result can build against different nixpkgs until #22 lands.
+  Superseded by ADR 0007 (2026-07-20): #22 is implemented, and for a host that declares a
+  release the feasibility test builds against that host's own baseline rev, not the
+  builder's channel. The builder-channel fallback still applies to hosts without a declared
+  release.

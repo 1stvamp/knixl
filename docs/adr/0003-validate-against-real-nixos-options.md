@@ -2,6 +2,9 @@
 
 Status: accepted
 
+Refined by: ADR 0007 (2026-07-20): the single global oracle rev this ADR pins becomes one
+rev per host, falling back to the global rev for hosts that do not declare a release.
+
 ## Context
 
 Emitted option paths need validating so a wrong or renamed option fails early. The obvious approach (hand-write an output schema per module) duplicates what NixOS already publishes and forces a recompile per module.

@@ -53,6 +53,20 @@ State the boundary in contributor docs on day one, or declarative modules will q
 
 It cannot compute priorities from cross-module conflicts and only writes `Bucket::Default`. The moment a module needs either of those, it becomes a built-in. A runtime condition alone no longer forces the boundary (so `backups`, a built-in solely for its `when=` condition, could in principle be declarative; converting it is a separate decision).
 
+## The `raw-nix` escape hatch
+
+`raw-nix` (`crates/knixl-modules/src/builtin/raw_nix.rs`) is a built-in for Nix that has no KDL shape worth inventing. The KDL is unusual: each child node's *name* is the verbatim Nix source, not an argument, so a block such as
+
+```kdl
+raw-nix {
+    #"""
+    systemd.services.nginx.serviceConfig.MemoryMax = "512M";
+    """#
+}
+```
+
+(see `examples/hosts/web.kdl`) passes that string through unmodified into the generated file. The content still hashes into the file, so it is covered by drift detection like everything else (ADR 0004); what is different is that the oracle does not look inside it. `raw-nix` is opaque to option-path validation, the trade-off for an escape hatch that can express anything Nix can.
+
 ## Registration
 
 Startup registers built-ins, then scans `modules/` for `knixl-module.kdl` files and registers each as a `DeclarativeModule`. Two modules claiming the same node name is a hard error, not last-wins. A third party ships a module by dropping a file in: no recompile, no fork. That is the whole ecosystem argument.

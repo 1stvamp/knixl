@@ -18,7 +18,7 @@ KDL inputs
 
 The whole thing is a pure function from (KDL, tool version, module versions, formatter version, oracle rev) to output bytes. `Plan::compute` runs everything up to "write" and produces a diff; the commands decide whether to write.
 
-The "hoist lets" step is `knixl-ir::hoist`: within a file, a compound value (attrset, list, or indented string) that appears two or more times is bound once at the top as `let _knixl0 = ...; in { ... }` and referenced at each use. It is a pure IR-to-IR pass, deterministic, and a no-op on files with no repetition, so it never changes output unless there is genuine duplication. The `_knixlN` names seen in generated files come from here. The rule is defined in `docs/superpowers/specs/2026-07-14-let-hoisting-design.md`.
+The "hoist lets" step is `knixl-ir::hoist`: within a file, a compound value (attrset, list, or indented string) that appears two or more times is bound once at the top as `let _knixl0 = ...; in { ... }` and referenced at each use. It is a pure IR-to-IR pass, deterministic, and a no-op on files with no repetition, so it never changes output unless there is genuine duplication. The `_knixlN` names seen in generated files come from here. The rule is defined in `docs/superpowers/specs/2026-07-14-let-hoisting-design.md`. `examples/hosts/shared.kdl`, together with the declarative module `modules/security-headers/knixl-module.kdl`, demonstrates it end to end: one `security-headers` block emitted at two vhosts produces identical assignments that hoist into a single shared binding.
 
 ## Crate layout and dependency direction
 
@@ -27,9 +27,10 @@ Strictly one direction. No crate imports `knixl-cli`.
 - `knixl-ir` : IR types (`NixExpr`, `NixModule`, `Assignment`), the `Emit` trait, escaping/float/attr-key helpers. Depends on nothing but `miette` and `semver`.
 - `knixl-kdl` : input parsing over the `kdl` crate, span-carrying diagnostics.
 - `knixl-oracle` : `nixosOptionsDoc` extraction and best-effort type checking. Depends on `serde_json`.
-- `knixl-modules` : the `Module` trait, `Registry`, built-in modules, and the declarative `EmitTemplate` interpreter. Depends on `knixl-ir` + `knixl-oracle`.
+- `knixl-modules` : the `Module` trait, `Registry`, built-in modules, and the declarative `EmitTemplate` interpreter. Depends on `knixl-ir` + `knixl-kdl` + `knixl-oracle`.
 - `knixl-lock` : lockfile model and the reconcile state machine. Depends on `knixl-nix` (for hashing).
 - `knixl-nix` : formatter invocation (pinned nixfmt) and blake3 hashing.
+- `knixl-pipeline` : the single generation entry point (gather, dispatch, lower, emit, format, install/strategy helpers). Depends on `knixl-ir` + `knixl-kdl` + `knixl-modules` + `knixl-nix` + `knixl-lock` + `knixl-oracle`.
 - `knixl-cli` : arg parsing, orchestration, exit codes. Depends on everything.
 
 Keeping the library layers free of the CLI is deliberate: a language server or a GitHub Action can reuse `Plan::compute` and the emitter without dragging in clap or process handling.
