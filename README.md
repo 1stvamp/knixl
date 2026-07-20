@@ -123,4 +123,6 @@ Nothing does KDL to committed Nix source. The ecosystem goes the other way (home
 
 ## Licence
 
-Intended: Apache-2.0 (matches the `kdl` crate). Not yet applied.
+Licensed under either of Apache License, Version 2.0 (LICENSE-APACHE) or the MIT licence
+(LICENSE-MIT) at your option. Unless you state otherwise, any contribution you submit for
+inclusion is dual licensed as above, with no additional terms.
