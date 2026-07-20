@@ -41,20 +41,46 @@ The whole loop is compile, check, and read back the typed reference for any node
 
 ## Install
 
-There is no release binary yet, so build it from a checkout. You need a Rust toolchain (the repo pins 1.87.0 via `rust-toolchain.toml`, rustup will pick it up):
+### Nix (flake)
 
 ```sh
-git clone https://github.com/1stvamp/knixl
-cd knixl
+nix run github:1stvamp/knixl -- --help      # run without installing
+nix profile install github:1stvamp/knixl    # install into your profile
+```
+
+Or add `overlays.default` and put `pkgs.knixl` in your `environment.systemPackages` (NixOS) or `home.packages` (home-manager).
+
+### crates.io
+
+```sh
+cargo install knixl
+```
+
+### Prebuilt binary
+
+Download a tarball for your platform from the [latest release](https://github.com/1stvamp/knixl/releases/latest), or run the installer:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/1stvamp/knixl/releases/latest/download/knixl-installer.sh | sh
+```
+
+Built for Linux (gnu and musl) and macOS, on x86_64 and aarch64.
+
+### From source
+
+```sh
+git clone https://github.com/1stvamp/knixl && cd knixl
 cargo build --release        # or: mise run build
 ```
 
-The binary lands at `target/release/knixl`. Put it on your PATH, or run it in place.
+The binary lands at `target/release/knixl`.
 
-For `generate`, `check`, and `install` you also need:
+### Runtime prerequisites
+
+`generate`, `check`, and `install` also need:
 
 - **Nix** on PATH, for the oracle (option-path validation) and for `install`'s package eval.
-- **a formatter**: `nixfmt-rfc-style` or `nixfmt` on PATH. `KNIXL_FORMATTER` overrides which binary is used.
+- **a formatter**: `nixfmt-rfc-style` or `nixfmt` on PATH. `KNIXL_FORMATTER` overrides which binary is used. The Nix flake install already wraps `nixfmt` onto knixl's PATH.
 
 **Note:** without the oracle's `options.json` cache populated, path validation is quietly skipped, so a typo'd option path will not be caught. See docs/06-oracle.md for the cache.
 
