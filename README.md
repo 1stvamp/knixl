@@ -88,7 +88,7 @@ From there, add a module node (`web-service`, `postgres`, `backups`, ...) to the
 - `knixl upgrade` : the only path that bumps recorded versions. Shows migration notes and a diff, applies on `--yes`.
 - `knixl doc <node>` : typed reference for a module node, generated from its schema.
 - `knixl install <pkg>` : add a package to a host. Drafts the KDL, verifies it under nix, previews, then regenerates. `pkg@version` pins the package to a nixpkgs commit. On a real terminal it opens the TUI install screen; piped or `--yes` it uses a plain confirm.
-- `knixl tui` : the interactive hub (shown above). Install a package, browse registered modules and their schemas, or scaffold a new module.
+- `knixl tui` : the interactive hub (shown above). Install a package, browse registered modules and their schemas, or author a new declarative module (build its schema and emit template, validated live as you type).
 
 ## Drift and versions
 
