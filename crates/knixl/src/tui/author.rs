@@ -26,10 +26,6 @@ use super::{theme, widgets, Nav, Step};
 /// manifest is written back to.
 enum Mode {
     New,
-    // Constructed by `AuthorModel::edit`, which is itself only reachable from this task's tests
-    // until Task 3 wires a Browse-driven entry point to it; without the allow, both are flagged
-    // dead code in a plain (non-test) build (same pattern as `TuiConfig::root` above).
-    #[allow(dead_code)]
     Edit {
         path: std::path::PathBuf,
         original: kdl::KdlDocument,
@@ -147,8 +143,8 @@ impl AuthorModel {
     /// `origin` through so `current_text`'s `reconcile` call can match it back up to the
     /// original node and preserve everything the editor does not model (version, migrations,
     /// doc= strings, comments). Errors from a manifest that fails to load are returned to the
-    /// caller (Task 3's Browse-driven entry point shows them) rather than panicking.
-    #[allow(dead_code)]
+    /// caller (the Browse-driven entry point stays on Browse rather than opening a broken
+    /// editor) instead of panicking.
     pub fn edit(
         size: (u16, u16),
         path: std::path::PathBuf,

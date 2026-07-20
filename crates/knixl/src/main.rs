@@ -897,6 +897,7 @@ fn browse_modules(root: &std::path::Path) -> Vec<tui::BrowseModule> {
     let Ok(registry) = knixl_pipeline::gather::registry(root) else {
         return Vec::new();
     };
+    let manifests = declarative_manifests(root);
     registry
         .entries()
         .map(|(node, m)| {
@@ -909,9 +910,36 @@ fn browse_modules(root: &std::path::Path) -> Vec<tui::BrowseModule> {
                 },
                 doc: schema.render_doc(node),
                 skeleton: skeleton_for(node, schema),
+                manifest: manifests.get(node).cloned(),
             }
         })
         .collect()
+}
+
+/// Maps each declarative module's claimed node to its manifest path, for the Browse screen's
+/// edit action. The registry itself does not carry the path (`DeclarativeModule` only keeps it
+/// for error messages), so this walks `root/modules/*/knixl-module.kdl` directly and pairs each
+/// manifest to the node it claims. An unreadable directory, or a manifest that fails to parse,
+/// is skipped rather than failing the whole scan: Browse still shows a usable list, just without
+/// an edit path for that one entry.
+fn declarative_manifests(
+    root: &std::path::Path,
+) -> std::collections::BTreeMap<String, std::path::PathBuf> {
+    let mut out = std::collections::BTreeMap::new();
+    let dir = root.join("modules");
+    let Ok(read_dir) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for entry in read_dir.filter_map(|e| e.ok()) {
+        let manifest = entry.path().join("knixl-module.kdl");
+        let Ok(text) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        if let Ok(editable) = knixl_modules::template::load_editable(&text) {
+            out.insert(editable.node, manifest);
+        }
+    }
+    out
 }
 
 /// A starting skeleton for inserting a module node into a host: the node with placeholders
