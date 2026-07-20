@@ -5,14 +5,19 @@ use knixl_ir::NixExpr;
 
 #[derive(Debug, Clone)]
 pub enum NixType {
-    Bool, Int, Float, Str, Path, Package,
+    Bool,
+    Int,
+    Float,
+    Str,
+    Path,
+    Package,
     List(Box<NixType>),
     AttrsOf(Box<NixType>),
     NullOr(Box<NixType>),
     Enum(Vec<String>),
     OneOf(Vec<NixType>),
-    Submodule,          // interior not checked
-    Unknown(String),    // description we could not parse; accept() returns Ok
+    Submodule,       // interior not checked
+    Unknown(String), // description we could not parse; accept() returns Ok
 }
 
 impl NixType {
@@ -66,16 +71,27 @@ impl NixType {
 /// A literal of the wrong kind is a real mismatch; a non-literal expression can't be
 /// checked structurally, so it passes.
 fn scalar(v: &NixExpr, ok: bool, expected: &str) -> Result<(), String> {
-    if ok { Ok(()) } else { punt(v, expected) }
+    if ok {
+        Ok(())
+    } else {
+        punt(v, expected)
+    }
 }
 
 fn punt(v: &NixExpr, expected: &str) -> Result<(), String> {
-    if is_literal(v) { Err(expected.to_string()) } else { Ok(()) }
+    if is_literal(v) {
+        Err(expected.to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn is_literal(v: &NixExpr) -> bool {
     use NixExpr::*;
-    matches!(v, Bool(_) | Int(_) | Float(_) | Str(_) | IndentStr(_) | Path(_) | Null | List(_) | AttrSet(_))
+    matches!(
+        v,
+        Bool(_) | Int(_) | Float(_) | Str(_) | IndentStr(_) | Path(_) | Null | List(_) | AttrSet(_)
+    )
 }
 
 /// Best-effort parse of the common option-type descriptions. Anything unrecognised falls
@@ -96,7 +112,12 @@ fn parse_type_desc(s: &str) -> Option<NixType> {
     }
     if s.starts_with("one of ") {
         // Variants are the double-quoted tokens: `one of "a", "b"`.
-        let variants: Vec<String> = s.split('"').skip(1).step_by(2).map(str::to_string).collect();
+        let variants: Vec<String> = s
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect();
         if !variants.is_empty() {
             return Some(NixType::Enum(variants));
         }
@@ -121,14 +142,24 @@ mod tests {
 
     #[test]
     fn parses_common_descriptions() {
-        assert!(matches!(NixType::parse_description("boolean"), NixType::Bool));
-        assert!(matches!(NixType::parse_description("list of string"), NixType::List(b) if matches!(*b, NixType::Str)));
+        assert!(matches!(
+            NixType::parse_description("boolean"),
+            NixType::Bool
+        ));
+        assert!(
+            matches!(NixType::parse_description("list of string"), NixType::List(b) if matches!(*b, NixType::Str))
+        );
         assert!(matches!(
             NixType::parse_description("null or (attribute set of package)"),
             NixType::NullOr(b) if matches!(*b, NixType::AttrsOf(_))
         ));
-        assert!(matches!(NixType::parse_description("one of \"a\", \"b\""), NixType::Enum(v) if v == ["a", "b"]));
-        assert!(matches!(NixType::parse_description("some weird type"), NixType::Unknown(_)));
+        assert!(
+            matches!(NixType::parse_description("one of \"a\", \"b\""), NixType::Enum(v) if v == ["a", "b"])
+        );
+        assert!(matches!(
+            NixType::parse_description("some weird type"),
+            NixType::Unknown(_)
+        ));
     }
 
     #[test]
@@ -147,17 +178,27 @@ mod tests {
     #[test]
     fn punts_on_non_literals_and_unknown() {
         // A ref/select can't be checked structurally, so it passes any type.
-        assert!(NixType::Bool.accepts(&NixExpr::Ref("config".into())).is_ok());
-        assert!(NixType::Unknown("x".into()).accepts(&NixExpr::Int(1)).is_ok());
-        assert!(NixType::Package.accepts(&NixExpr::Str("anything".into())).is_ok());
+        assert!(NixType::Bool
+            .accepts(&NixExpr::Ref("config".into()))
+            .is_ok());
+        assert!(NixType::Unknown("x".into())
+            .accepts(&NixExpr::Int(1))
+            .is_ok());
+        assert!(NixType::Package
+            .accepts(&NixExpr::Str("anything".into()))
+            .is_ok());
     }
 
     #[test]
     fn attrs_of_checks_values() {
         let mut m = BTreeMap::new();
         m.insert(AttrKey::Ident("a".into()), NixExpr::Bool(true));
-        assert!(NixType::AttrsOf(Box::new(NixType::Bool)).accepts(&NixExpr::AttrSet(m.clone())).is_ok());
+        assert!(NixType::AttrsOf(Box::new(NixType::Bool))
+            .accepts(&NixExpr::AttrSet(m.clone()))
+            .is_ok());
         m.insert(AttrKey::Ident("b".into()), NixExpr::Str("no".into()));
-        assert!(NixType::AttrsOf(Box::new(NixType::Bool)).accepts(&NixExpr::AttrSet(m)).is_err());
+        assert!(NixType::AttrsOf(Box::new(NixType::Bool))
+            .accepts(&NixExpr::AttrSet(m))
+            .is_err());
     }
 }

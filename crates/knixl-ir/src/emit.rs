@@ -2,39 +2,72 @@
 //! and a pinned nixfmt (knixl-nix) owns final layout. Only post-format text is hashed.
 //! SPEC-GRADE SKETCH: escaping/float/attr-path helpers are declared, not written.
 
-use std::fmt::Write;
 use crate::expr::{AttrKey, AttrPath, Formals, NixExpr, Priority, RawNix};
 use crate::module::{Assignment, NixModule, Provenance};
+use std::fmt::Write;
 
-pub struct Writer { pub buf: String, indent: usize, at_line_start: bool }
+pub struct Writer {
+    pub buf: String,
+    indent: usize,
+    at_line_start: bool,
+}
 
 impl Writer {
-    pub fn new() -> Self { Self { buf: String::new(), indent: 0, at_line_start: true } }
-    pub fn into_string(self) -> String { self.buf }
+    pub fn new() -> Self {
+        Self {
+            buf: String::new(),
+            indent: 0,
+            at_line_start: true,
+        }
+    }
+    pub fn into_string(self) -> String {
+        self.buf
+    }
     fn push(&mut self, s: &str) {
         if self.at_line_start {
-            for _ in 0..self.indent { self.buf.push_str("  "); }
+            for _ in 0..self.indent {
+                self.buf.push_str("  ");
+            }
             self.at_line_start = false;
         }
         self.buf.push_str(s);
     }
-    fn nl(&mut self) { self.buf.push('\n'); self.at_line_start = true; }
-    fn open(&mut self) { self.indent += 1; }
-    fn close(&mut self) { self.indent = self.indent.saturating_sub(1); }
+    fn nl(&mut self) {
+        self.buf.push('\n');
+        self.at_line_start = true;
+    }
+    fn open(&mut self) {
+        self.indent += 1;
+    }
+    fn close(&mut self) {
+        self.indent = self.indent.saturating_sub(1);
+    }
 }
 
-impl Default for Writer { fn default() -> Self { Self::new() } }
+impl Default for Writer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-pub trait Emit { fn emit(&self, w: &mut Writer); }
+pub trait Emit {
+    fn emit(&self, w: &mut Writer);
+}
 
 impl Emit for NixExpr {
     fn emit(&self, w: &mut Writer) {
         match self {
             NixExpr::Bool(b) => w.push(if *b { "true" } else { "false" }),
-            NixExpr::Int(n)  => { let _ = write!(w.buf, "{n}"); }
+            NixExpr::Int(n) => {
+                let _ = write!(w.buf, "{n}");
+            }
             NixExpr::Float(f) => w.push(&fmt_nix_float(*f)), // canonical, always a '.'
-            NixExpr::Null    => w.push("null"),
-            NixExpr::Str(s)  => { w.push("\""); w.push(&escape_nix_str(s)); w.push("\""); }
+            NixExpr::Null => w.push("null"),
+            NixExpr::Str(s) => {
+                w.push("\"");
+                w.push(&escape_nix_str(s));
+                w.push("\"");
+            }
             NixExpr::IndentStr(s) => emit_indent_str(w, s), // '' ... '' with ''${ escaping
             NixExpr::Ref(id) => w.push(id),
             NixExpr::Path(p) => w.push(&p.display().to_string()),
@@ -42,35 +75,68 @@ impl Emit for NixExpr {
                 // `(f x).y` and `(let .. in ..).y` need the base parenthesised; `pkgs.x`
                 // and `{ .. }.x` stand alone.
                 emit_atom(w, base);
-                for seg in path { w.push("."); w.push(seg); }
+                for seg in path {
+                    w.push(".");
+                    w.push(seg);
+                }
             }
             NixExpr::List(items) => {
-                w.push("["); w.nl(); w.open();
+                w.push("[");
+                w.nl();
+                w.open();
                 // List elements are whitespace-separated atoms, so a bare application or
                 // binding form must be parenthesised or it splits into several elements.
-                for it in items { emit_atom(w, it); w.nl(); }
-                w.close(); w.push("]");
+                for it in items {
+                    emit_atom(w, it);
+                    w.nl();
+                }
+                w.close();
+                w.push("]");
             }
             NixExpr::AttrSet(map) => {
-                w.push("{"); w.nl(); w.open();
-                for (k, v) in map {           // BTreeMap: sorted, deterministic
-                    emit_key(w, k); w.push(" = "); v.emit(w); w.push(";"); w.nl();
+                w.push("{");
+                w.nl();
+                w.open();
+                for (k, v) in map {
+                    // BTreeMap: sorted, deterministic
+                    emit_key(w, k);
+                    w.push(" = ");
+                    v.emit(w);
+                    w.push(";");
+                    w.nl();
                 }
-                w.close(); w.push("}");
+                w.close();
+                w.push("}");
             }
             NixExpr::Apply(f, args) => {
                 // A lambda or let in function position needs wrapping (`(x: b) y`); a bare
                 // ref/select/apply function is fine, so emit_atom leaves those alone.
                 emit_atom(w, f);
-                for a in args { w.push(" ("); a.emit(w); w.push(")"); }
+                for a in args {
+                    w.push(" (");
+                    a.emit(w);
+                    w.push(")");
+                }
             }
             NixExpr::Lambda { formals, body } => {
-                emit_formals(w, formals); w.push(": "); body.emit(w);
+                emit_formals(w, formals);
+                w.push(": ");
+                body.emit(w);
             }
             NixExpr::Let { bindings, body } => {
-                w.push("let"); w.nl(); w.open();
-                for b in bindings { w.push(&b.name); w.push(" = "); b.value.emit(w); w.push(";"); w.nl(); }
-                w.close(); w.push("in "); body.emit(w);
+                w.push("let");
+                w.nl();
+                w.open();
+                for b in bindings {
+                    w.push(&b.name);
+                    w.push(" = ");
+                    b.value.emit(w);
+                    w.push(";");
+                    w.nl();
+                }
+                w.close();
+                w.push("in ");
+                body.emit(w);
             }
             NixExpr::Raw(raw) => emit_raw(w, raw), // already validated; verbatim
         }
@@ -79,50 +145,93 @@ impl Emit for NixExpr {
 
 impl Emit for Assignment {
     fn emit(&self, w: &mut Writer) {
-        if let Some(doc) = &self.doc { w.push("# "); w.push(doc); w.nl(); }
+        if let Some(doc) = &self.doc {
+            w.push("# ");
+            w.push(doc);
+            w.nl();
+        }
         emit_attr_path(w, &self.path);
         w.push(" = ");
         // compose in one fixed order: mkIf cond (mkForce value)
         let mut close = 0;
         if let Some(cond) = &self.condition {
-            w.push("lib.mkIf ("); cond.emit(w); w.push(") ");
+            w.push("lib.mkIf (");
+            cond.emit(w);
+            w.push(") ");
         }
         match &self.priority {
-            Some(Priority::Force)        => { w.push("(lib.mkForce "); close += 1; }
-            Some(Priority::Default)      => { w.push("(lib.mkDefault "); close += 1; }
-            Some(Priority::Override(n))  => { let _ = write!(w.buf, "(lib.mkOverride {n} "); close += 1; }
+            Some(Priority::Force) => {
+                w.push("(lib.mkForce ");
+                close += 1;
+            }
+            Some(Priority::Default) => {
+                w.push("(lib.mkDefault ");
+                close += 1;
+            }
+            Some(Priority::Override(n)) => {
+                let _ = write!(w.buf, "(lib.mkOverride {n} ");
+                close += 1;
+            }
             None => {}
         }
         self.value.emit(w);
-        for _ in 0..close { w.push(")"); }
-        w.push(";"); w.nl();
+        for _ in 0..close {
+            w.push(")");
+        }
+        w.push(";");
+        w.nl();
     }
 }
 
 impl Emit for NixModule {
     fn emit(&self, w: &mut Writer) {
         emit_header_comment(w, &self.provenance); // "Generated by knixl ... do NOT edit ..."
-        emit_formals(w, &self.header); w.push(":"); w.nl();
+        emit_formals(w, &self.header);
+        w.push(":");
+        w.nl();
         // Hoisted bindings (let-hoisting pass) wrap the body: `let ... in { ... }`.
         if !self.lets.is_empty() {
-            w.push("let"); w.nl(); w.open();
+            w.push("let");
+            w.nl();
+            w.open();
             for b in &self.lets {
-                w.push(&b.name); w.push(" = "); b.value.emit(w); w.push(";"); w.nl();
+                w.push(&b.name);
+                w.push(" = ");
+                b.value.emit(w);
+                w.push(";");
+                w.nl();
             }
-            w.close(); w.push("in "); // next push starts the body attrset: "in {"
+            w.close();
+            w.push("in "); // next push starts the body attrset: "in {"
         }
-        w.push("{"); w.nl(); w.open();
+        w.push("{");
+        w.nl();
+        w.open();
         if !self.imports.is_empty() {
-            w.push("imports = ["); w.nl(); w.open();
-            for i in &self.imports { emit_atom(w, i); w.nl(); }
-            w.close(); w.push("];"); w.nl(); w.nl();
+            w.push("imports = [");
+            w.nl();
+            w.open();
+            for i in &self.imports {
+                emit_atom(w, i);
+                w.nl();
+            }
+            w.close();
+            w.push("];");
+            w.nl();
+            w.nl();
         }
-        for a in &self.body { a.emit(w); }
+        for a in &self.body {
+            a.emit(w);
+        }
         for r in &self.raw {
-            w.push("# raw-nix passthrough"); w.nl();
-            emit_raw(w, r); w.nl();
+            w.push("# raw-nix passthrough");
+            w.nl();
+            emit_raw(w, r);
+            w.nl();
         }
-        w.close(); w.push("}"); w.nl();
+        w.close();
+        w.push("}");
+        w.nl();
     }
 }
 
@@ -135,7 +244,11 @@ fn fmt_nix_float(f: f64) -> String {
     // Rust's Display gives the shortest round-tripping decimal, but drops the point on
     // whole numbers ("1"), which Nix reads as an int. Force a decimal point.
     let s = format!("{f}");
-    if s.contains(['.', 'e', 'E']) { s } else { format!("{s}.0") }
+    if s.contains(['.', 'e', 'E']) {
+        s
+    } else {
+        format!("{s}.0")
+    }
 }
 
 fn escape_nix_str(s: &str) -> String {
@@ -149,13 +262,15 @@ fn escape_nix_str(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             // Only ${ starts an interpolation; a lone $ is a literal dollar.
-            '$' if chars.peek() == Some(&'{') => { out.push_str("\\${"); chars.next(); }
+            '$' if chars.peek() == Some(&'{') => {
+                out.push_str("\\${");
+                chars.next();
+            }
             _ => out.push(c),
         }
     }
     out
 }
-
 
 /// Escaping inside a `'' ... ''` indented string: `${` becomes `''${` and `''` becomes
 /// `'''`. Everything else, including interior quotes, is literal.
@@ -164,8 +279,14 @@ fn escape_indent_line(line: &str) -> String {
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
-            '$' if chars.peek() == Some(&'{') => { out.push_str("''${"); chars.next(); }
-            '\'' if chars.peek() == Some(&'\'') => { out.push_str("'''"); chars.next(); }
+            '$' if chars.peek() == Some(&'{') => {
+                out.push_str("''${");
+                chars.next();
+            }
+            '\'' if chars.peek() == Some(&'\'') => {
+                out.push_str("'''");
+                chars.next();
+            }
             _ => out.push(c),
         }
     }
@@ -186,7 +307,9 @@ fn emit_indent_str(w: &mut Writer, s: &str) {
 
 fn emit_attr_path(w: &mut Writer, p: &AttrPath) {
     for (i, key) in p.0.iter().enumerate() {
-        if i > 0 { w.push("."); }
+        if i > 0 {
+            w.push(".");
+        }
         emit_key(w, key);
     }
 }
@@ -203,7 +326,6 @@ fn emit_key(w: &mut Writer, k: &AttrKey) {
     }
 }
 
-
 /// A Nix bare attribute name: `[A-Za-z_][A-Za-z0-9_'-]*`. Anything else must be quoted.
 fn is_bare_ident(s: &str) -> bool {
     let mut chars = s.chars();
@@ -216,7 +338,9 @@ fn is_bare_ident(s: &str) -> bool {
 
 fn emit_formals(w: &mut Writer, f: &Formals) {
     let mut items: Vec<String> = f.args.clone();
-    if f.ellipsis { items.push("...".to_string()); }
+    if f.ellipsis {
+        items.push("...".to_string());
+    }
     if items.is_empty() {
         w.push("{ }");
     } else {
@@ -229,11 +353,12 @@ fn emit_formals(w: &mut Writer, f: &Formals) {
 fn emit_raw(w: &mut Writer, r: &RawNix) {
     // Already validated as parseable Nix; passed through verbatim, honouring current indent.
     for (i, line) in r.src.lines().enumerate() {
-        if i > 0 { w.nl(); }
+        if i > 0 {
+            w.nl();
+        }
         w.push(line);
     }
 }
-
 
 /// Emit `e` where a single atom is required (a list element, a select base, or a function
 /// position). Function application and binding forms (`f x`, `let .. in ..`, lambdas) are not
@@ -243,8 +368,13 @@ fn emit_raw(w: &mut Writer, r: &RawNix) {
 /// emitted verbatim: if a caller ever puts a raw application in atom position it must include
 /// its own parens.
 fn emit_atom(w: &mut Writer, e: &NixExpr) {
-    if matches!(e, NixExpr::Apply(..) | NixExpr::Lambda { .. } | NixExpr::Let { .. }) {
-        w.push("("); e.emit(w); w.push(")");
+    if matches!(
+        e,
+        NixExpr::Apply(..) | NixExpr::Lambda { .. } | NixExpr::Let { .. }
+    ) {
+        w.push("(");
+        e.emit(w);
+        w.push(")");
     } else {
         e.emit(w);
     }
@@ -257,14 +387,16 @@ fn emit_header_comment(w: &mut Writer, p: &Provenance) {
         .map(|s| s.display().to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    w.push(&format!("# Generated by knixl {} from {sources}", p.tool_version));
+    w.push(&format!(
+        "# Generated by knixl {} from {sources}",
+        p.tool_version
+    ));
     w.nl();
     w.push("# Do NOT edit. Regenerate from the KDL source.");
     w.nl();
     w.push("# Overrides: add a sibling module and use lib.mkForce / lib.mkAfter.");
     w.nl();
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -312,7 +444,10 @@ mod tests {
 
     #[test]
     fn escape_plain_string_unchanged() {
-        assert_eq!(escape_nix_str("http://127.0.0.1:3000"), "http://127.0.0.1:3000");
+        assert_eq!(
+            escape_nix_str("http://127.0.0.1:3000"),
+            "http://127.0.0.1:3000"
+        );
     }
 
     #[test]
@@ -343,7 +478,10 @@ mod tests {
     #[test]
     fn indent_str_escapes_interpolation_and_double_quotes() {
         // ${ becomes ''${ and '' becomes '''
-        assert_eq!(capture(|w| emit_indent_str(w, "x=${y}")), "''\n  x=''${y}\n''");
+        assert_eq!(
+            capture(|w| emit_indent_str(w, "x=${y}")),
+            "''\n  x=''${y}\n''"
+        );
         assert_eq!(capture(|w| emit_indent_str(w, "it''s")), "''\n  it'''s\n''");
     }
 
@@ -356,38 +494,62 @@ mod tests {
             AttrKey::Ident("nginx".into()),
             AttrKey::Quoted("example.com".into()),
         ]);
-        assert_eq!(capture(|w| emit_attr_path(w, &p)), r#"services.nginx."example.com""#);
+        assert_eq!(
+            capture(|w| emit_attr_path(w, &p)),
+            r#"services.nginx."example.com""#
+        );
     }
 
     #[test]
     fn key_dashed_identifier_stays_bare() {
-        assert_eq!(capture(|w| emit_key(w, &AttrKey::Ident("recommended-tls".into()))), "recommended-tls");
+        assert_eq!(
+            capture(|w| emit_key(w, &AttrKey::Ident("recommended-tls".into()))),
+            "recommended-tls"
+        );
     }
 
     #[test]
     fn key_ident_needing_quotes_is_quoted() {
         // a leading digit is not a valid bare identifier
-        assert_eq!(capture(|w| emit_key(w, &AttrKey::Ident("443".into()))), r#""443""#);
-        assert_eq!(capture(|w| emit_key(w, &AttrKey::Quoted("/".into()))), r#""/""#);
+        assert_eq!(
+            capture(|w| emit_key(w, &AttrKey::Ident("443".into()))),
+            r#""443""#
+        );
+        assert_eq!(
+            capture(|w| emit_key(w, &AttrKey::Quoted("/".into()))),
+            r#""/""#
+        );
     }
 
     // ---- emit_formals ----
 
     #[test]
     fn formals_with_args_and_ellipsis() {
-        let f = Formals { args: vec!["config".into(), "lib".into(), "pkgs".into()], ellipsis: true };
-        assert_eq!(capture(|w| emit_formals(w, &f)), "{ config, lib, pkgs, ... }");
+        let f = Formals {
+            args: vec!["config".into(), "lib".into(), "pkgs".into()],
+            ellipsis: true,
+        };
+        assert_eq!(
+            capture(|w| emit_formals(w, &f)),
+            "{ config, lib, pkgs, ... }"
+        );
     }
 
     #[test]
     fn formals_ellipsis_only() {
-        let f = Formals { args: vec![], ellipsis: true };
+        let f = Formals {
+            args: vec![],
+            ellipsis: true,
+        };
         assert_eq!(capture(|w| emit_formals(w, &f)), "{ ... }");
     }
 
     #[test]
     fn formals_args_no_ellipsis() {
-        let f = Formals { args: vec!["x".into()], ellipsis: false };
+        let f = Formals {
+            args: vec!["x".into()],
+            ellipsis: false,
+        };
         assert_eq!(capture(|w| emit_formals(w, &f)), "{ x }");
     }
 
@@ -395,13 +557,19 @@ mod tests {
 
     #[test]
     fn raw_is_verbatim() {
-        let r = RawNix { src: "foo = 1;".into(), span: None };
+        let r = RawNix {
+            src: "foo = 1;".into(),
+            span: None,
+        };
         assert_eq!(capture(|w| emit_raw(w, &r)), "foo = 1;");
     }
 
     #[test]
     fn raw_preserves_interior_newlines() {
-        let r = RawNix { src: "a = 1;\nb = 2;".into(), span: None };
+        let r = RawNix {
+            src: "a = 1;\nb = 2;".into(),
+            span: None,
+        };
         assert_eq!(capture(|w| emit_raw(w, &r)), "a = 1;\nb = 2;");
     }
 
@@ -411,7 +579,10 @@ mod tests {
     fn header_comment_names_tool_and_sources() {
         let p = Provenance {
             tool_version: "0.3.1".parse().unwrap(),
-            modules: vec![ModuleRef { name: "host".into(), version: "1.0.0".parse().unwrap() }],
+            modules: vec![ModuleRef {
+                name: "host".into(),
+                version: "1.0.0".parse().unwrap(),
+            }],
             sources: vec![PathBuf::from("hosts/web.kdl")],
         };
         let out = capture(|w| emit_header_comment(w, &p));
@@ -430,14 +601,19 @@ mod tests {
         let mut m = BTreeMap::new();
         m.insert(AttrKey::Ident("b".into()), NixExpr::Int(2));
         m.insert(AttrKey::Ident("a".into()), NixExpr::Int(1));
-        assert_eq!(capture(|w| NixExpr::AttrSet(m).emit(w)), "{\n  a = 1;\n  b = 2;\n}");
+        assert_eq!(
+            capture(|w| NixExpr::AttrSet(m).emit(w)),
+            "{\n  a = 1;\n  b = 2;\n}"
+        );
     }
 
     #[test]
     fn string_expr_is_quoted_and_escaped() {
-        assert_eq!(capture(|w| NixExpr::Str(r#"a"b"#.into()).emit(w)), r#""a\"b""#);
+        assert_eq!(
+            capture(|w| NixExpr::Str(r#"a"b"#.into()).emit(w)),
+            r#""a\"b""#
+        );
     }
-
 
     // ---- determinism (the lock depends on it) ----
 
@@ -452,9 +628,13 @@ mod tests {
             (AttrKey::Ident("m".into()), NixExpr::Int(3)),
         ];
         let mut forward = BTreeMap::new();
-        for (k, v) in entries.iter().cloned() { forward.insert(k, v); }
+        for (k, v) in entries.iter().cloned() {
+            forward.insert(k, v);
+        }
         let mut reverse = BTreeMap::new();
-        for (k, v) in entries.iter().rev().cloned() { reverse.insert(k, v); }
+        for (k, v) in entries.iter().rev().cloned() {
+            reverse.insert(k, v);
+        }
         assert_eq!(
             capture(|w| NixExpr::AttrSet(forward).emit(w)),
             capture(|w| NixExpr::AttrSet(reverse).emit(w)),
@@ -470,7 +650,10 @@ mod tests {
             AttrKey::Quoted("example.com".into()),
             AttrKey::Ident("forceSSL".into()),
         ]);
-        assert_eq!(p.to_option_key(), "services.nginx.virtualHosts.<name>.forceSSL");
+        assert_eq!(
+            p.to_option_key(),
+            "services.nginx.virtualHosts.<name>.forceSSL"
+        );
     }
 
     #[test]
@@ -516,7 +699,10 @@ mod tests {
 
     #[test]
     fn select_on_a_ref_is_not_parenthesised() {
-        let expr = NixExpr::Select(Box::new(NixExpr::Ref("pkgs".into())), vec!["ripgrep".into()]);
+        let expr = NixExpr::Select(
+            Box::new(NixExpr::Ref("pkgs".into())),
+            vec!["ripgrep".into()],
+        );
         assert_eq!(capture(|w| expr.emit(w)), "pkgs.ripgrep");
     }
 
@@ -525,7 +711,10 @@ mod tests {
         // `({ x }: x) (5)`, not `{ x }: x (5)` (which parses as a lambda returning `x (5)`).
         let expr = NixExpr::Apply(
             Box::new(NixExpr::Lambda {
-                formals: Formals { args: vec!["x".into()], ellipsis: false },
+                formals: Formals {
+                    args: vec!["x".into()],
+                    ellipsis: false,
+                },
                 body: Box::new(NixExpr::Ref("x".into())),
             }),
             vec![NixExpr::Int(5)],
@@ -565,18 +754,27 @@ mod tests {
         use crate::expr::Binding;
         let mut binding_val = BTreeMap::new();
         binding_val.insert(AttrKey::Ident("x".into()), NixExpr::Int(1));
-        let m = module_with(vec![Binding { name: "_knixl0".into(), value: NixExpr::AttrSet(binding_val) }]);
+        let m = module_with(vec![Binding {
+            name: "_knixl0".into(),
+            value: NixExpr::AttrSet(binding_val),
+        }]);
 
         let out = capture(|w| m.emit(w));
         assert!(out.contains("let"), "emits a let keyword:\n{out}");
         assert!(out.contains("_knixl0 = {"), "binding rendered:\n{out}");
         assert!(out.contains("in {"), "let/in block present:\n{out}");
-        assert!(out.contains("foo = _knixl0;"), "body references the binding:\n{out}");
+        assert!(
+            out.contains("foo = _knixl0;"),
+            "body references the binding:\n{out}"
+        );
     }
 
     #[test]
     fn module_without_lets_emits_a_plain_attrset() {
         let out = capture(|w| module_with(vec![]).emit(w));
-        assert!(!out.contains("let"), "no let block when there are no bindings:\n{out}");
+        assert!(
+            !out.contains("let"),
+            "no let block when there are no bindings:\n{out}"
+        );
     }
 }

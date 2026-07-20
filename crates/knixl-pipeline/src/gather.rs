@@ -52,8 +52,10 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     let hosts = read_hosts(root)?;
     let registry = build_registry(root)?;
 
-    let formatter_pin =
-        FormatterPin { name: formatter.name.clone(), version: formatter.version.clone() };
+    let formatter_pin = FormatterPin {
+        name: formatter.name.clone(),
+        version: formatter.version.clone(),
+    };
     // No lockfile means a fresh project: seed the baseline from the running versions so
     // there is no phantom skew (skew only means a recorded version actually moved).
     let lock = match read_lock(root)? {
@@ -62,7 +64,10 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
             version: 1,
             tool: tool.clone(),
             formatter: formatter_pin.clone(),
-            oracle: OraclePin { nixpkgs_rev: String::new(), options_hash: String::new() },
+            oracle: OraclePin {
+                nixpkgs_rev: String::new(),
+                options_hash: String::new(),
+            },
             inputs: BTreeMap::new(),
             modules: registry.module_versions(),
             outputs: Vec::new(),
@@ -78,44 +83,59 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     // host is simply absent from the map: generation proceeds without option checks for it
     // (best-effort, now per host rather than project-wide).
     let names = host_names(&hosts);
-    let oracles: BTreeMap<String, knixl_oracle::Oracle> = match std::env::var("KNIXL_OPTIONS_JSON") {
+    let oracles: BTreeMap<String, knixl_oracle::Oracle> = match std::env::var("KNIXL_OPTIONS_JSON")
+    {
         Ok(p) => names
             .iter()
-            .filter_map(|n| knixl_oracle::Oracle::from_options_json(Path::new(&p)).ok().map(|o| (n.clone(), o)))
+            .filter_map(|n| {
+                knixl_oracle::Oracle::from_options_json(Path::new(&p))
+                    .ok()
+                    .map(|o| (n.clone(), o))
+            })
             .collect(),
         Err(_) => names
             .iter()
             .filter_map(|n| {
-                let rev = lock.baselines.get(n).map(|b| b.nixpkgs_rev.as_str()).unwrap_or(&lock.oracle.nixpkgs_rev);
-                knixl_oracle::Oracle::from_rev_cache(rev).ok().flatten().map(|o| (n.clone(), o))
+                let rev = lock
+                    .baselines
+                    .get(n)
+                    .map(|b| b.nixpkgs_rev.as_str())
+                    .unwrap_or(&lock.oracle.nixpkgs_rev);
+                knixl_oracle::Oracle::from_rev_cache(rev)
+                    .ok()
+                    .flatten()
+                    .map(|o| (n.clone(), o))
             })
             .collect(),
     };
 
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
-    let (expected, mut validation_errors) = match generate(&hosts, &registry, formatter, &tool, &oracles, &lock.pins) {
-        Ok(files) => {
-            let expected = files
-                .into_iter()
-                .map(|f| {
-                    generated.insert(f.path.clone(), f.text.clone());
-                    warnings.extend(
-                        f.warnings.iter().map(|w| format!("{}: {w}", f.from.display())),
-                    );
-                    ExpectedFile {
-                        path: f.path,
-                        hash: hash(f.text.as_bytes()),
-                        from: f.from,
-                        modules: f.modules,
-                    }
-                })
-                .collect();
-            (expected, Vec::new())
-        }
-        Err(GenerateError::Validation(errs)) => (Vec::new(), errs),
-        Err(other) => return Err(other.into()),
-    };
+    let (expected, mut validation_errors) =
+        match generate(&hosts, &registry, formatter, &tool, &oracles, &lock.pins) {
+            Ok(files) => {
+                let expected = files
+                    .into_iter()
+                    .map(|f| {
+                        generated.insert(f.path.clone(), f.text.clone());
+                        warnings.extend(
+                            f.warnings
+                                .iter()
+                                .map(|w| format!("{}: {w}", f.from.display())),
+                        );
+                        ExpectedFile {
+                            path: f.path,
+                            hash: hash(f.text.as_bytes()),
+                            from: f.from,
+                            modules: f.modules,
+                        }
+                    })
+                    .collect();
+                (expected, Vec::new())
+            }
+            Err(GenerateError::Validation(errs)) => (Vec::new(), errs),
+            Err(other) => return Err(other.into()),
+        };
 
     // A declared baseline that is not yet resolved (no lock entry) or that has moved to a
     // different release than what is now declared, is a validation error naming the fix
@@ -123,7 +143,10 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     // state against the lock, not against the oracle's option set.
     let declared_baselines = declared_baselines(&hosts);
     for (host, release) in &declared_baselines {
-        let resolved = lock.baselines.get(host).is_some_and(|b| &b.release == release);
+        let resolved = lock
+            .baselines
+            .get(host)
+            .is_some_and(|b| &b.release == release);
         if !resolved {
             validation_errors.push(format!(
                 "host \"{host}\": nixpkgs release \"{release}\" is not resolved: run knixl upgrade"
@@ -131,8 +154,10 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         }
     }
 
-    let input_hashes: BTreeMap<PathBuf, String> =
-        hosts.iter().map(|h| (h.path.clone(), hash(h.src.as_bytes()))).collect();
+    let input_hashes: BTreeMap<PathBuf, String> = hosts
+        .iter()
+        .map(|h| (h.path.clone(), hash(h.src.as_bytes())))
+        .collect();
 
     let versions = Versions {
         tool,
@@ -204,12 +229,16 @@ fn read_hosts(root: &Path) -> Result<Vec<HostSource>, GatherError> {
 fn referenced_pins(hosts: &[HostSource]) -> BTreeMap<String, BTreeSet<String>> {
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for host in hosts {
-        let Ok(doc) = knixl_kdl::parse(&host.src) else { continue };
+        let Ok(doc) = knixl_kdl::parse(&host.src) else {
+            continue;
+        };
         for node in doc.nodes() {
             if node.name().value() != "host" {
                 continue;
             }
-            let Some(name) = crate::first_arg_str(node) else { continue };
+            let Some(name) = crate::first_arg_str(node) else {
+                continue;
+            };
             let set = out.entry(name).or_default();
             for child in knixl_kdl::children_named(node, "package") {
                 if child.get("version").is_some() {
@@ -229,12 +258,16 @@ fn referenced_pins(hosts: &[HostSource]) -> BTreeMap<String, BTreeSet<String>> {
 pub fn declared_baselines(hosts: &[HostSource]) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     for host in hosts {
-        let Ok(doc) = knixl_kdl::parse(&host.src) else { continue };
+        let Ok(doc) = knixl_kdl::parse(&host.src) else {
+            continue;
+        };
         for node in doc.nodes() {
             if node.name().value() != "host" {
                 continue;
             }
-            let Some(name) = crate::first_arg_str(node) else { continue };
+            let Some(name) = crate::first_arg_str(node) else {
+                continue;
+            };
             if let Some(release) = knixl_kdl::child_prop_str(node, "nixpkgs", "release") {
                 out.insert(name, release);
             }
@@ -256,8 +289,9 @@ fn build_registry(root: &Path) -> Result<Registry, GatherError> {
 
     let dir = root.join("modules");
     if dir.is_dir() {
-        let mut entries: Vec<PathBuf> =
-            std::fs::read_dir(&dir)?.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
         entries.sort();
         for entry in entries {
             let manifest = entry.join("knixl-module.kdl");
@@ -268,7 +302,9 @@ fn build_registry(root: &Path) -> Result<Registry, GatherError> {
             let doc = knixl_kdl::parse(&src).map_err(|e| GatherError::Module(e.to_string()))?;
             let module = DeclarativeModule::from_kdl(&doc, &manifest)
                 .map_err(|e| GatherError::Module(e.to_string()))?;
-            registry.register(Box::new(module)).map_err(|e| GatherError::Module(e.to_string()))?;
+            registry
+                .register(Box::new(module))
+                .map_err(|e| GatherError::Module(e.to_string()))?;
         }
     }
     Ok(registry)
@@ -310,7 +346,9 @@ fn read_lock(root: &Path) -> Result<Option<Lock>, GatherError> {
         return Ok(None);
     }
     let src = std::fs::read_to_string(&path)?;
-    Lock::parse(&src).map(Some).map_err(|e| GatherError::Lock(e.to_string()))
+    Lock::parse(&src)
+        .map(Some)
+        .map_err(|e| GatherError::Lock(e.to_string()))
 }
 
 #[cfg(test)]
@@ -322,7 +360,9 @@ mod tests {
         let hosts = vec![
             HostSource {
                 path: PathBuf::from("hosts/web.kdl"),
-                src: "host \"web\" {\n    system \"x86_64-linux\"\n    nixpkgs release=\"25.05\"\n}".into(),
+                src:
+                    "host \"web\" {\n    system \"x86_64-linux\"\n    nixpkgs release=\"25.05\"\n}"
+                        .into(),
             },
             HostSource {
                 path: PathBuf::from("hosts/db.kdl"),

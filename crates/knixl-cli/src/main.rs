@@ -25,13 +25,24 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Recompute and report; write nothing.
-    Plan { #[arg(long)] detailed_exitcode: bool },
+    Plan {
+        #[arg(long)]
+        detailed_exitcode: bool,
+    },
     /// CI gate: succeed only if every file is Clean. Never writes, never prompts.
     Check,
     /// Apply. Silent for Stale/Missing; refuses Drifted/skew without the matching flag.
-    Generate { #[arg(long)] accept_drift: bool, #[arg(long)] prune: bool },
+    Generate {
+        #[arg(long)]
+        accept_drift: bool,
+        #[arg(long)]
+        prune: bool,
+    },
     /// Version bump: show migration notes + diff, apply on --yes, then bump the lock.
-    Upgrade { #[arg(long)] yes: bool },
+    Upgrade {
+        #[arg(long)]
+        yes: bool,
+    },
     /// Print the typed reference for a module node (from schema()).
     Doc { node: String },
     /// Add a package to a host: draft the KDL, verify under nix, preview, then regenerate.
@@ -74,10 +85,18 @@ enum Code {
 /// Validation beats all (cannot trust a plan on invalid input). Drift beats skew
 /// (silent overwrite loses human edits). Skew beats plain regen-pending.
 fn verdict(plan: &Plan) -> Code {
-    if plan.has_validation_errors() { return Code::Validation; }
-    if plan.any(FileState::is_drifted) { return Code::Drift; }
-    if plan.requires_ack() { return Code::NeedsAck; }
-    if plan.any(FileState::is_dirty) { return Code::RegenPending; }
+    if plan.has_validation_errors() {
+        return Code::Validation;
+    }
+    if plan.any(FileState::is_drifted) {
+        return Code::Drift;
+    }
+    if plan.requires_ack() {
+        return Code::NeedsAck;
+    }
+    if plan.any(FileState::is_dirty) {
+        return Code::RegenPending;
+    }
     Code::Clean
 }
 
@@ -107,10 +126,12 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
     // they always plan off the on-disk lock and inputs unchanged.
     let patched_lock = (!pending.is_empty()).then(|| {
         let mut lock = ctx.lock.clone();
-        lock.baselines.extend(pending.iter().map(|(host, b)| (host.clone(), b.clone())));
+        lock.baselines
+            .extend(pending.iter().map(|(host, b)| (host.clone(), b.clone())));
         lock
     });
-    let patched_inputs = (!pending.is_empty()).then(|| patch_inputs_for_pending(&ctx.inputs, &pending));
+    let patched_inputs =
+        (!pending.is_empty()).then(|| patch_inputs_for_pending(&ctx.inputs, &pending));
     let lock_for_plan = patched_lock.as_ref().unwrap_or(&ctx.lock);
     let inputs_for_plan = patched_inputs.as_ref().unwrap_or(&ctx.inputs);
 
@@ -131,12 +152,22 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
     match cli.cmd {
         Cmd::Plan { detailed_exitcode } => {
             print_plan(&plan, cli.json);
-            if detailed_exitcode { verdict(&plan) } else { Code::Clean }
+            if detailed_exitcode {
+                verdict(&plan)
+            } else {
+                Code::Clean
+            }
         }
 
-        Cmd::Check => { print_plan(&plan, cli.json); verdict(&plan) }
+        Cmd::Check => {
+            print_plan(&plan, cli.json);
+            verdict(&plan)
+        }
 
-        Cmd::Generate { accept_drift, prune } => {
+        Cmd::Generate {
+            accept_drift,
+            prune,
+        } => {
             // A version bump must go through `upgrade`, never a side effect of generate.
             // Drift is NOT this gate: it is handled per file below as exit 3.
             if plan.skew_needs_ack() {
@@ -150,13 +181,21 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                     FileState::Clean => {}
                     FileState::Stale { .. } | FileState::Missing { .. } => write_file(ctx, f),
                     FileState::Drifted { .. } if accept_drift => write_file(ctx, f),
-                    FileState::Drifted { .. } => { report_taint(f, cli.json); worst = worst.max(Code::Drift); }
+                    FileState::Drifted { .. } => {
+                        report_taint(f, cli.json);
+                        worst = worst.max(Code::Drift);
+                    }
                     FileState::Orphaned if prune => delete_file(ctx, f),
-                    FileState::Orphaned => { note_orphan(f, cli.json); worst = worst.max(Code::RegenPending); }
+                    FileState::Orphaned => {
+                        note_orphan(f, cli.json);
+                        worst = worst.max(Code::RegenPending);
+                    }
                 }
             }
             // Commit the lock ONLY on a clean apply, so it never lies about disk.
-            if worst == Code::Clean { write_lock(ctx, &plan.lock_next); }
+            if worst == Code::Clean {
+                write_lock(ctx, &plan.lock_next);
+            }
             worst
         }
 
@@ -181,7 +220,9 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                 return Code::NeedsAck;
             }
             for f in &plan.files {
-                if !matches!(f.state, FileState::Clean) { write_file(ctx, f); }
+                if !matches!(f.state, FileState::Clean) {
+                    write_file(ctx, f);
+                }
             }
             for (host, b) in &pending {
                 println!(
@@ -195,11 +236,28 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             Code::Clean
         }
 
-        Cmd::Doc { node } => { print_doc(ctx, &node, cli.json); Code::Clean }
-
-        Cmd::Install { pkg, host, yes, strict, build, no_abi_check } => {
-            install(ctx, &pkg, host.as_deref(), yes, strict, build, no_abi_check, &pending)
+        Cmd::Doc { node } => {
+            print_doc(ctx, &node, cli.json);
+            Code::Clean
         }
+
+        Cmd::Install {
+            pkg,
+            host,
+            yes,
+            strict,
+            build,
+            no_abi_check,
+        } => install(
+            ctx,
+            &pkg,
+            host.as_deref(),
+            yes,
+            strict,
+            build,
+            no_abi_check,
+            &pending,
+        ),
 
         Cmd::Tui => unreachable!("tui is dispatched before Ctx::load"),
     }
@@ -218,8 +276,8 @@ fn install(
     no_abi_check: bool,
     pending: &BTreeMap<String, HostBaseline>,
 ) -> Code {
-    use knixl_pipeline::install::{list_hosts, select_host};
     use knixl_nix::pin::{PinError, PinResolver};
+    use knixl_pipeline::install::{list_hosts, select_host};
 
     let (name, version) = match pkg.split_once('@') {
         Some((n, v)) => (n, Some(v)),
@@ -228,11 +286,17 @@ fn install(
 
     let hosts = match list_hosts(&ctx.root) {
         Ok(h) => h,
-        Err(e) => { eprintln!("knixl: {e}"); return Code::Internal; }
+        Err(e) => {
+            eprintln!("knixl: {e}");
+            return Code::Internal;
+        }
     };
     let initial = match select_host(&hosts, host) {
         Ok(t) => t.clone(),
-        Err(e) => { eprintln!("knixl: {e}"); return Code::Usage; }
+        Err(e) => {
+            eprintln!("knixl: {e}");
+            return Code::Usage;
+        }
     };
 
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
@@ -288,8 +352,14 @@ fn install(
                     baseline_pending,
                 )
             }
-            Ok(_) => { println!("cancelled"); Code::Clean }
-            Err(e) => { eprintln!("knixl: tui: {e}"); Code::Internal }
+            Ok(_) => {
+                println!("cancelled");
+                Code::Clean
+            }
+            Err(e) => {
+                eprintln!("knixl: tui: {e}");
+                Code::Internal
+            }
         };
     }
 
@@ -311,7 +381,13 @@ fn install(
                 .get(&initial.name)
                 .and_then(|pins| pins.iter().find(|p| p.package == name && p.version == v));
             let (resolved, strategy, reason) = if let Some(p) = cached {
-                (knixl_nix::pin::Resolved { nixpkgs_rev: p.nixpkgs_rev.clone() }, p.strategy, "cached".to_string())
+                (
+                    knixl_nix::pin::Resolved {
+                        nixpkgs_rev: p.nixpkgs_rev.clone(),
+                    },
+                    p.strategy,
+                    "cached".to_string(),
+                )
             } else {
                 let resolved = match PinResolver::resolve().lookup(name, v) {
                     Ok(r) => r,
@@ -337,7 +413,9 @@ fn install(
                         (resolved, strategy, reason)
                     }
                     Err((commit_mix, over)) => {
-                        eprintln!("knixl: cannot pin {name}@{v}: commit-mix build failed: {commit_mix}");
+                        eprintln!(
+                            "knixl: cannot pin {name}@{v}: commit-mix build failed: {commit_mix}"
+                        );
                         eprintln!("knixl: cannot pin {name}@{v}: override build failed: {over}");
                         return Code::Validation;
                     }
@@ -369,7 +447,11 @@ fn install(
     if build && !build_tested {
         use knixl_nix::nixeval::{NixError, NixEval, Nixpkgs};
         let rev = &ctx.lock.oracle.nixpkgs_rev;
-        let src = if rev.is_empty() { Nixpkgs::Ambient } else { Nixpkgs::PinnedRev(rev.clone()) };
+        let src = if rev.is_empty() {
+            Nixpkgs::Ambient
+        } else {
+            Nixpkgs::PinnedRev(rev.clone())
+        };
         match NixEval::resolve().builds(&src, name) {
             Ok(()) => {}
             Err(NixError::Unavailable(_)) if strict => {
@@ -389,7 +471,9 @@ fn install(
         println!("cancelled");
         return Code::Clean;
     }
-    let pin_args = version_pin.as_ref().map(|(v, resolved, strategy, _)| (*v, resolved, *strategy));
+    let pin_args = version_pin
+        .as_ref()
+        .map(|(v, resolved, strategy, _)| (*v, resolved, *strategy));
     let code = commit_install(&initial, name, pin_args, baseline_pending.as_ref(), strict);
     if code == Code::Clean {
         if let Some(b) = &baseline_pending {
@@ -399,7 +483,10 @@ fn install(
             );
         }
         if let Some((v, _, strategy, reason)) = &version_pin {
-            println!("pinned {name} {v} via {} ({reason})", strategy_label(*strategy));
+            println!(
+                "pinned {name} {v} via {} ({reason})",
+                strategy_label(*strategy)
+            );
         }
     }
     code
@@ -408,7 +495,11 @@ fn install(
 fn commit_install(
     chosen: &knixl_pipeline::install::HostInfo,
     pkg: &str,
-    version_pin: Option<(&str, &knixl_nix::pin::Resolved, knixl_lock::model::PinStrategy)>,
+    version_pin: Option<(
+        &str,
+        &knixl_nix::pin::Resolved,
+        knixl_lock::model::PinStrategy,
+    )>,
     baseline_pending: Option<&HostBaseline>,
     strict: bool,
 ) -> Code {
@@ -416,12 +507,21 @@ fn commit_install(
 
     let original = match std::fs::read_to_string(&chosen.path) {
         Ok(s) => s,
-        Err(e) => { eprintln!("knixl: {}: {e}", chosen.path.display()); return Code::Internal; }
+        Err(e) => {
+            eprintln!("knixl: {}: {e}", chosen.path.display());
+            return Code::Internal;
+        }
     };
     let draft = match add_package(&original, pkg, version_pin.map(|(v, _, _)| v)) {
         Ok(Some(d)) => d,
-        Ok(None) => { println!("{pkg} is already installed on {}", chosen.name); return Code::Clean; }
-        Err(e) => { eprintln!("knixl: cannot edit {}: {e}", chosen.path.display()); return Code::Internal; }
+        Ok(None) => {
+            println!("{pkg} is already installed on {}", chosen.name);
+            return Code::Clean;
+        }
+        Err(e) => {
+            eprintln!("knixl: cannot edit {}: {e}", chosen.path.display());
+            return Code::Internal;
+        }
     };
 
     // Record the pin and any pending baseline resolution before the versioned KDL hits disk
@@ -463,7 +563,12 @@ fn commit_install(
     };
 
     let drafted = Ctx::load();
-    let plan = Plan::compute(&drafted.inputs, &drafted.disk, &drafted.lock, &drafted.running);
+    let plan = Plan::compute(
+        &drafted.inputs,
+        &drafted.disk,
+        &drafted.lock,
+        &drafted.running,
+    );
     if plan.has_validation_errors() {
         report_validation(&plan.validation_errors, false);
         revert();
@@ -478,7 +583,10 @@ fn commit_install(
     for f in &plan.files {
         match &f.state {
             FileState::Stale { .. } | FileState::Missing { .. } => write_file(&drafted, f),
-            FileState::Drifted { .. } => { report_taint(f, false); worst = worst.max(Code::Drift); }
+            FileState::Drifted { .. } => {
+                report_taint(f, false);
+                worst = worst.max(Code::Drift);
+            }
             FileState::Clean | FileState::Orphaned => {}
         }
     }
@@ -596,12 +704,20 @@ fn resolve_pending_baseline(
             return Ok(None);
         }
     }
-    let rev = knixl_nix::baseline::BaselineResolver::resolve().lookup(&release).map_err(|e| {
-        eprintln!("knixl: cannot resolve nixpkgs release \"{release}\" for host \"{host}\": {e}");
-        Code::Validation
-    })?;
+    let rev = knixl_nix::baseline::BaselineResolver::resolve()
+        .lookup(&release)
+        .map_err(|e| {
+            eprintln!(
+                "knixl: cannot resolve nixpkgs release \"{release}\" for host \"{host}\": {e}"
+            );
+            Code::Validation
+        })?;
     let options_hash = options_hash_for_rev(&rev);
-    Ok(Some(HostBaseline { release, nixpkgs_rev: rev, options_hash }))
+    Ok(Some(HostBaseline {
+        release,
+        nixpkgs_rev: rev,
+        options_hash,
+    }))
 }
 
 /// For every host under `ctx.root` whose KDL declares a `nixpkgs release=".."` not already
@@ -646,7 +762,10 @@ fn effective_baseline_rev(
     if declared_release(host_path).is_none() {
         return oracle_rev.to_string();
     }
-    baselines.get(host).map(|b| b.nixpkgs_rev.clone()).unwrap_or_else(|| oracle_rev.to_string())
+    baselines
+        .get(host)
+        .map(|b| b.nixpkgs_rev.clone())
+        .unwrap_or_else(|| oracle_rev.to_string())
 }
 
 /// The `Inputs` `run` should plan `Cmd::Upgrade`/`Cmd::Install` against once `pending` has
@@ -722,7 +841,9 @@ fn commit_tui_install(
         }
         _ => None,
     };
-    let pin_args = version_pin.as_ref().map(|(v, resolved, strategy)| (*v, resolved, *strategy));
+    let pin_args = version_pin
+        .as_ref()
+        .map(|(v, resolved, strategy)| (*v, resolved, *strategy));
     let code = commit_install(&host, &pkg, pin_args, baseline_pending.as_ref(), strict);
     if code == Code::Clean {
         if let Some(b) = &baseline_pending {
@@ -733,7 +854,10 @@ fn commit_tui_install(
         }
         if let Some((v, _, strategy)) = &version_pin {
             match &strategy_reason {
-                Some(reason) => println!("pinned {pkg} {v} via {} ({reason})", strategy_label(*strategy)),
+                Some(reason) => println!(
+                    "pinned {pkg} {v} via {} ({reason})",
+                    strategy_label(*strategy)
+                ),
                 None => println!("pinned {pkg} {v} via {}", strategy_label(*strategy)),
             }
         }
@@ -753,7 +877,16 @@ fn open_tui(
     let root = discover_root();
     let hosts = list_hosts(&root).map_err(|e| e.to_string())?;
     let modules = browse_modules(&root);
-    tui::run(entry, root.clone(), hosts, make_verify(root.clone()), modules, build, pin, strategy)
+    tui::run(
+        entry,
+        root.clone(),
+        hosts,
+        make_verify(root.clone()),
+        modules,
+        build,
+        pin,
+        strategy,
+    )
 }
 
 /// Enumerate registered modules for the Browse screen: node name, kind tag, rendered schema
@@ -791,9 +924,10 @@ fn skeleton_for(node: &str, schema: &knixl_modules::NodeSchema) -> String {
             ValueTy::Bool => "#true".to_string(),
             ValueTy::Int => "0".to_string(),
             ValueTy::Str | ValueTy::Node => "\"\"".to_string(),
-            ValueTy::Enum(opts) => {
-                opts.first().map(|o| format!("\"{o}\"")).unwrap_or_else(|| "\"\"".to_string())
-            }
+            ValueTy::Enum(opts) => opts
+                .first()
+                .map(|o| format!("\"{o}\""))
+                .unwrap_or_else(|| "\"\"".to_string()),
         }
     }
 
@@ -821,14 +955,25 @@ fn skeleton_for(node: &str, schema: &knixl_modules::NodeSchema) -> String {
 fn make_verify(root: std::path::PathBuf) -> tui::VerifyFn {
     Arc::new(move |pkg: &str, host: &knixl_pipeline::install::HostInfo| {
         let formatter = default_formatter();
-        let tool: semver::Version =
-            env!("CARGO_PKG_VERSION").parse().expect("tool version parses");
+        let tool: semver::Version = env!("CARGO_PKG_VERSION")
+            .parse()
+            .expect("tool version parses");
         match knixl_pipeline::gather::gather(&root, &formatter, tool.clone()) {
             Ok(project) => {
-                let (preview, parses) =
-                    preview_host(&project.registry, &formatter, &tool, host, pkg, &project.oracles);
+                let (preview, parses) = preview_host(
+                    &project.registry,
+                    &formatter,
+                    &tool,
+                    host,
+                    pkg,
+                    &project.oracles,
+                );
                 let resolves = resolve_package_rev(&project.lock.oracle.nixpkgs_rev, pkg);
-                tui::Verified { preview, resolves, parses }
+                tui::Verified {
+                    preview,
+                    resolves,
+                    parses,
+                }
             }
             Err(e) => tui::Verified {
                 preview: format!("(preview unavailable: {e})"),
@@ -845,7 +990,11 @@ fn make_build(root: std::path::PathBuf) -> tui::BuildFn {
     use knixl_nix::nixeval::{NixError, NixEval, Nixpkgs};
     Arc::new(move |pkg: &str| {
         let rev = read_pinned_rev(&root);
-        let src = if rev.is_empty() { Nixpkgs::Ambient } else { Nixpkgs::PinnedRev(rev) };
+        let src = if rev.is_empty() {
+            Nixpkgs::Ambient
+        } else {
+            Nixpkgs::PinnedRev(rev)
+        };
         match NixEval::resolve().builds(&src, pkg) {
             Ok(()) => tui::BuildOutcome::Ok,
             Err(NixError::Unavailable(_)) => tui::BuildOutcome::Skipped,
@@ -860,12 +1009,14 @@ fn make_build(root: std::path::PathBuf) -> tui::BuildFn {
 /// the current lock).
 fn make_pin() -> tui::PinFn {
     use knixl_nix::pin::{PinError, PinResolver};
-    Arc::new(move |name: &str, version: &str| match PinResolver::resolve().lookup(name, version) {
-        Ok(r) => tui::PinOutcome::Resolved(r.nixpkgs_rev),
-        Err(PinError::NotFound(_)) => tui::PinOutcome::NotFound,
-        Err(PinError::Unavailable(_)) => tui::PinOutcome::Unavailable,
-        Err(PinError::Failed(_)) => tui::PinOutcome::Failed,
-    })
+    Arc::new(
+        move |name: &str, version: &str| match PinResolver::resolve().lookup(name, version) {
+            Ok(r) => tui::PinOutcome::Resolved(r.nixpkgs_rev),
+            Err(PinError::NotFound(_)) => tui::PinOutcome::NotFound,
+            Err(PinError::Unavailable(_)) => tui::PinOutcome::Unavailable,
+            Err(PinError::Failed(_)) => tui::PinOutcome::Failed,
+        },
+    )
 }
 
 /// Decide the strategy for pinning `name` at `rev`, then explain why in a short phrase for the
@@ -900,9 +1051,11 @@ fn choose_strategy(
             };
             Ok((PinStrategy::CommitMix, reason.to_string(), false))
         }
-        Ok(PinStrategy::CommitMix) => {
-            Ok((PinStrategy::CommitMix, "override build failed".to_string(), true))
-        }
+        Ok(PinStrategy::CommitMix) => Ok((
+            PinStrategy::CommitMix,
+            "override build failed".to_string(),
+            true,
+        )),
         Err(SelectError::NeitherBuilds { commit_mix, over }) => Err((commit_mix, over)),
     }
 }
@@ -913,13 +1066,21 @@ fn choose_strategy(
 /// `nix_available` gate.
 fn nix_build_available() -> bool {
     let nix = knixl_nix::nixeval::NixEval::resolve();
-    std::process::Command::new(&nix.build_bin).arg("--version").output().is_ok()
+    std::process::Command::new(&nix.build_bin)
+        .arg("--version")
+        .output()
+        .is_ok()
 }
 
 /// Maps `choose_strategy`'s decision to the TUI's `StrategyOutcome`, so `make_strategy`'s
 /// closure shares `choose_strategy`'s decision logic (and the plain path's error text) instead
 /// of a second copy that could drift.
-fn strategy_outcome(name: &str, rev: &str, baseline_rev: &str, no_abi_check: bool) -> tui::StrategyOutcome {
+fn strategy_outcome(
+    name: &str,
+    rev: &str,
+    baseline_rev: &str,
+    no_abi_check: bool,
+) -> tui::StrategyOutcome {
     match choose_strategy(name, rev, baseline_rev, no_abi_check) {
         Ok((strategy, label, _tested)) => tui::StrategyOutcome::Chosen { strategy, label },
         Err((commit_mix, over)) => {
@@ -950,7 +1111,13 @@ fn make_strategy(
             .iter()
             .find(|h| h.name == host_name)
             .map(|h| {
-                effective_baseline_rev(&oracle_rev, &baselines, &h.path, host_name, pending.get(host_name))
+                effective_baseline_rev(
+                    &oracle_rev,
+                    &baselines,
+                    &h.path,
+                    host_name,
+                    pending.get(host_name),
+                )
             })
             .unwrap_or_else(|| oracle_rev.clone());
         strategy_outcome(name, rev, &baseline_rev, no_abi_check)
@@ -968,7 +1135,9 @@ fn strategy_label(strategy: knixl_lock::model::PinStrategy) -> &'static str {
 /// The lock's pinned nixpkgs rev for `root`, or empty if unavailable.
 fn read_pinned_rev(root: &std::path::Path) -> String {
     let formatter = default_formatter();
-    let tool: semver::Version = env!("CARGO_PKG_VERSION").parse().expect("tool version parses");
+    let tool: semver::Version = env!("CARGO_PKG_VERSION")
+        .parse()
+        .expect("tool version parses");
     knixl_pipeline::gather::gather(root, &formatter, tool)
         .map(|p| p.lock.oracle.nixpkgs_rev)
         .unwrap_or_default()
@@ -991,7 +1160,10 @@ fn preview_host(
     };
     let no_pins = std::collections::BTreeMap::new();
     let nix = generate(
-        &[HostSource { path: host.path.clone(), src: drafted }],
+        &[HostSource {
+            path: host.path.clone(),
+            src: drafted,
+        }],
         registry,
         formatter,
         tool,
@@ -999,7 +1171,12 @@ fn preview_host(
         &no_pins,
     )
     .ok()
-    .and_then(|files| files.into_iter().map(|f| f.text).find(|t| t.contains("systemPackages")))
+    .and_then(|files| {
+        files
+            .into_iter()
+            .map(|f| f.text)
+            .find(|t| t.contains("systemPackages"))
+    })
     .unwrap_or_else(|| "(preview unavailable)".to_string());
 
     let snippet = systempackages_snippet(&nix);
@@ -1053,7 +1230,11 @@ fn resolve_package(ctx: &Ctx, pkg: &str) -> tui::Resolve {
 /// which rebuilds its own project state).
 fn resolve_package_rev(rev: &str, pkg: &str) -> tui::Resolve {
     use knixl_nix::nixeval::{NixError, NixEval, Nixpkgs};
-    let src = if rev.is_empty() { Nixpkgs::Ambient } else { Nixpkgs::PinnedRev(rev.to_string()) };
+    let src = if rev.is_empty() {
+        Nixpkgs::Ambient
+    } else {
+        Nixpkgs::PinnedRev(rev.to_string())
+    };
     match NixEval::resolve().package_exists(&src, pkg) {
         Ok(true) => tui::Resolve::Yes,
         Ok(false) => tui::Resolve::No,
@@ -1068,9 +1249,14 @@ fn verify_parse(ctx: &Ctx, _strict: bool) -> Option<Code> {
     use knixl_nix::nixeval::{NixError, NixEval};
     let nix = NixEval::resolve();
     for (path, text) in &ctx.generated {
-        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("out.nix");
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("out.nix");
         let tmp = std::env::temp_dir().join(format!("knixl-parse-{}-{name}", std::process::id()));
-        if std::fs::write(&tmp, text).is_err() { continue; }
+        if std::fs::write(&tmp, text).is_err() {
+            continue;
+        }
         let verdict = nix.parses(&tmp);
         let _ = std::fs::remove_file(&tmp);
         match verdict {
@@ -1112,7 +1298,10 @@ fn dispatch() -> Code {
         }
         return match open_tui(tui::Entry::Hub, None, None, None) {
             Ok(outcome) => finish_tui_outcome(outcome),
-            Err(e) => { eprintln!("knixl: {e}"); Code::Internal }
+            Err(e) => {
+                eprintln!("knixl: {e}");
+                Code::Internal
+            }
         };
     }
     run(cli, &Ctx::load())
@@ -1156,7 +1345,11 @@ fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
                 baseline_pending,
             )
         }
-        tui::Outcome::Insert { host, node, skeleton } => commit_insert(&host, &node, &skeleton),
+        tui::Outcome::Insert {
+            host,
+            node,
+            skeleton,
+        } => commit_insert(&host, &node, &skeleton),
         tui::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),
         tui::Outcome::Cancelled | tui::Outcome::Quit => Code::Clean,
     }
@@ -1168,7 +1361,10 @@ fn commit_scaffold(name: &str, manifest: &str) -> Code {
     let dir = discover_root().join("modules").join(name);
     let path = dir.join("knixl-module.kdl");
     if path.exists() {
-        eprintln!("knixl: module `{name}` already exists at {}", path.display());
+        eprintln!(
+            "knixl: module `{name}` already exists at {}",
+            path.display()
+        );
         return Code::Validation;
     }
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -1179,7 +1375,10 @@ fn commit_scaffold(name: &str, manifest: &str) -> Code {
         eprintln!("knixl: {}: {e}", path.display());
         return Code::Internal;
     }
-    println!("created module `{name}`: edit {} then declare it on a host", path.display());
+    println!(
+        "created module `{name}`: edit {} then declare it on a host",
+        path.display()
+    );
     Code::Clean
 }
 
@@ -1190,7 +1389,10 @@ fn commit_insert(host: &knixl_pipeline::install::HostInfo, node: &str, skeleton:
     use knixl_pipeline::install::add_node;
     let original = match std::fs::read_to_string(&host.path) {
         Ok(s) => s,
-        Err(e) => { eprintln!("knixl: {}: {e}", host.path.display()); return Code::Internal; }
+        Err(e) => {
+            eprintln!("knixl: {}: {e}", host.path.display());
+            return Code::Internal;
+        }
     };
     match add_node(&original, node, skeleton) {
         Ok(Some(draft)) => {
@@ -1198,11 +1400,21 @@ fn commit_insert(host: &knixl_pipeline::install::HostInfo, node: &str, skeleton:
                 eprintln!("knixl: {}: {e}", host.path.display());
                 return Code::Internal;
             }
-            println!("added {node} to {}: edit {} then run `knixl generate`", host.name, host.path.display());
+            println!(
+                "added {node} to {}: edit {} then run `knixl generate`",
+                host.name,
+                host.path.display()
+            );
             Code::Clean
         }
-        Ok(None) => { println!("{node} is already declared on {}", host.name); Code::Clean }
-        Err(e) => { eprintln!("knixl: cannot edit {}: {e}", host.path.display()); Code::Internal }
+        Ok(None) => {
+            println!("{node} is already declared on {}", host.name);
+            Code::Clean
+        }
+        Err(e) => {
+            eprintln!("knixl: cannot edit {}: {e}", host.path.display());
+            Code::Internal
+        }
     }
 }
 
@@ -1221,7 +1433,9 @@ struct Ctx {
 impl Ctx {
     fn load() -> Ctx {
         let root = discover_root();
-        let tool = env!("CARGO_PKG_VERSION").parse().expect("tool version parses");
+        let tool = env!("CARGO_PKG_VERSION")
+            .parse()
+            .expect("tool version parses");
         let project = knixl_pipeline::gather::gather(&root, &default_formatter(), tool)
             .unwrap_or_else(|e| {
                 eprintln!("knixl: {e}");
@@ -1303,7 +1517,13 @@ fn print_plan(p: &Plan, json: bool) {
         let files: Vec<String> = p
             .files
             .iter()
-            .map(|f| format!("{{\"path\":{:?},\"state\":{:?}}}", f.path.display().to_string(), state_label(&f.state)))
+            .map(|f| {
+                format!(
+                    "{{\"path\":{:?},\"state\":{:?}}}",
+                    f.path.display().to_string(),
+                    state_label(&f.state)
+                )
+            })
             .collect();
         println!("{{\"files\":[{}]}}", files.join(","));
         return;
@@ -1324,7 +1544,9 @@ fn print_migration_notes(plan: &Plan, registry: &knixl_modules::Registry) {
     };
     let mut printed = false;
     for (name, delta) in &skew.modules {
-        let Some(module) = registry.get(name) else { continue };
+        let Some(module) = registry.get(name) else {
+            continue;
+        };
         let notes = module.migration_notes(&delta.locked, &delta.running);
         if notes.is_empty() {
             continue;
@@ -1364,11 +1586,17 @@ fn report_skew(_p: &Plan, _json: bool) {
 }
 
 fn report_taint(f: &knixl_lock::FilePlan, _json: bool) {
-    eprintln!("drift: {} was hand-edited; refusing to overwrite (use --accept-drift)", f.path.display());
+    eprintln!(
+        "drift: {} was hand-edited; refusing to overwrite (use --accept-drift)",
+        f.path.display()
+    );
 }
 
 fn note_orphan(f: &knixl_lock::FilePlan, _json: bool) {
-    eprintln!("orphan: {} is no longer generated (use --prune to delete)", f.path.display());
+    eprintln!(
+        "orphan: {} is no longer generated (use --prune to delete)",
+        f.path.display()
+    );
 }
 
 /// Write the freshly generated content for `f` to disk, creating parent directories.
@@ -1426,7 +1654,10 @@ mod tests {
     #[test]
     fn falls_back_to_alternative_name() {
         // nixfmt not found, but the nixfmt-rfc-style binary is.
-        assert_eq!(choose_formatter_bin(None, |b| b == "nixfmt-rfc-style"), "nixfmt-rfc-style");
+        assert_eq!(
+            choose_formatter_bin(None, |b| b == "nixfmt-rfc-style"),
+            "nixfmt-rfc-style"
+        );
     }
 
     #[test]
@@ -1440,7 +1671,8 @@ mod tests {
     fn build_shim(tag: &str, build_ok: bool) -> std::path::PathBuf {
         use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
-        let path = std::env::temp_dir().join(format!("knixl-cli-mainshim-{}-{tag}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("knixl-cli-mainshim-{}-{tag}", std::process::id()));
         let exit = if build_ok { 0 } else { 1 };
         let script = format!("#!/bin/sh\nexit {exit}\n");
         let mut f = std::fs::File::create(&path).unwrap();
@@ -1460,7 +1692,13 @@ mod tests {
             default: false,
             path: std::path::PathBuf::from("/nonexistent/knixl-cli-make-strategy-test/h.kdl"),
         };
-        make_strategy(vec![host], std::collections::BTreeMap::new(), oracle_rev.to_string(), std::collections::BTreeMap::new(), no_abi_check)
+        make_strategy(
+            vec![host],
+            std::collections::BTreeMap::new(),
+            oracle_rev.to_string(),
+            std::collections::BTreeMap::new(),
+            no_abi_check,
+        )
     }
 
     /// `make_strategy`'s closure maps `choose_strategy`'s two outcomes: override builds ->
@@ -1513,14 +1751,24 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let prior = std::env::var_os("KNIXL_NIX_BUILD");
 
-        let root =
-            std::env::temp_dir().join(format!("knixl-cli-makestrategy-hosts-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "knixl-cli-makestrategy-hosts-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let host_a_path = root.join("a.kdl");
         let host_b_path = root.join("b.kdl");
-        std::fs::write(&host_a_path, "host \"a\" {\n    nixpkgs release=\"24.05\"\n}\n").unwrap();
-        std::fs::write(&host_b_path, "host \"b\" {\n    nixpkgs release=\"24.05\"\n}\n").unwrap();
+        std::fs::write(
+            &host_a_path,
+            "host \"a\" {\n    nixpkgs release=\"24.05\"\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &host_b_path,
+            "host \"b\" {\n    nixpkgs release=\"24.05\"\n}\n",
+        )
+        .unwrap();
 
         let mut baselines = std::collections::BTreeMap::new();
         baselines.insert(
@@ -1540,16 +1788,29 @@ mod tests {
             },
         );
         let hosts = vec![
-            knixl_pipeline::install::HostInfo { name: "a".into(), default: false, path: host_a_path },
-            knixl_pipeline::install::HostInfo { name: "b".into(), default: false, path: host_b_path },
+            knixl_pipeline::install::HostInfo {
+                name: "a".into(),
+                default: false,
+                path: host_a_path,
+            },
+            knixl_pipeline::install::HostInfo {
+                name: "b".into(),
+                default: false,
+                path: host_b_path,
+            },
         ];
 
         // Always succeeds: a rev decided against a baseline it does NOT match runs a real
         // override build test, which this shim always passes.
         let build_ok = build_shim("host-baseline", true);
         std::env::set_var("KNIXL_NIX_BUILD", &build_ok);
-        let strategy_fn =
-            make_strategy(hosts, baselines, "oracle-rev".to_string(), std::collections::BTreeMap::new(), false);
+        let strategy_fn = make_strategy(
+            hosts,
+            baselines,
+            "oracle-rev".to_string(),
+            std::collections::BTreeMap::new(),
+            false,
+        );
 
         // "rev-b" IS host b's own baseline: matched without a build.
         match strategy_fn("pkg", "rev-b", "b") {
@@ -1637,7 +1898,11 @@ mod tests {
         std::env::set_var("KNIXL_NIX_BUILD", &never_build);
         std::env::set_current_dir(&root).unwrap(); // `Ctx::load` (inside `commit_install`) discovers the root from cwd
 
-        let host = HostInfo { name: "web".into(), default: false, path: root.join("hosts/web.kdl") };
+        let host = HostInfo {
+            name: "web".into(),
+            default: false,
+            path: root.join("hosts/web.kdl"),
+        };
         let code = commit_tui_install(
             host,
             "htop".into(),
@@ -1649,10 +1914,16 @@ mod tests {
             Some("build ok".into()),
             None,
         );
-        assert!(code == Code::Clean, "a pre-chosen strategy commits without build-testing again");
+        assert!(
+            code == Code::Clean,
+            "a pre-chosen strategy commits without build-testing again"
+        );
 
         let lock = std::fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
-        assert!(lock.contains("strategy=\"override\""), "the passed-in strategy is recorded verbatim: {lock}");
+        assert!(
+            lock.contains("strategy=\"override\""),
+            "the passed-in strategy is recorded verbatim: {lock}"
+        );
 
         let _ = std::fs::remove_file(&never_build);
         let _ = std::fs::remove_dir_all(&root);

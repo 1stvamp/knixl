@@ -1,7 +1,9 @@
-use std::collections::BTreeMap;
 use crate::Module;
+use std::collections::BTreeMap;
 
-pub struct Registry { by_node: BTreeMap<String, Box<dyn Module>> }
+pub struct Registry {
+    by_node: BTreeMap<String, Box<dyn Module>>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
@@ -10,12 +12,18 @@ pub enum RegistryError {
 }
 
 impl Registry {
-    pub fn new() -> Self { Self { by_node: BTreeMap::new() } }
+    pub fn new() -> Self {
+        Self {
+            by_node: BTreeMap::new(),
+        }
+    }
 
     /// Two modules claiming the same node is a hard config error, not last-wins.
     pub fn register(&mut self, m: Box<dyn Module>) -> Result<(), RegistryError> {
         let name = m.node_name().to_string();
-        if self.by_node.contains_key(&name) { return Err(RegistryError::Duplicate(name)); }
+        if self.by_node.contains_key(&name) {
+            return Err(RegistryError::Duplicate(name));
+        }
         self.by_node.insert(name, m);
         Ok(())
     }
@@ -42,4 +50,8 @@ impl Registry {
     }
 }
 
-impl Default for Registry { fn default() -> Self { Self::new() } }
+impl Default for Registry {
+    fn default() -> Self {
+        Self::new()
+    }
+}

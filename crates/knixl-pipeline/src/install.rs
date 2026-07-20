@@ -35,7 +35,10 @@ pub fn select_host<'a>(
         return Err(SelectError::NoHosts);
     }
     if let Some(name) = requested {
-        return hosts.iter().find(|h| h.name == name).ok_or_else(|| SelectError::Unknown(name.into()));
+        return hosts
+            .iter()
+            .find(|h| h.name == name)
+            .ok_or_else(|| SelectError::Unknown(name.into()));
     }
     let defaults: Vec<&HostInfo> = hosts.iter().filter(|h| h.default).collect();
     match defaults.len() {
@@ -44,10 +47,14 @@ pub fn select_host<'a>(
             if hosts.len() == 1 {
                 Ok(&hosts[0])
             } else {
-                Err(SelectError::Ambiguous(hosts.iter().map(|h| h.name.clone()).collect()))
+                Err(SelectError::Ambiguous(
+                    hosts.iter().map(|h| h.name.clone()).collect(),
+                ))
             }
         }
-        _ => Err(SelectError::ManyDefaults(defaults.iter().map(|h| h.name.clone()).collect())),
+        _ => Err(SelectError::ManyDefaults(
+            defaults.iter().map(|h| h.name.clone()).collect(),
+        )),
     }
 }
 
@@ -196,15 +203,24 @@ fn host_info(src: &str, path: &Path) -> Option<HostInfo> {
         .find(|e| e.name().is_none())
         .and_then(|e| e.value().as_string())
         .map(str::to_string)?;
-    let default = node.get("default").and_then(|v| v.as_bool()).unwrap_or(false);
-    Some(HostInfo { name, default, path: path.to_path_buf() })
+    let default = node
+        .get("default")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    Some(HostInfo {
+        name,
+        default,
+        path: path.to_path_buf(),
+    })
 }
 
 /// `host`'s `package "<pkg>"` child, if it has one.
 fn find_package<'a>(host: &'a KdlNode, pkg: &str) -> Option<&'a KdlNode> {
     host.children()?.nodes().iter().find(|n| {
         n.name().value() == "package"
-            && n.entries().iter().any(|e| e.name().is_none() && e.value().as_string() == Some(pkg))
+            && n.entries()
+                .iter()
+                .any(|e| e.name().is_none() && e.value().as_string() == Some(pkg))
     })
 }
 
@@ -213,7 +229,11 @@ mod tests {
     use super::*;
 
     fn host(name: &str, default: bool) -> HostInfo {
-        HostInfo { name: name.into(), default, path: PathBuf::from(format!("hosts/{name}.kdl")) }
+        HostInfo {
+            name: name.into(),
+            default,
+            path: PathBuf::from(format!("hosts/{name}.kdl")),
+        }
     }
 
     #[test]
@@ -225,7 +245,10 @@ mod tests {
     #[test]
     fn unknown_explicit_host_errors() {
         let hs = [host("web", false)];
-        assert_eq!(select_host(&hs, Some("nope")), Err(SelectError::Unknown("nope".into())));
+        assert_eq!(
+            select_host(&hs, Some("nope")),
+            Err(SelectError::Unknown("nope".into()))
+        );
     }
 
     #[test]
@@ -243,38 +266,59 @@ mod tests {
     #[test]
     fn several_hosts_no_default_is_ambiguous() {
         let hs = [host("web", false), host("db", false)];
-        assert!(matches!(select_host(&hs, None), Err(SelectError::Ambiguous(_))));
+        assert!(matches!(
+            select_host(&hs, None),
+            Err(SelectError::Ambiguous(_))
+        ));
     }
 
     #[test]
     fn two_defaults_is_an_error() {
         let hs = [host("web", true), host("db", true)];
-        assert!(matches!(select_host(&hs, None), Err(SelectError::ManyDefaults(_))));
+        assert!(matches!(
+            select_host(&hs, None),
+            Err(SelectError::ManyDefaults(_))
+        ));
     }
 
     #[test]
     fn add_package_appends_under_host() {
         let src = "host \"web\" {\n    system \"x86_64-linux\"\n}\n";
-        let out = add_package(src, "ripgrep", None).unwrap().expect("edit produced");
+        let out = add_package(src, "ripgrep", None)
+            .unwrap()
+            .expect("edit produced");
         assert!(out.contains("package"), "package node added: {out}");
         assert!(out.contains("ripgrep"), "package name present: {out}");
-        assert!(out.contains("system \"x86_64-linux\""), "existing content kept: {out}");
+        assert!(
+            out.contains("system \"x86_64-linux\""),
+            "existing content kept: {out}"
+        );
         // The edit round-trips as valid KDL with the new package present.
         let doc: KdlDocument = out.parse().expect("valid kdl");
-        let host = doc.nodes().iter().find(|n| n.name().value() == "host").unwrap();
+        let host = doc
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "host")
+            .unwrap();
         assert!(find_package(host, "ripgrep").is_some());
     }
 
     #[test]
     fn add_package_is_idempotent() {
         let src = "host \"web\" {\n    system \"x86_64-linux\"\n    package \"ripgrep\"\n}\n";
-        assert_eq!(add_package(src, "ripgrep", None).unwrap(), None, "already present is a no-op");
+        assert_eq!(
+            add_package(src, "ripgrep", None).unwrap(),
+            None,
+            "already present is a no-op"
+        );
     }
 
     #[test]
     fn add_package_with_version_splices_a_version_prop() {
         let src = "host \"web\" {\n    system \"x86_64-linux\"\n}\n";
-        let out = add_package(src, "htop", Some("3.2.1")).unwrap().expect("edit");
+        let out = add_package(src, "htop", Some("3.2.1"))
+            .unwrap()
+            .expect("edit");
         assert!(out.contains("package \"htop\" version=\"3.2.1\""), "{out}");
         let doc: KdlDocument = out.parse().expect("valid kdl");
         assert!(doc.nodes().iter().any(|n| n.name().value() == "host"));
@@ -283,19 +327,35 @@ mod tests {
     #[test]
     fn add_package_versions_an_existing_unversioned_node() {
         let src = "host \"web\" {\n    system \"x86_64-linux\"\n    package \"ripgrep\"\n}\n";
-        let out = add_package(src, "ripgrep", Some("14.1.0")).unwrap().expect("edit produced");
-        assert!(out.contains("package \"ripgrep\" version=\"14.1.0\""), "{out}");
+        let out = add_package(src, "ripgrep", Some("14.1.0"))
+            .unwrap()
+            .expect("edit produced");
+        assert!(
+            out.contains("package \"ripgrep\" version=\"14.1.0\""),
+            "{out}"
+        );
         let doc: KdlDocument = out.parse().expect("valid kdl");
-        let host = doc.nodes().iter().find(|n| n.name().value() == "host").unwrap();
-        let packages: Vec<_> =
-            host.children().unwrap().nodes().iter().filter(|n| n.name().value() == "package").collect();
+        let host = doc
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "host")
+            .unwrap();
+        let packages: Vec<_> = host
+            .children()
+            .unwrap()
+            .nodes()
+            .iter()
+            .filter(|n| n.name().value() == "package")
+            .collect();
         assert_eq!(packages.len(), 1, "exactly one ripgrep package node: {out}");
     }
 
     #[test]
     fn add_package_changes_an_existing_version() {
         let src = "host \"web\" {\n    system \"x86_64-linux\"\n    package \"ripgrep\" version=\"13.0.0\"\n}\n";
-        let out = add_package(src, "ripgrep", Some("14.1.0")).unwrap().expect("edit produced");
+        let out = add_package(src, "ripgrep", Some("14.1.0"))
+            .unwrap()
+            .expect("edit produced");
         assert!(out.contains("version=\"14.1.0\""), "{out}");
         assert!(!out.contains("13.0.0"), "old version gone: {out}");
     }
@@ -303,27 +363,55 @@ mod tests {
     #[test]
     fn add_package_same_version_is_a_noop() {
         let src = "host \"web\" {\n    system \"x86_64-linux\"\n    package \"ripgrep\" version=\"14.1.0\"\n}\n";
-        assert_eq!(add_package(src, "ripgrep", Some("14.1.0")).unwrap(), None, "same version is a no-op");
+        assert_eq!(
+            add_package(src, "ripgrep", Some("14.1.0")).unwrap(),
+            None,
+            "same version is a no-op"
+        );
     }
 
     #[test]
     fn add_package_unversioned_same_is_a_noop() {
         let src = "host \"web\" {\n    system \"x86_64-linux\"\n    package \"ripgrep\"\n}\n";
-        assert_eq!(add_package(src, "ripgrep", None).unwrap(), None, "unversioned request is a no-op");
+        assert_eq!(
+            add_package(src, "ripgrep", None).unwrap(),
+            None,
+            "unversioned request is a no-op"
+        );
     }
 
     #[test]
     fn add_package_none_removes_an_existing_version() {
         let src = "host \"web\" {\n    package \"ripgrep\" version=\"14.1.0\"\n}\n";
-        let out = add_package(src, "ripgrep", None).unwrap().expect("edit produced");
-        assert!(!out.contains("version="), "the version prop is dropped: {out}");
-        assert!(out.contains("package \"ripgrep\""), "the bare package node remains: {out}");
+        let out = add_package(src, "ripgrep", None)
+            .unwrap()
+            .expect("edit produced");
+        assert!(
+            !out.contains("version="),
+            "the version prop is dropped: {out}"
+        );
+        assert!(
+            out.contains("package \"ripgrep\""),
+            "the bare package node remains: {out}"
+        );
         // Exactly one ripgrep node, now unversioned.
         let doc: KdlDocument = out.parse().expect("valid kdl");
-        let host = doc.nodes().iter().find(|n| n.name().value() == "host").unwrap();
-        let count = host.children().unwrap().nodes().iter()
+        let host = doc
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "host")
+            .unwrap();
+        let count = host
+            .children()
+            .unwrap()
+            .nodes()
+            .iter()
             .filter(|n| n.name().value() == "package")
-            .filter(|n| n.entries().iter().any(|e| e.name().is_none() && e.value().as_string() == Some("ripgrep")))
+            .filter(|n| {
+                n.entries()
+                    .iter()
+                    .any(|e| e.name().is_none() && e.value().as_string() == Some("ripgrep"))
+            })
             .count();
         assert_eq!(count, 1, "exactly one ripgrep node: {out}");
     }
@@ -332,19 +420,43 @@ mod tests {
     fn add_node_splices_a_block_skeleton_indented() {
         let src = "host \"web\" {\n    system \"x86_64-linux\"\n}\n";
         let skeleton = "postgres {\n    version \"16\"\n}";
-        let out = add_node(src, "postgres", skeleton).unwrap().expect("edit produced");
-        assert!(out.contains("    postgres {"), "node indented to the file: {out}");
-        assert!(out.contains("        version \"16\""), "nested line indented further: {out}");
-        assert!(out.contains("system \"x86_64-linux\""), "existing content kept: {out}");
+        let out = add_node(src, "postgres", skeleton)
+            .unwrap()
+            .expect("edit produced");
+        assert!(
+            out.contains("    postgres {"),
+            "node indented to the file: {out}"
+        );
+        assert!(
+            out.contains("        version \"16\""),
+            "nested line indented further: {out}"
+        );
+        assert!(
+            out.contains("system \"x86_64-linux\""),
+            "existing content kept: {out}"
+        );
         let doc: KdlDocument = out.parse().expect("valid kdl");
-        let host = doc.nodes().iter().find(|n| n.name().value() == "host").unwrap();
-        assert!(host.children().unwrap().nodes().iter().any(|n| n.name().value() == "postgres"));
+        let host = doc
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "host")
+            .unwrap();
+        assert!(host
+            .children()
+            .unwrap()
+            .nodes()
+            .iter()
+            .any(|n| n.name().value() == "postgres"));
     }
 
     #[test]
     fn add_node_is_idempotent_by_node_name() {
         let src = "host \"web\" {\n    postgres {\n        version \"16\"\n    }\n}\n";
-        assert_eq!(add_node(src, "postgres", "postgres").unwrap(), None, "already present is a no-op");
+        assert_eq!(
+            add_node(src, "postgres", "postgres").unwrap(),
+            None,
+            "already present is a no-op"
+        );
     }
 
     #[test]

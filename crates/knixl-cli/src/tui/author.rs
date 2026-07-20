@@ -14,7 +14,8 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use lipgloss::{join_vertical, rounded_border, Style, LEFT};
 
 use knixl_modules::template::{
-    render_manifest, validate_manifest, EntryKind, FieldTy, ModuleDraft, SchemaEntry, SubField, SubKind,
+    render_manifest, validate_manifest, EntryKind, FieldTy, ModuleDraft, SchemaEntry, SubField,
+    SubKind,
 };
 
 use super::{theme, widgets, Nav, Step};
@@ -66,8 +67,8 @@ pub struct AuthorModel {
     summary: textinput::Model,
     entries: Vec<EntryState>,
     emit: textarea::Model,
-    focus: usize,                // index into the computed focus list
-    status: Result<(), String>,  // cached validation of the current draft
+    focus: usize,               // index into the computed focus list
+    status: Result<(), String>, // cached validation of the current draft
     /// Cached `emit.view()` output. `textarea::Model::view` takes `&mut self` (it maintains a
     /// rendering cache internally) but `AuthorModel::view` must stay `&self` to match the
     /// screen's public contract, so the rendered text is captured here every time the emit
@@ -229,10 +230,17 @@ impl AuthorModel {
     }
 
     fn add_subfield(&mut self, i: usize) {
-        let Some(entry) = self.entries.get_mut(i) else { return };
+        let Some(entry) = self.entries.get_mut(i) else {
+            return;
+        };
         let mut name = textinput::new();
         name.set_placeholder("subfield");
-        entry.subfields.push(SubFieldState { kind: SubKind::Arg, name, ty: FieldTy::Str, required: false });
+        entry.subfields.push(SubFieldState {
+            kind: SubKind::Arg,
+            name,
+            ty: FieldTy::Str,
+            required: false,
+        });
         self.touched();
     }
 
@@ -246,14 +254,26 @@ impl AuthorModel {
     }
 
     fn cycle_entry_kind(&mut self, i: usize, forward: bool) {
-        let Some(entry) = self.entries.get_mut(i) else { return };
-        entry.kind = cycle(&[EntryKind::Arg, EntryKind::Prop, EntryKind::Child], entry.kind, forward);
+        let Some(entry) = self.entries.get_mut(i) else {
+            return;
+        };
+        entry.kind = cycle(
+            &[EntryKind::Arg, EntryKind::Prop, EntryKind::Child],
+            entry.kind,
+            forward,
+        );
         self.touched();
     }
 
     fn cycle_entry_type(&mut self, i: usize, forward: bool) {
-        let Some(entry) = self.entries.get_mut(i) else { return };
-        entry.ty = cycle(&[FieldTy::Str, FieldTy::Bool, FieldTy::Int], entry.ty, forward);
+        let Some(entry) = self.entries.get_mut(i) else {
+            return;
+        };
+        entry.ty = cycle(
+            &[FieldTy::Str, FieldTy::Bool, FieldTy::Int],
+            entry.ty,
+            forward,
+        );
         self.recompute_status();
     }
 
@@ -272,14 +292,22 @@ impl AuthorModel {
     }
 
     fn cycle_sub_kind(&mut self, i: usize, j: usize, forward: bool) {
-        let Some(sub) = self.entries.get_mut(i).and_then(|e| e.subfields.get_mut(j)) else { return };
+        let Some(sub) = self.entries.get_mut(i).and_then(|e| e.subfields.get_mut(j)) else {
+            return;
+        };
         sub.kind = cycle(&[SubKind::Arg, SubKind::Prop], sub.kind, forward);
         self.recompute_status();
     }
 
     fn cycle_sub_type(&mut self, i: usize, j: usize, forward: bool) {
-        let Some(sub) = self.entries.get_mut(i).and_then(|e| e.subfields.get_mut(j)) else { return };
-        sub.ty = cycle(&[FieldTy::Str, FieldTy::Bool, FieldTy::Int], sub.ty, forward);
+        let Some(sub) = self.entries.get_mut(i).and_then(|e| e.subfields.get_mut(j)) else {
+            return;
+        };
+        sub.ty = cycle(
+            &[FieldTy::Str, FieldTy::Bool, FieldTy::Int],
+            sub.ty,
+            forward,
+        );
         self.recompute_status();
     }
 
@@ -341,7 +369,9 @@ impl AuthorModel {
             self.recompute_status();
             return Step::stay();
         }
-        let Some((code, mods)) = key_of(&msg) else { return Step::stay() };
+        let Some((code, mods)) = key_of(&msg) else {
+            return Step::stay();
+        };
 
         if matches!(code, KeyCode::Char('c')) && mods.contains(KeyModifiers::CONTROL) {
             return Step::nav(Nav::Back);
@@ -356,7 +386,10 @@ impl AuthorModel {
         if at == Focus::Emit && matches!(code, KeyCode::Up | KeyCode::Down) {
             let cmd = self.emit.update(Some(msg));
             self.recompute_status();
-            return Step { nav: Nav::Stay, cmd };
+            return Step {
+                nav: Nav::Stay,
+                cmd,
+            };
         }
 
         if matches!(code, KeyCode::Tab | KeyCode::Down) {
@@ -462,32 +495,50 @@ impl AuthorModel {
             Focus::Emit => {
                 let cmd = self.emit.update(Some(msg));
                 self.recompute_status();
-                Step { nav: Nav::Stay, cmd }
+                Step {
+                    nav: Nav::Stay,
+                    cmd,
+                }
             }
             Focus::Name => {
                 let cmd = self.name.update(msg);
                 self.recompute_status();
-                Step { nav: Nav::Stay, cmd }
+                Step {
+                    nav: Nav::Stay,
+                    cmd,
+                }
             }
             Focus::Node => {
                 let cmd = self.node.update(msg);
                 self.recompute_status();
-                Step { nav: Nav::Stay, cmd }
+                Step {
+                    nav: Nav::Stay,
+                    cmd,
+                }
             }
             Focus::Summary => {
                 let cmd = self.summary.update(msg);
                 self.recompute_status();
-                Step { nav: Nav::Stay, cmd }
+                Step {
+                    nav: Nav::Stay,
+                    cmd,
+                }
             }
             Focus::EntryName(i) => {
                 let cmd = self.entries[i].name.update(msg);
                 self.recompute_status();
-                Step { nav: Nav::Stay, cmd }
+                Step {
+                    nav: Nav::Stay,
+                    cmd,
+                }
             }
             Focus::SubName(i, j) => {
                 let cmd = self.entries[i].subfields[j].name.update(msg);
                 self.recompute_status();
-                Step { nav: Nav::Stay, cmd }
+                Step {
+                    nav: Nav::Stay,
+                    cmd,
+                }
             }
         }
     }
@@ -513,9 +564,17 @@ impl AuthorModel {
                 for (j, sub) in entry.subfields.iter().enumerate() {
                     lines.push(subfield_row(at, i, j, sub));
                 }
-                lines.push(control_row("    ", "+ add sub-field", at == Focus::AddSub(i)));
+                lines.push(control_row(
+                    "    ",
+                    "+ add sub-field",
+                    at == Focus::AddSub(i),
+                ));
             }
-            lines.push(control_row("  ", "- delete entry", at == Focus::DeleteEntry(i)));
+            lines.push(control_row(
+                "  ",
+                "- delete entry",
+                at == Focus::DeleteEntry(i),
+            ));
         }
         lines.push(control_row("", "+ add entry", at == Focus::AddEntry));
 
@@ -575,7 +634,11 @@ impl AuthorModel {
 fn cycle<T: Copy + PartialEq>(order: &[T], current: T, forward: bool) -> T {
     let n = order.len();
     let i = order.iter().position(|x| *x == current).unwrap_or(0);
-    order[if forward { (i + 1) % n } else { (i + n - 1) % n }]
+    order[if forward {
+        (i + 1) % n
+    } else {
+        (i + n - 1) % n
+    }]
 }
 
 fn kind_label(k: EntryKind) -> &'static str {
@@ -602,7 +665,12 @@ fn ty_label(t: FieldTy) -> &'static str {
 }
 
 fn header_row(label: &str, ti: &textinput::Model, focused: bool) -> String {
-    format!("{}{}{}", marker(focused), theme::dim().render(label), ti.view())
+    format!(
+        "{}{}{}",
+        marker(focused),
+        theme::dim().render(label),
+        ti.view()
+    )
 }
 
 fn cycled_cell(label: &str, focused: bool) -> String {
@@ -615,7 +683,11 @@ fn entry_row(at: Focus, i: usize, e: &EntryState) -> String {
         cycled_cell(kind_label(e.kind), at == Focus::EntryKind(i)),
         format!("{}{}", marker(at == Focus::EntryName(i)), e.name.view()),
         cycled_cell(ty_label(e.ty), at == Focus::EntryType(i)),
-        format!("{}{} required", marker(at == Focus::EntryRequired(i)), theme::toggle(e.required)),
+        format!(
+            "{}{} required",
+            marker(at == Focus::EntryRequired(i)),
+            theme::toggle(e.required)
+        ),
     ];
     if e.kind == EntryKind::Child {
         parts.push(format!(
@@ -632,7 +704,11 @@ fn subfield_row(at: Focus, i: usize, j: usize, s: &SubFieldState) -> String {
         cycled_cell(sub_kind_label(s.kind), at == Focus::SubKind(i, j)),
         format!("{}{}", marker(at == Focus::SubName(i, j)), s.name.view()),
         cycled_cell(ty_label(s.ty), at == Focus::SubType(i, j)),
-        format!("{}{} required", marker(at == Focus::SubRequired(i, j)), theme::toggle(s.required)),
+        format!(
+            "{}{} required",
+            marker(at == Focus::SubRequired(i, j)),
+            theme::toggle(s.required)
+        ),
     ];
     format!("    {}", parts.join("  "))
 }
@@ -661,7 +737,10 @@ mod tests {
         AuthorModel::enter((100, 40))
     }
     fn key(c: KeyCode) -> Msg {
-        Box::new(KeyMsg { key: c, modifiers: KeyModifiers::NONE }) as Msg
+        Box::new(KeyMsg {
+            key: c,
+            modifiers: KeyModifiers::NONE,
+        }) as Msg
     }
     fn press(m: &mut AuthorModel, c: KeyCode) {
         m.update(key(c), (100, 40));
@@ -743,7 +822,11 @@ mod tests {
         m.name.set_value("cache");
         m.entries[0].name.set_value("host");
         m.recompute_status();
-        assert!(m.can_create(), "valid named draft can create: {:?}", m.status);
+        assert!(
+            m.can_create(),
+            "valid named draft can create: {:?}",
+            m.status
+        );
     }
 
     #[test]
@@ -753,13 +836,18 @@ mod tests {
         m.entries[0].name.set_value("host");
         m.recompute_status();
         // Move focus to Create and press Enter.
-        let idx = m.focus_list().iter().position(|f| *f == Focus::Create).unwrap();
+        let idx = m
+            .focus_list()
+            .iter()
+            .position(|f| *f == Focus::Create)
+            .unwrap();
         m.focus = idx;
         let step = m.update(key(KeyCode::Enter), (100, 40));
         match step.nav {
             Nav::Scaffold { name, manifest } => {
                 assert_eq!(name, "cache");
-                knixl_modules::template::validate_manifest(&manifest).expect("emitted manifest valid");
+                knixl_modules::template::validate_manifest(&manifest)
+                    .expect("emitted manifest valid");
             }
             _ => panic!("expected Nav::Scaffold"),
         }

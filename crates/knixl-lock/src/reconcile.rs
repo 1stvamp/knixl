@@ -1,9 +1,9 @@
 //! Reconcile: three concerns kept as separate axes (per-file drift, version skew, orphans).
 //! Plan is a PURE function of (inputs, on-disk files, lock, running versions). No writes.
+use crate::model::{FormatterPin, Hash, Lock, OraclePin, OutputEntry};
+use semver::Version;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use semver::Version;
-use crate::model::{FormatterPin, Hash, Lock, OraclePin, OutputEntry};
 
 /// Per-output-file state, derived from three hashes:
 /// lock_hash (recorded), disk_hash (current), expected_hash (freshly generated).
@@ -13,7 +13,10 @@ pub enum FileState {
     /// disk == lock, expected != lock. Inputs or module logic changed the output. Silent path.
     Stale { expected_hash: Hash },
     /// disk != lock. The generated file was hand-edited. TAINTED. No silent overwrite.
-    Drifted { disk_hash: Hash, expected_hash: Hash },
+    Drifted {
+        disk_hash: Hash,
+        expected_hash: Hash,
+    },
     /// In lock, absent on disk.
     Missing { expected_hash: Hash },
     /// On disk (knixl header present) but not in lock.
@@ -21,9 +24,14 @@ pub enum FileState {
 }
 
 impl FileState {
-    pub fn is_drifted(&self) -> bool { matches!(self, FileState::Drifted { .. }) }
+    pub fn is_drifted(&self) -> bool {
+        matches!(self, FileState::Drifted { .. })
+    }
     pub fn is_dirty(&self) -> bool {
-        matches!(self, FileState::Stale { .. } | FileState::Missing { .. } | FileState::Orphaned)
+        matches!(
+            self,
+            FileState::Stale { .. } | FileState::Missing { .. } | FileState::Orphaned
+        )
     }
 }
 
@@ -35,7 +43,10 @@ pub struct VersionSkew {
     pub modules: Vec<(String, Delta<Version>)>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Delta<T> { pub locked: T, pub running: T }
+pub struct Delta<T> {
+    pub locked: T,
+    pub running: T,
+}
 
 pub struct FilePlan {
     pub path: PathBuf,
@@ -95,10 +106,16 @@ impl Plan {
     pub fn compute(inputs: &Inputs, disk: &DiskState, lock: &Lock, running: &Versions) -> Plan {
         let skew = compute_skew(lock, running);
 
-        let expected: BTreeMap<PathBuf, &ExpectedFile> =
-            inputs.expected.iter().map(|e| (e.path.clone(), e)).collect();
-        let locked: BTreeMap<PathBuf, &Hash> =
-            lock.outputs.iter().map(|o| (o.path.clone(), &o.hash)).collect();
+        let expected: BTreeMap<PathBuf, &ExpectedFile> = inputs
+            .expected
+            .iter()
+            .map(|e| (e.path.clone(), e))
+            .collect();
+        let locked: BTreeMap<PathBuf, &Hash> = lock
+            .outputs
+            .iter()
+            .map(|o| (o.path.clone(), &o.hash))
+            .collect();
 
         let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
         paths.extend(expected.keys().cloned());
@@ -114,7 +131,10 @@ impl Plan {
             let state = match (exp, dsk, lck) {
                 (Some(e), Some(d), Some(l)) => {
                     if d != l {
-                        FileState::Drifted { disk_hash: d, expected_hash: e }
+                        FileState::Drifted {
+                            disk_hash: d,
+                            expected_hash: e,
+                        }
                     } else if e != l {
                         FileState::Stale { expected_hash: e }
                     } else {
@@ -127,7 +147,10 @@ impl Plan {
                     if d == e {
                         FileState::Stale { expected_hash: e }
                     } else {
-                        FileState::Drifted { disk_hash: d, expected_hash: e }
+                        FileState::Drifted {
+                            disk_hash: d,
+                            expected_hash: e,
+                        }
                     }
                 }
                 (Some(e), None, _) => FileState::Missing { expected_hash: e },
@@ -136,7 +159,11 @@ impl Plan {
                 (None, None, _) => continue,
             };
 
-            files.push(FilePlan { path: path.clone(), state, skew: skew.clone() });
+            files.push(FilePlan {
+                path: path.clone(),
+                state,
+                skew: skew.clone(),
+            });
         }
 
         Plan {
@@ -146,28 +173,37 @@ impl Plan {
         }
     }
 
-    pub fn has_validation_errors(&self) -> bool { !self.validation_errors.is_empty() }
-    pub fn any(&self, pred: fn(&FileState) -> bool) -> bool { self.files.iter().any(|f| pred(&f.state)) }
+    pub fn has_validation_errors(&self) -> bool {
+        !self.validation_errors.is_empty()
+    }
+    pub fn any(&self, pred: fn(&FileState) -> bool) -> bool {
+        self.files.iter().any(|f| pred(&f.state))
+    }
 
     /// Needs human ack iff Drifted, OR Stale/Missing UNDER a VersionSkew (potential regression).
     pub fn requires_ack(&self) -> bool {
-        self.files.iter().any(|f| matches!(f.state, FileState::Drifted { .. })
-            || (f.skew.is_some()
-                && matches!(f.state, FileState::Stale { .. } | FileState::Missing { .. })))
+        self.files.iter().any(|f| {
+            matches!(f.state, FileState::Drifted { .. })
+                || (f.skew.is_some()
+                    && matches!(f.state, FileState::Stale { .. } | FileState::Missing { .. }))
+        })
     }
 
     /// A version skew that would change a still-generated file. `generate` refuses this
     /// (points at `upgrade`); it is distinct from drift, which is handled per file as exit 3.
     pub fn skew_needs_ack(&self) -> bool {
         self.files.iter().any(|f| {
-            f.skew.is_some() && matches!(f.state, FileState::Stale { .. } | FileState::Missing { .. })
+            f.skew.is_some()
+                && matches!(f.state, FileState::Stale { .. } | FileState::Missing { .. })
         })
     }
 }
 
 fn compute_skew(lock: &Lock, running: &Versions) -> Option<VersionSkew> {
-    let tool = (lock.tool != running.tool)
-        .then(|| Delta { locked: lock.tool.clone(), running: running.tool.clone() });
+    let tool = (lock.tool != running.tool).then(|| Delta {
+        locked: lock.tool.clone(),
+        running: running.tool.clone(),
+    });
     let formatter = (lock.formatter.version != running.formatter.version).then(|| Delta {
         locked: lock.formatter.version.clone(),
         running: running.formatter.version.clone(),
@@ -178,7 +214,10 @@ fn compute_skew(lock: &Lock, running: &Versions) -> Option<VersionSkew> {
             if locked_v != running_v {
                 modules.push((
                     name.clone(),
-                    Delta { locked: locked_v.clone(), running: running_v.clone() },
+                    Delta {
+                        locked: locked_v.clone(),
+                        running: running_v.clone(),
+                    },
                 ));
             }
         }
@@ -186,7 +225,11 @@ fn compute_skew(lock: &Lock, running: &Versions) -> Option<VersionSkew> {
     if tool.is_none() && formatter.is_none() && modules.is_empty() {
         None
     } else {
-        Some(VersionSkew { tool, formatter, modules })
+        Some(VersionSkew {
+            tool,
+            formatter,
+            modules,
+        })
     }
 }
 
@@ -225,8 +268,14 @@ fn prune_pins(
 ) -> BTreeMap<String, Vec<crate::model::Pin>> {
     let mut out = BTreeMap::new();
     for (host, list) in pins {
-        let Some(refs) = referenced.get(host) else { continue };
-        let kept: Vec<_> = list.iter().filter(|p| refs.contains(&p.package)).cloned().collect();
+        let Some(refs) = referenced.get(host) else {
+            continue;
+        };
+        let kept: Vec<_> = list
+            .iter()
+            .filter(|p| refs.contains(&p.package))
+            .cloned()
+            .collect();
         if !kept.is_empty() {
             out.insert(host.clone(), kept);
         }
@@ -242,7 +291,11 @@ fn prune_baselines(
     baselines: &BTreeMap<String, crate::model::HostBaseline>,
     declared: &BTreeSet<String>,
 ) -> BTreeMap<String, crate::model::HostBaseline> {
-    baselines.iter().filter(|(host, _)| declared.contains(*host)).map(|(h, b)| (h.clone(), b.clone())).collect()
+    baselines
+        .iter()
+        .filter(|(host, _)| declared.contains(*host))
+        .map(|(h, b)| (h.clone(), b.clone()))
+        .collect()
 }
 
 /// What the command layer did to a file.
@@ -253,17 +306,33 @@ pub enum Apply {
     DeletedOrphan(PathBuf),
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::OutputEntry;
 
-    fn ver(s: &str) -> Version { Version::parse(s).unwrap() }
-    fn fmt_pin() -> FormatterPin { FormatterPin { name: "nixfmt-rfc-style".into(), version: "0.6.0".into() } }
-    fn oracle_pin() -> OraclePin { OraclePin { nixpkgs_rev: "rev".into(), options_hash: "blake3:opts".into() } }
+    fn ver(s: &str) -> Version {
+        Version::parse(s).unwrap()
+    }
+    fn fmt_pin() -> FormatterPin {
+        FormatterPin {
+            name: "nixfmt-rfc-style".into(),
+            version: "0.6.0".into(),
+        }
+    }
+    fn oracle_pin() -> OraclePin {
+        OraclePin {
+            nixpkgs_rev: "rev".into(),
+            options_hash: "blake3:opts".into(),
+        }
+    }
     fn versions() -> Versions {
-        Versions { tool: ver("0.3.1"), formatter: fmt_pin(), oracle: oracle_pin(), modules: BTreeMap::new() }
+        Versions {
+            tool: ver("0.3.1"),
+            formatter: fmt_pin(),
+            oracle: oracle_pin(),
+            modules: BTreeMap::new(),
+        }
     }
     fn empty_lock() -> Lock {
         Lock {
@@ -278,9 +347,16 @@ mod tests {
             baselines: BTreeMap::new(),
         }
     }
-    fn p(s: &str) -> PathBuf { PathBuf::from(s) }
+    fn p(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
     fn expected(path: &str, hash: &str) -> ExpectedFile {
-        ExpectedFile { path: p(path), hash: hash.into(), from: p("hosts/x.kdl"), modules: vec!["host".into()] }
+        ExpectedFile {
+            path: p(path),
+            hash: hash.into(),
+            from: p("hosts/x.kdl"),
+            modules: vec!["host".into()],
+        }
     }
     fn inputs_with(exp: Vec<ExpectedFile>) -> Inputs {
         Inputs {
@@ -292,15 +368,30 @@ mod tests {
         }
     }
     fn disk_with(entries: &[(&str, &str)]) -> DiskState {
-        DiskState { files: entries.iter().map(|(pa, h)| (p(pa), h.to_string())).collect() }
+        DiskState {
+            files: entries
+                .iter()
+                .map(|(pa, h)| (p(pa), h.to_string()))
+                .collect(),
+        }
     }
     fn lock_with_output(path: &str, hash: &str) -> Lock {
         let mut l = empty_lock();
-        l.outputs = vec![OutputEntry { path: p(path), hash: hash.into(), from: p("hosts/x.kdl"), modules: vec!["host".into()] }];
+        l.outputs = vec![OutputEntry {
+            path: p(path),
+            hash: hash.into(),
+            from: p("hosts/x.kdl"),
+            modules: vec!["host".into()],
+        }];
         l
     }
     fn state_of<'a>(plan: &'a Plan, path: &str) -> &'a FileState {
-        &plan.files.iter().find(|f| f.path == p(path)).expect("file present in plan").state
+        &plan
+            .files
+            .iter()
+            .find(|f| f.path == p(path))
+            .expect("file present in plan")
+            .state
     }
 
     #[test]
@@ -322,7 +413,10 @@ mod tests {
             &lock_with_output("g/a.nix", "blake3:1"),
             &versions(),
         );
-        assert!(matches!(state_of(&plan, "g/a.nix"), FileState::Stale { .. }));
+        assert!(matches!(
+            state_of(&plan, "g/a.nix"),
+            FileState::Stale { .. }
+        ));
     }
 
     #[test]
@@ -333,7 +427,10 @@ mod tests {
             &lock_with_output("g/a.nix", "blake3:1"),
             &versions(),
         );
-        assert!(matches!(state_of(&plan, "g/a.nix"), FileState::Drifted { .. }));
+        assert!(matches!(
+            state_of(&plan, "g/a.nix"),
+            FileState::Drifted { .. }
+        ));
     }
 
     #[test]
@@ -344,7 +441,10 @@ mod tests {
             &lock_with_output("g/a.nix", "blake3:1"),
             &versions(),
         );
-        assert!(matches!(state_of(&plan, "g/a.nix"), FileState::Missing { .. }));
+        assert!(matches!(
+            state_of(&plan, "g/a.nix"),
+            FileState::Missing { .. }
+        ));
     }
 
     #[test]
@@ -366,7 +466,10 @@ mod tests {
             &empty_lock(),
             &versions(),
         );
-        assert!(matches!(state_of(&matching, "g/a.nix"), FileState::Stale { .. }));
+        assert!(matches!(
+            state_of(&matching, "g/a.nix"),
+            FileState::Stale { .. }
+        ));
 
         let differing = Plan::compute(
             &inputs_with(vec![expected("g/a.nix", "blake3:2")]),
@@ -374,7 +477,10 @@ mod tests {
             &empty_lock(),
             &versions(),
         );
-        assert!(matches!(state_of(&differing, "g/a.nix"), FileState::Drifted { .. }));
+        assert!(matches!(
+            state_of(&differing, "g/a.nix"),
+            FileState::Drifted { .. }
+        ));
     }
 
     #[test]
@@ -390,9 +496,15 @@ mod tests {
             &lock,
             &running,
         );
-        assert!(matches!(state_of(&plan, "g/a.nix"), FileState::Stale { .. }));
+        assert!(matches!(
+            state_of(&plan, "g/a.nix"),
+            FileState::Stale { .. }
+        ));
         assert!(plan.files[0].skew.is_some());
-        assert!(plan.requires_ack(), "stale under version skew must need ack");
+        assert!(
+            plan.requires_ack(),
+            "stale under version skew must need ack"
+        );
     }
 
     #[test]
@@ -412,13 +524,21 @@ mod tests {
         let mut running = versions();
         running.tool = ver("0.9.0");
         let plan = Plan::compute(
-            &inputs_with(vec![expected("g/b.nix", "blake3:b"), expected("g/a.nix", "blake3:a")]),
+            &inputs_with(vec![
+                expected("g/b.nix", "blake3:b"),
+                expected("g/a.nix", "blake3:a"),
+            ]),
             &disk_with(&[]),
             &empty_lock(),
             &running,
         );
         assert_eq!(plan.lock_next.tool, ver("0.9.0"));
-        let paths: Vec<_> = plan.lock_next.outputs.iter().map(|o| o.path.clone()).collect();
+        let paths: Vec<_> = plan
+            .lock_next
+            .outputs
+            .iter()
+            .map(|o| o.path.clone())
+            .collect();
         assert_eq!(paths, vec![p("g/a.nix"), p("g/b.nix")]);
     }
 
@@ -431,19 +551,43 @@ mod tests {
         assert_eq!(plan.validation_errors.len(), 1);
     }
 
-
     #[test]
     fn build_lock_next_prunes_unreferenced_pins() {
         use crate::model::{Pin, PinStrategy};
         let mut pins = BTreeMap::new();
-        pins.insert("web".to_string(), vec![
-            Pin { package: "htop".into(), version: "3.2.1".into(), nixpkgs_rev: "r1".into(), strategy: PinStrategy::CommitMix },
-            Pin { package: "jq".into(), version: "1.7".into(), nixpkgs_rev: "r2".into(), strategy: PinStrategy::CommitMix }, // unreferenced
-        ]);
-        pins.insert("db".to_string(), vec![ // whole host gone from KDL
-            Pin { package: "ripgrep".into(), version: "14".into(), nixpkgs_rev: "r3".into(), strategy: PinStrategy::CommitMix },
-        ]);
-        let lock = Lock { pins, ..empty_lock() };
+        pins.insert(
+            "web".to_string(),
+            vec![
+                Pin {
+                    package: "htop".into(),
+                    version: "3.2.1".into(),
+                    nixpkgs_rev: "r1".into(),
+                    strategy: PinStrategy::CommitMix,
+                },
+                Pin {
+                    package: "jq".into(),
+                    version: "1.7".into(),
+                    nixpkgs_rev: "r2".into(),
+                    strategy: PinStrategy::CommitMix,
+                }, // unreferenced
+            ],
+        );
+        pins.insert(
+            "db".to_string(),
+            vec![
+                // whole host gone from KDL
+                Pin {
+                    package: "ripgrep".into(),
+                    version: "14".into(),
+                    nixpkgs_rev: "r3".into(),
+                    strategy: PinStrategy::CommitMix,
+                },
+            ],
+        );
+        let lock = Lock {
+            pins,
+            ..empty_lock()
+        };
 
         let mut referenced = BTreeMap::new();
         referenced.insert("web".to_string(), BTreeSet::from(["htop".to_string()]));
@@ -466,23 +610,38 @@ mod tests {
     fn build_lock_next_prunes_baselines_for_hosts_that_dropped_nixpkgs() {
         use crate::model::HostBaseline;
         let mut baselines = BTreeMap::new();
-        baselines.insert("web".to_string(), HostBaseline {
-            release: "25.05".into(),
-            nixpkgs_rev: "abc123".into(),
-            options_hash: "blake3:opts".into(),
-        });
-        baselines.insert("db".to_string(), HostBaseline {
-            release: "25.05".into(),
-            nixpkgs_rev: "def456".into(),
-            options_hash: "blake3:opts2".into(),
-        }); // host dropped its `nixpkgs` node (or the host itself)
-        let lock = Lock { baselines, ..empty_lock() };
+        baselines.insert(
+            "web".to_string(),
+            HostBaseline {
+                release: "25.05".into(),
+                nixpkgs_rev: "abc123".into(),
+                options_hash: "blake3:opts".into(),
+            },
+        );
+        baselines.insert(
+            "db".to_string(),
+            HostBaseline {
+                release: "25.05".into(),
+                nixpkgs_rev: "def456".into(),
+                options_hash: "blake3:opts2".into(),
+            },
+        ); // host dropped its `nixpkgs` node (or the host itself)
+        let lock = Lock {
+            baselines,
+            ..empty_lock()
+        };
 
         let mut inputs = inputs_with(vec![]);
         inputs.declared_baselines = BTreeSet::from(["web".to_string()]); // only "web" still declares one
 
         let next = build_lock_next(&inputs, &lock, &versions());
-        assert!(next.baselines.contains_key("web"), "still-declaring host keeps its baseline");
-        assert!(!next.baselines.contains_key("db"), "dropped nixpkgs node loses its baseline");
+        assert!(
+            next.baselines.contains_key("web"),
+            "still-declaring host keeps its baseline"
+        );
+        assert!(
+            !next.baselines.contains_key("db"),
+            "dropped nixpkgs node loses its baseline"
+        );
     }
 }

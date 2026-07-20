@@ -1,18 +1,40 @@
 //! `package`: add a package to the host's `environment.systemPackages`. Repeated under a
 //! host (`package "ripgrep"`); each node contributes one `pkgs.<name>`. The pipeline's
 //! list-merge folds the repeats into a single `environment.systemPackages` list.
+use crate::{
+    Bucket, Field, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, PinStrategy,
+    Unit, ValueTy,
+};
 use kdl::KdlNode;
 use knixl_ir::{Assignment, AttrKey, AttrPath, Binding, Formals, NixExpr};
-use crate::{Bucket, Field, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, PinStrategy, Unit, ValueTy};
 
-pub struct PackageModule { schema: NodeSchema }
-impl PackageModule { pub fn new() -> Self { Self { schema: schema() } } }
-impl Default for PackageModule { fn default() -> Self { Self::new() } }
+pub struct PackageModule {
+    schema: NodeSchema,
+}
+impl PackageModule {
+    pub fn new() -> Self {
+        Self { schema: schema() }
+    }
+}
+impl Default for PackageModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Module for PackageModule {
-    fn id(&self) -> ModuleId { ModuleId { name: "package".into(), version: "0.1.0".parse().unwrap() } }
-    fn node_name(&self) -> &str { "package" }
-    fn schema(&self) -> &NodeSchema { &self.schema }
+    fn id(&self) -> ModuleId {
+        ModuleId {
+            name: "package".into(),
+            version: "0.1.0".parse().unwrap(),
+        }
+    }
+    fn node_name(&self) -> &str {
+        "package"
+    }
+    fn schema(&self) -> &NodeSchema {
+        &self.schema
+    }
     fn lower(&self, node: &KdlNode, ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError> {
         let name = arg_name(node).ok_or_else(|| LowerError::missing("package name"))?;
         let version = prop_str(node, "version");
@@ -102,7 +124,10 @@ fn historical_pkg(rev: &str, name: &str) -> NixExpr {
     );
     src.insert(AttrKey::Ident("rev".into()), NixExpr::Str(rev.to_string()));
     let fetch = NixExpr::Apply(
-        Box::new(NixExpr::Select(Box::new(NixExpr::Ref("builtins".into())), vec!["fetchGit".into()])),
+        Box::new(NixExpr::Select(
+            Box::new(NixExpr::Ref("builtins".into())),
+            vec!["fetchGit".into()],
+        )),
         vec![NixExpr::AttrSet(src)],
     );
     let mut import_arg = std::collections::BTreeMap::new();
@@ -134,18 +159,27 @@ fn override_pkg(rev: &str, name: &str) -> NixExpr {
         NixExpr::Select(Box::new(NixExpr::Ref(bind.clone())), vec!["version".into()]),
     );
     let lambda = NixExpr::Lambda {
-        formals: Formals { args: vec![], ellipsis: true }, // `{ ... }:` ignores previous attrs
+        formals: Formals {
+            args: vec![],
+            ellipsis: true,
+        }, // `{ ... }:` ignores previous attrs
         body: Box::new(NixExpr::AttrSet(attrs)),
     };
     let overridden = NixExpr::Apply(
         Box::new(NixExpr::Select(
-            Box::new(NixExpr::Select(Box::new(NixExpr::Ref("pkgs".into())), vec![name.to_string()])),
+            Box::new(NixExpr::Select(
+                Box::new(NixExpr::Ref("pkgs".into())),
+                vec![name.to_string()],
+            )),
             vec!["overrideAttrs".into()],
         )),
         vec![lambda],
     );
     NixExpr::Let {
-        bindings: vec![Binding { name: bind, value: historical_pkg(rev, name) }],
+        bindings: vec![Binding {
+            name: bind,
+            value: historical_pkg(rev, name),
+        }],
         body: Box::new(overridden),
     }
 }
@@ -157,7 +191,12 @@ mod tests {
     use knixl_ir::Emit;
 
     fn node(src: &str) -> KdlNode {
-        src.parse::<kdl::KdlDocument>().unwrap().nodes().first().unwrap().clone()
+        src.parse::<kdl::KdlDocument>()
+            .unwrap()
+            .nodes()
+            .first()
+            .unwrap()
+            .clone()
     }
 
     #[test]
@@ -172,9 +211,14 @@ mod tests {
         assert_eq!(out.units.len(), 1);
         let a = &out.units[0].assignment;
 
-        let keys: Vec<&str> = a.path.0.iter().map(|k| match k {
-            AttrKey::Ident(s) | AttrKey::Quoted(s) => s.as_str(),
-        }).collect();
+        let keys: Vec<&str> = a
+            .path
+            .0
+            .iter()
+            .map(|k| match k {
+                AttrKey::Ident(s) | AttrKey::Quoted(s) => s.as_str(),
+            })
+            .collect();
         assert_eq!(keys, vec!["environment", "systemPackages"]);
         assert!(matches!(&out.units[0].bucket, Bucket::Default));
 
@@ -212,11 +256,20 @@ mod tests {
         // from it, not from baseline `pkgs`.
         let a = &out.units[0].assignment;
         let rendered = format!("{:?}", a.value); // structural check below is the real assertion
-        assert!(rendered.contains("abc123"), "carries the pinned commit: {rendered}");
+        assert!(
+            rendered.contains("abc123"),
+            "carries the pinned commit: {rendered}"
+        );
         assert!(rendered.contains("htop"), "selects the package: {rendered}");
         assert!(rendered.contains("fetchGit"), "uses fetchGit: {rendered}");
-        assert!(rendered.contains("shallow"), "uses shallow fetch: {rendered}");
-        assert!(rendered.contains("system"), "passes pkgs.system to the import: {rendered}");
+        assert!(
+            rendered.contains("shallow"),
+            "uses shallow fetch: {rendered}"
+        );
+        assert!(
+            rendered.contains("system"),
+            "passes pkgs.system to the import: {rendered}"
+        );
     }
 
     /// Lowers a versioned `package` node with the given strategy and returns the rendered
@@ -245,24 +298,60 @@ mod tests {
     fn commit_mix_strategy_emits_the_bare_historical_import() {
         let rendered = render_pinned(crate::PinStrategy::CommitMix);
 
-        assert!(rendered.contains("(import (builtins.fetchGit"), "imports from fetchGit: {rendered}");
-        assert!(rendered.contains("abc123"), "carries the pinned commit: {rendered}");
-        assert!(rendered.contains(").htop"), "selects the package from the import: {rendered}");
-        assert!(!rendered.contains("overrideAttrs"), "CommitMix does not override: {rendered}");
-        assert!(!rendered.contains("let"), "CommitMix introduces no let binding: {rendered}");
+        assert!(
+            rendered.contains("(import (builtins.fetchGit"),
+            "imports from fetchGit: {rendered}"
+        );
+        assert!(
+            rendered.contains("abc123"),
+            "carries the pinned commit: {rendered}"
+        );
+        assert!(
+            rendered.contains(").htop"),
+            "selects the package from the import: {rendered}"
+        );
+        assert!(
+            !rendered.contains("overrideAttrs"),
+            "CommitMix does not override: {rendered}"
+        );
+        assert!(
+            !rendered.contains("let"),
+            "CommitMix introduces no let binding: {rendered}"
+        );
     }
 
     #[test]
     fn override_strategy_emits_a_let_bound_overrideattrs_call() {
         let rendered = render_pinned(crate::PinStrategy::Override);
 
-        assert!(rendered.contains("(let"), "let/in is parenthesised in list position: {rendered}");
-        assert!(rendered.contains("_pin = "), "binds the historical import to _pin: {rendered}");
-        assert!(rendered.contains("(builtins.fetchGit"), "the binding still fetches from the pin: {rendered}");
-        assert!(rendered.contains("abc123"), "carries the pinned commit: {rendered}");
-        assert!(rendered.contains("in pkgs.htop.overrideAttrs"), "overrides the baseline package: {rendered}");
-        assert!(rendered.contains("src = _pin.src;"), "src comes from the pin: {rendered}");
-        assert!(rendered.contains("version = _pin.version;"), "version comes from the pin: {rendered}");
+        assert!(
+            rendered.contains("(let"),
+            "let/in is parenthesised in list position: {rendered}"
+        );
+        assert!(
+            rendered.contains("_pin = "),
+            "binds the historical import to _pin: {rendered}"
+        );
+        assert!(
+            rendered.contains("(builtins.fetchGit"),
+            "the binding still fetches from the pin: {rendered}"
+        );
+        assert!(
+            rendered.contains("abc123"),
+            "carries the pinned commit: {rendered}"
+        );
+        assert!(
+            rendered.contains("in pkgs.htop.overrideAttrs"),
+            "overrides the baseline package: {rendered}"
+        );
+        assert!(
+            rendered.contains("src = _pin.src;"),
+            "src comes from the pin: {rendered}"
+        );
+        assert!(
+            rendered.contains("version = _pin.version;"),
+            "version comes from the pin: {rendered}"
+        );
     }
 
     #[test]
@@ -272,6 +361,9 @@ mod tests {
         let reg = Registry::new();
         let mut diags = Vec::new();
         let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
-        assert!(m.lower(&n, &mut ctx).is_err(), "declared version with no lock pin is an error");
+        assert!(
+            m.lower(&n, &mut ctx).is_err(),
+            "declared version with no lock pin is an error"
+        );
     }
 }

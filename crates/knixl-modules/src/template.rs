@@ -2,36 +2,54 @@
 //! module's `emit { }` block, interpreted per-node against a bindings tree built from the
 //! validated input. Four statement forms (set, when-flag, when-config, for-each). SPEC-GRADE SKETCH.
 
+use crate::{Bucket, Child, Field, LowerError, LowerOutput, NodeSchema, Unit, ValueTy};
 use knixl_ir::{Assignment, AttrKey, AttrPath, NixExpr, RawNix};
 use knixl_kdl::children_named;
-use crate::{Bucket, Child, Field, LowerError, LowerOutput, NodeSchema, Unit, ValueTy};
 
-pub struct EmitTemplate { pub stmts: Vec<Stmt> }
+pub struct EmitTemplate {
+    pub stmts: Vec<Stmt>,
+}
 
 pub enum Stmt {
-    Set { path: PathTemplate, value: ValueTemplate },
-    WhenFlag { flag: String, body: Vec<Stmt> },               // generation-time gate
-    WhenConfig { cond: Vec<StrPart>, body: Vec<Stmt> },        // runtime lib.mkIf off config.*
-    ForEach { var: String, source: String, body: Vec<Stmt> }, // binds <var> per item
+    Set {
+        path: PathTemplate,
+        value: ValueTemplate,
+    },
+    WhenFlag {
+        flag: String,
+        body: Vec<Stmt>,
+    }, // generation-time gate
+    WhenConfig {
+        cond: Vec<StrPart>,
+        body: Vec<Stmt>,
+    }, // runtime lib.mkIf off config.*
+    ForEach {
+        var: String,
+        source: String,
+        body: Vec<Stmt>,
+    }, // binds <var> per item
 }
 
 pub struct PathTemplate(pub Vec<SegmentTemplate>);
 
 pub enum SegmentTemplate {
-    Ident(String),      // services, nginx  -> AttrKey::Ident
-    QuotedLit(String),  // "/"              -> AttrKey::Quoted, may interpolate
-    Interp(Lookup),     // {host}           -> AttrKey::Quoted (dynamic name)
+    Ident(String),     // services, nginx  -> AttrKey::Ident
+    QuotedLit(String), // "/"              -> AttrKey::Quoted, may interpolate
+    Interp(Lookup),    // {host}           -> AttrKey::Quoted (dynamic name)
 }
 
 pub enum ValueTemplate {
     Bool(bool),
     Int(i128),
-    Str(Vec<StrPart>),        // "{upstream}"
-    IndentStr(Vec<StrPart>),  // (indent-str #""" ... """#)
-    Collect(String),          // (collect "alias") -> List of that child's first arg
+    Str(Vec<StrPart>),       // "{upstream}"
+    IndentStr(Vec<StrPart>), // (indent-str #""" ... """#)
+    Collect(String),         // (collect "alias") -> List of that child's first arg
 }
 
-pub enum StrPart { Lit(String), Interp(Lookup) }
+pub enum StrPart {
+    Lit(String),
+    Interp(Lookup),
+}
 
 /// A dotted lookup into the bindings tree: `host`, `acme.email`, `loc.match`.
 pub struct Lookup(pub Vec<String>);
@@ -45,10 +63,17 @@ pub enum Binding {
     List(Vec<Binding>),
 }
 #[derive(Clone)]
-pub enum Scalar { Bool(bool), Int(i128), Str(String) }
+pub enum Scalar {
+    Bool(bool),
+    Int(i128),
+    Str(String),
+}
 impl Scalar {
     pub fn as_str(&self) -> Result<String, LowerError> {
-        match self { Scalar::Str(s) => Ok(s.clone()), _ => Err(LowerError::Other("expected string".into())) }
+        match self {
+            Scalar::Str(s) => Ok(s.clone()),
+            _ => Err(LowerError::Other("expected string".into())),
+        }
     }
 }
 
@@ -56,18 +81,36 @@ pub struct Bindings(pub std::collections::BTreeMap<String, Binding>);
 
 pub struct LoopScopes(Vec<(String, Binding)>);
 impl LoopScopes {
-    pub fn new() -> Self { Self(Vec::new()) }
-    pub fn push(&mut self, var: &str, item: &Binding) { self.0.push((var.to_string(), item.clone())); }
-    pub fn pop(&mut self) { self.0.pop(); }
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+    pub fn push(&mut self, var: &str, item: &Binding) {
+        self.0.push((var.to_string(), item.clone()));
+    }
+    pub fn pop(&mut self) {
+        self.0.pop();
+    }
     /// Most-recently pushed binding for `var`, so an inner loop shadows an outer one.
     fn get(&self, var: &str) -> Option<&Binding> {
-        self.0.iter().rev().find(|(name, _)| name == var).map(|(_, b)| b)
+        self.0
+            .iter()
+            .rev()
+            .find(|(name, _)| name == var)
+            .map(|(_, b)| b)
     }
 }
-impl Default for LoopScopes { fn default() -> Self { Self::new() } }
+impl Default for LoopScopes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Lookup {
-    fn resolve<'a>(&self, b: &'a Bindings, loops: &'a LoopScopes) -> Result<&'a Scalar, LowerError> {
+    fn resolve<'a>(
+        &self,
+        b: &'a Bindings,
+        loops: &'a LoopScopes,
+    ) -> Result<&'a Scalar, LowerError> {
         let (first, rest) = self
             .0
             .split_first()
@@ -90,7 +133,10 @@ impl Lookup {
 
         match current {
             Binding::Scalar(s) => Ok(s),
-            _ => Err(LowerError::Other(format!("`{}` resolves to a non-scalar", self.0.join(".")))),
+            _ => Err(LowerError::Other(format!(
+                "`{}` resolves to a non-scalar",
+                self.0.join(".")
+            ))),
         }
     }
 }
@@ -102,11 +148,17 @@ impl EmitTemplate {
     pub fn build_bindings(schema: &NodeSchema, node: &kdl::KdlNode) -> Bindings {
         let mut map = std::collections::BTreeMap::new();
 
-        let positional: Vec<&kdl::KdlEntry> =
-            node.entries().iter().filter(|e| e.name().is_none()).collect();
+        let positional: Vec<&kdl::KdlEntry> = node
+            .entries()
+            .iter()
+            .filter(|e| e.name().is_none())
+            .collect();
         for (i, field) in schema.args.iter().enumerate() {
             if let Some(entry) = positional.get(i) {
-                map.insert(field.name.clone(), Binding::Scalar(scalar_from(entry.value())));
+                map.insert(
+                    field.name.clone(),
+                    Binding::Scalar(scalar_from(entry.value())),
+                );
             }
         }
         for field in &schema.props {
@@ -117,7 +169,10 @@ impl EmitTemplate {
         for child in &schema.children {
             let matching: Vec<&kdl::KdlNode> = children_named(node, &child.name).collect();
             if child.repeated {
-                let list = matching.iter().map(|c| binding_for_child(child, c)).collect();
+                let list = matching
+                    .iter()
+                    .map(|c| binding_for_child(child, c))
+                    .collect();
                 map.insert(child.name.clone(), Binding::List(list));
             } else if matches!(child.ty, ValueTy::Bool) {
                 // Flag: an explicit boolean wins, otherwise presence-as-true.
@@ -159,13 +214,24 @@ impl EmitTemplate {
                         path: path.interpret(b, loops)?,
                         value: value.interpret(b, loops)?, // Collect => NixExpr::List
                         priority: None,
-                        condition: cond.map(|c| NixExpr::Raw(RawNix { src: c.to_string(), span: None })),
+                        condition: cond.map(|c| {
+                            NixExpr::Raw(RawNix {
+                                src: c.to_string(),
+                                span: None,
+                            })
+                        }),
                         doc: None,
                     };
-                    out.push(Unit { bucket: Bucket::Default, assignment: a, module: String::new() });
+                    out.push(Unit {
+                        bucket: Bucket::Default,
+                        assignment: a,
+                        module: String::new(),
+                    });
                 }
                 Stmt::WhenFlag { flag, body } => {
-                    if resolve_flag(flag, b, loops)? { self.run(body, b, loops, cond, out)?; }
+                    if resolve_flag(flag, b, loops)? {
+                        self.run(body, b, loops, cond, out)?;
+                    }
                 }
                 Stmt::WhenConfig { cond: parts, body } => {
                     let inner = interp_parts(parts, b, loops)?;
@@ -177,7 +243,8 @@ impl EmitTemplate {
                     self.run(body, b, loops, Some(&combined), out)?;
                 }
                 Stmt::ForEach { var, source, body } => {
-                    for item in resolve_list(source, b)? { // source order => stable
+                    for item in resolve_list(source, b)? {
+                        // source order => stable
                         loops.push(var, item);
                         self.run(body, b, loops, cond, out)?;
                         loops.pop();
@@ -194,9 +261,9 @@ impl PathTemplate {
         let mut segs = Vec::with_capacity(self.0.len());
         for s in &self.0 {
             segs.push(match s {
-                SegmentTemplate::Ident(w)     => AttrKey::Ident(w.clone()),
+                SegmentTemplate::Ident(w) => AttrKey::Ident(w.clone()),
                 SegmentTemplate::QuotedLit(t) => AttrKey::Quoted(interp_str(t, b, loops)?),
-                SegmentTemplate::Interp(lk)   => AttrKey::Quoted(lk.resolve(b, loops)?.as_str()?),
+                SegmentTemplate::Interp(lk) => AttrKey::Quoted(lk.resolve(b, loops)?.as_str()?),
             });
         }
         Ok(AttrPath(segs))
@@ -215,7 +282,11 @@ impl ValueTemplate {
                 for item in resolve_list(child, b)? {
                     match item {
                         Binding::Scalar(s) => items.push(scalar_to_expr(s)),
-                        _ => return Err(LowerError::Other(format!("collect `{child}` expects scalar items"))),
+                        _ => {
+                            return Err(LowerError::Other(format!(
+                                "collect `{child}` expects scalar items"
+                            )))
+                        }
                     }
                 }
                 NixExpr::List(items)
@@ -249,7 +320,9 @@ fn resolve_flag(flag: &str, b: &Bindings, loops: &LoopScopes) -> Result<bool, Lo
 fn resolve_list<'a>(source: &str, b: &'a Bindings) -> Result<&'a [Binding], LowerError> {
     match b.0.get(source) {
         Some(Binding::List(items)) => Ok(items),
-        Some(_) => Err(LowerError::Other(format!("`{source}` is not a repeated child"))),
+        Some(_) => Err(LowerError::Other(format!(
+            "`{source}` is not a repeated child"
+        ))),
         None => Ok(&[]), // absent repeated child => no items
     }
 }
@@ -287,8 +360,11 @@ fn binding_for_child(child: &Child, node: &kdl::KdlNode) -> Binding {
         return Binding::Scalar(scalar);
     }
     let mut map = std::collections::BTreeMap::new();
-    let positional: Vec<&kdl::KdlEntry> =
-        node.entries().iter().filter(|e| e.name().is_none()).collect();
+    let positional: Vec<&kdl::KdlEntry> = node
+        .entries()
+        .iter()
+        .filter(|e| e.name().is_none())
+        .collect();
     for (i, f) in child.args.iter().enumerate() {
         if let Some(e) = positional.get(i) {
             map.insert(f.name.clone(), Binding::Scalar(scalar_from(e.value())));
@@ -311,14 +387,25 @@ fn split_path(s: &str) -> Vec<String> {
     let mut in_quote = false;
     for c in s.chars() {
         match c {
-            '"' => { in_quote = !in_quote; cur.push(c); }
-            '{' if !in_quote => { depth += 1; cur.push(c); }
-            '}' if !in_quote => { depth = depth.saturating_sub(1); cur.push(c); }
+            '"' => {
+                in_quote = !in_quote;
+                cur.push(c);
+            }
+            '{' if !in_quote => {
+                depth += 1;
+                cur.push(c);
+            }
+            '}' if !in_quote => {
+                depth = depth.saturating_sub(1);
+                cur.push(c);
+            }
             '.' if depth == 0 && !in_quote => segs.push(std::mem::take(&mut cur)),
             _ => cur.push(c),
         }
     }
-    if !cur.is_empty() { segs.push(cur); }
+    if !cur.is_empty() {
+        segs.push(cur);
+    }
     segs
 }
 
@@ -337,12 +424,16 @@ fn parse_str_parts(s: &str) -> Vec<StrPart> {
     let mut parts = Vec::new();
     let mut rest = s;
     while let Some(open) = rest.find('{') {
-        if open > 0 { parts.push(StrPart::Lit(rest[..open].to_string())); }
+        if open > 0 {
+            parts.push(StrPart::Lit(rest[..open].to_string()));
+        }
         let after = &rest[open + 1..];
         match after.find('}') {
             Some(close) => {
                 let lookup = &after[..close];
-                parts.push(StrPart::Interp(Lookup(lookup.split('.').map(str::to_string).collect())));
+                parts.push(StrPart::Interp(Lookup(
+                    lookup.split('.').map(str::to_string).collect(),
+                )));
                 rest = &after[close + 1..];
             }
             None => {
@@ -351,7 +442,9 @@ fn parse_str_parts(s: &str) -> Vec<StrPart> {
             }
         }
     }
-    if !rest.is_empty() { parts.push(StrPart::Lit(rest.to_string())); }
+    if !rest.is_empty() {
+        parts.push(StrPart::Lit(rest.to_string()));
+    }
     parts
 }
 
@@ -372,11 +465,18 @@ fn parse_schema_block(schema_node: &kdl::KdlNode) -> Result<NodeSchema, LowerErr
         }
     }
     // Declarative modules are leaves: they read their own subtree, never delegate.
-    Ok(NodeSchema { summary: String::new(), args, props, children, open_children: false })
+    Ok(NodeSchema {
+        summary: String::new(),
+        args,
+        props,
+        children,
+        open_children: false,
+    })
 }
 
 fn parse_field(n: &kdl::KdlNode) -> Result<Field, LowerError> {
-    let name = arg_str(n, 0).ok_or_else(|| LowerError::Other("schema field missing name".into()))?;
+    let name =
+        arg_str(n, 0).ok_or_else(|| LowerError::Other("schema field missing name".into()))?;
     Ok(Field {
         name,
         ty: ty_from(prop_str(n, "type").as_deref()),
@@ -386,7 +486,8 @@ fn parse_field(n: &kdl::KdlNode) -> Result<Field, LowerError> {
 }
 
 fn parse_child(n: &kdl::KdlNode) -> Result<Child, LowerError> {
-    let name = arg_str(n, 0).ok_or_else(|| LowerError::Other("schema child missing name".into()))?;
+    let name =
+        arg_str(n, 0).ok_or_else(|| LowerError::Other("schema child missing name".into()))?;
     let required = prop_bool(n, "required").unwrap_or(false);
     let repeated = prop_bool(n, "repeated").unwrap_or(false);
     let doc = prop_str(n, "doc").unwrap_or_default();
@@ -400,11 +501,22 @@ fn parse_child(n: &kdl::KdlNode) -> Result<Child, LowerError> {
                 "arg" => args.push(parse_field(s)?),
                 "prop" => props.push(parse_field(s)?),
                 other => {
-                    return Err(LowerError::Other(format!("unexpected `{other}` in structured child")))
+                    return Err(LowerError::Other(format!(
+                        "unexpected `{other}` in structured child"
+                    )))
                 }
             }
         }
-        Ok(Child { name, ty: ValueTy::Node, required, repeated, delegate: false, doc, args, props })
+        Ok(Child {
+            name,
+            ty: ValueTy::Node,
+            required,
+            repeated,
+            delegate: false,
+            doc,
+            args,
+            props,
+        })
     } else {
         Ok(Child {
             name,
@@ -449,19 +561,31 @@ fn parse_stmt(n: &kdl::KdlNode) -> Result<Stmt, LowerError> {
             let value = positional
                 .get(1)
                 .ok_or_else(|| LowerError::Other("`set` missing value".into()))?;
-            Ok(Stmt::Set { path: parse_path(path), value: parse_value(value)? })
+            Ok(Stmt::Set {
+                path: parse_path(path),
+                value: parse_value(value)?,
+            })
         }
         "when-flag" => {
-            let flag = arg_str(n, 0).ok_or_else(|| LowerError::Other("`when-flag` missing flag".into()))?;
-            Ok(Stmt::WhenFlag { flag, body: parse_stmts(n.children())? })
+            let flag = arg_str(n, 0)
+                .ok_or_else(|| LowerError::Other("`when-flag` missing flag".into()))?;
+            Ok(Stmt::WhenFlag {
+                flag,
+                body: parse_stmts(n.children())?,
+            })
         }
         "when-config" => {
             // An empty or whitespace-only condition would emit `lib.mkIf () <value>`, invalid
             // Nix. Reject it at load, where the rest of the grammar errors live.
             let cond = arg_str(n, 0)
                 .filter(|c| !c.trim().is_empty())
-                .ok_or_else(|| LowerError::Other("`when-config` needs a non-empty condition".into()))?;
-            Ok(Stmt::WhenConfig { cond: parse_str_parts(&cond), body: parse_stmts(n.children())? })
+                .ok_or_else(|| {
+                    LowerError::Other("`when-config` needs a non-empty condition".into())
+                })?;
+            Ok(Stmt::WhenConfig {
+                cond: parse_str_parts(&cond),
+                body: parse_stmts(n.children())?,
+            })
         }
         "for-each" => {
             // `for-each "loc" in "location"`: the bare `in` is noise; take first + last.
@@ -471,16 +595,33 @@ fn parse_stmt(n: &kdl::KdlNode) -> Result<Stmt, LowerError> {
                 .filter(|e| e.name().is_none())
                 .filter_map(|e| e.value().as_string().map(str::to_string))
                 .collect();
-            let var = args.first().cloned().ok_or_else(|| LowerError::Other("`for-each` missing var".into()))?;
-            let source = args.last().cloned().ok_or_else(|| LowerError::Other("`for-each` missing source".into()))?;
-            Ok(Stmt::ForEach { var, source, body: parse_stmts(n.children())? })
+            let var = args
+                .first()
+                .cloned()
+                .ok_or_else(|| LowerError::Other("`for-each` missing var".into()))?;
+            let source = args
+                .last()
+                .cloned()
+                .ok_or_else(|| LowerError::Other("`for-each` missing source".into()))?;
+            Ok(Stmt::ForEach {
+                var,
+                source,
+                body: parse_stmts(n.children())?,
+            })
         }
-        other => Err(LowerError::Other(format!("unknown emit statement `{other}`"))),
+        other => Err(LowerError::Other(format!(
+            "unknown emit statement `{other}`"
+        ))),
     }
 }
 
 fn parse_path(s: &str) -> PathTemplate {
-    PathTemplate(split_path(s).iter().map(|seg| classify_segment(seg)).collect())
+    PathTemplate(
+        split_path(s)
+            .iter()
+            .map(|seg| classify_segment(seg))
+            .collect(),
+    )
 }
 
 fn parse_value(entry: &kdl::KdlEntry) -> Result<ValueTemplate, LowerError> {
@@ -499,7 +640,9 @@ fn parse_value(entry: &kdl::KdlEntry) -> Result<ValueTemplate, LowerError> {
                 .ok_or_else(|| LowerError::Other("indent-str needs a string".into()))?;
             Ok(ValueTemplate::IndentStr(parse_str_parts(s)))
         }
-        Some(other) => Err(LowerError::Other(format!("unknown value annotation `{other}`"))),
+        Some(other) => Err(LowerError::Other(format!(
+            "unknown value annotation `{other}`"
+        ))),
         None => {
             let v = entry.value();
             if let Some(b) = v.as_bool() {
@@ -525,7 +668,9 @@ fn arg_str(node: &kdl::KdlNode, idx: usize) -> Option<String> {
 }
 
 fn prop_str(node: &kdl::KdlNode, key: &str) -> Option<String> {
-    node.get(key).and_then(|v| v.as_string()).map(str::to_string)
+    node.get(key)
+        .and_then(|v| v.as_string())
+        .map(str::to_string)
 }
 
 fn prop_bool(node: &kdl::KdlNode, key: &str) -> Option<bool> {
@@ -552,7 +697,14 @@ fn schema_shape(schema: &NodeSchema) -> ShapeMap {
     }
     for c in &schema.children {
         let base = child_shape(c);
-        m.insert(c.name.clone(), if c.repeated { Shape::List(Box::new(base)) } else { base });
+        m.insert(
+            c.name.clone(),
+            if c.repeated {
+                Shape::List(Box::new(base))
+            } else {
+                base
+            },
+        );
     }
     m
 }
@@ -579,7 +731,10 @@ fn dry_check(schema: &NodeSchema, template: &EmitTemplate) -> Result<(), LowerEr
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(LowerError::Other(format!("template does not type-check: {}", errors.join("; "))))
+        Err(LowerError::Other(format!(
+            "template does not type-check: {}",
+            errors.join("; ")
+        )))
     }
 }
 
@@ -588,7 +743,9 @@ fn lookup_shape<'a>(
     shapes: &'a ShapeMap,
     loops: &[(&'a str, &'a Shape)],
 ) -> Result<&'a Shape, String> {
-    let (first, rest) = segs.split_first().ok_or_else(|| "empty lookup".to_string())?;
+    let (first, rest) = segs
+        .split_first()
+        .ok_or_else(|| "empty lookup".to_string())?;
     let mut cur = loops
         .iter()
         .rev()
@@ -598,14 +755,21 @@ fn lookup_shape<'a>(
         .ok_or_else(|| format!("unknown binding `{first}`"))?;
     for seg in rest {
         cur = match cur {
-            Shape::Scope(m) => m.get(seg).ok_or_else(|| format!("`{seg}` is not a field here"))?,
+            Shape::Scope(m) => m
+                .get(seg)
+                .ok_or_else(|| format!("`{seg}` is not a field here"))?,
             _ => return Err(format!("`{first}` is not a scope")),
         };
     }
     Ok(cur)
 }
 
-fn expect_scalar(segs: &[String], shapes: &ShapeMap, loops: &[(&str, &Shape)], errors: &mut Vec<String>) {
+fn expect_scalar(
+    segs: &[String],
+    shapes: &ShapeMap,
+    loops: &[(&str, &Shape)],
+    errors: &mut Vec<String>,
+) {
     match lookup_shape(segs, shapes, loops) {
         Ok(Shape::Scalar) => {}
         Ok(_) => errors.push(format!("`{}` is not a scalar", segs.join("."))),
@@ -625,7 +789,9 @@ fn check_stmts<'a>(
                 for seg in &path.0 {
                     match seg {
                         SegmentTemplate::Interp(lk) => expect_scalar(&lk.0, shapes, loops, errors),
-                        SegmentTemplate::QuotedLit(t) => check_str_lookups(t, shapes, loops, errors),
+                        SegmentTemplate::QuotedLit(t) => {
+                            check_str_lookups(t, shapes, loops, errors)
+                        }
                         SegmentTemplate::Ident(_) => {}
                     }
                 }
@@ -640,7 +806,9 @@ fn check_stmts<'a>(
                     ValueTemplate::Collect(child) => {
                         match lookup_shape(std::slice::from_ref(child), shapes, loops) {
                             Ok(Shape::List(_)) => {}
-                            Ok(_) => errors.push(format!("collect `{child}` is not a repeated child")),
+                            Ok(_) => {
+                                errors.push(format!("collect `{child}` is not a repeated child"))
+                            }
                             Err(e) => errors.push(e),
                         }
                     }
@@ -666,7 +834,9 @@ fn check_stmts<'a>(
                         check_stmts(body, shapes, loops, errors);
                         loops.pop();
                     }
-                    Ok(_) => errors.push(format!("for-each source `{source}` is not a repeated child")),
+                    Ok(_) => errors.push(format!(
+                        "for-each source `{source}` is not a repeated child"
+                    )),
                     Err(e) => errors.push(e),
                 }
             }
@@ -674,7 +844,12 @@ fn check_stmts<'a>(
     }
 }
 
-fn check_str_lookups(raw: &str, shapes: &ShapeMap, loops: &[(&str, &Shape)], errors: &mut Vec<String>) {
+fn check_str_lookups(
+    raw: &str,
+    shapes: &ShapeMap,
+    loops: &[(&str, &Shape)],
+    errors: &mut Vec<String>,
+) {
     for part in parse_str_parts(raw) {
         if let StrPart::Interp(lk) = part {
             expect_scalar(&lk.0, shapes, loops, errors);
@@ -707,9 +882,9 @@ impl DeclarativeModule {
             .ok_or_else(|| LowerError::Other(format!("{}: module missing `name`", where_())))?;
         let version_str = prop_str(module, "version")
             .ok_or_else(|| LowerError::Other(format!("{}: module missing `version`", where_())))?;
-        let version = version_str
-            .parse()
-            .map_err(|e| LowerError::Other(format!("{}: bad version `{version_str}`: {e}", where_())))?;
+        let version = version_str.parse().map_err(|e| {
+            LowerError::Other(format!("{}: bad version `{version_str}`: {e}", where_()))
+        })?;
 
         let body = module
             .children()
@@ -725,26 +900,40 @@ impl DeclarativeModule {
                 "summary" => summary = arg_str(child, 0).unwrap_or_default(),
                 "claims-node" => node_name = arg_str(child, 0),
                 "schema" => schema = Some(parse_schema_block(child)?),
-                "emit" => template = Some(EmitTemplate { stmts: parse_stmts(child.children())? }),
+                "emit" => {
+                    template = Some(EmitTemplate {
+                        stmts: parse_stmts(child.children())?,
+                    })
+                }
                 "migrations" => migrations = parse_migrations(child, &where_)?,
                 other => {
-                    return Err(LowerError::Other(format!("{}: unexpected `{other}` in module", where_())))
+                    return Err(LowerError::Other(format!(
+                        "{}: unexpected `{other}` in module",
+                        where_()
+                    )))
                 }
             }
         }
 
-        let node_name = node_name
-            .ok_or_else(|| LowerError::Other(format!("{}: module missing `claims-node`", where_())))?;
-        let mut schema =
-            schema.ok_or_else(|| LowerError::Other(format!("{}: module missing `schema`", where_())))?;
+        let node_name = node_name.ok_or_else(|| {
+            LowerError::Other(format!("{}: module missing `claims-node`", where_()))
+        })?;
+        let mut schema = schema
+            .ok_or_else(|| LowerError::Other(format!("{}: module missing `schema`", where_())))?;
         schema.summary = summary;
-        let template =
-            template.ok_or_else(|| LowerError::Other(format!("{}: module missing `emit`", where_())))?;
+        let template = template
+            .ok_or_else(|| LowerError::Other(format!("{}: module missing `emit`", where_())))?;
 
         dry_check(&schema, &template)
             .map_err(|e| LowerError::Other(format!("{}: {e}", where_())))?;
 
-        Ok(DeclarativeModule { id: ModuleId { name, version }, node_name, schema, template, migrations })
+        Ok(DeclarativeModule {
+            id: ModuleId { name, version },
+            node_name,
+            schema,
+            template,
+            migrations,
+        })
     }
 }
 
@@ -754,7 +943,9 @@ fn parse_migrations(
     where_: &impl Fn() -> String,
 ) -> Result<Vec<crate::MigrationNote>, LowerError> {
     let mut steps = Vec::new();
-    let Some(body) = node.children() else { return Ok(steps) };
+    let Some(body) = node.children() else {
+        return Ok(steps);
+    };
     for step in body.nodes() {
         if step.name().value() != "to" {
             return Err(LowerError::Other(format!(
@@ -763,11 +954,15 @@ fn parse_migrations(
                 step.name().value()
             )));
         }
-        let ver_str = arg_str(step, 0)
-            .ok_or_else(|| LowerError::Other(format!("{}: migration `to` needs a version", where_())))?;
-        let to = ver_str
-            .parse()
-            .map_err(|e| LowerError::Other(format!("{}: bad migration version `{ver_str}`: {e}", where_())))?;
+        let ver_str = arg_str(step, 0).ok_or_else(|| {
+            LowerError::Other(format!("{}: migration `to` needs a version", where_()))
+        })?;
+        let to = ver_str.parse().map_err(|e| {
+            LowerError::Other(format!(
+                "{}: bad migration version `{ver_str}`: {e}",
+                where_()
+            ))
+        })?;
         let notes = step
             .children()
             .map(|b| {
@@ -784,16 +979,32 @@ fn parse_migrations(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum FieldTy { Str, Bool, Int }
+pub enum FieldTy {
+    Str,
+    Bool,
+    Int,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EntryKind { Arg, Prop, Child }
+pub enum EntryKind {
+    Arg,
+    Prop,
+    Child,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SubKind { Arg, Prop }
+pub enum SubKind {
+    Arg,
+    Prop,
+}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct SubField { pub kind: SubKind, pub name: String, pub ty: FieldTy, pub required: bool }
+pub struct SubField {
+    pub kind: SubKind,
+    pub name: String,
+    pub ty: FieldTy,
+    pub required: bool,
+}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SchemaEntry {
@@ -801,7 +1012,7 @@ pub struct SchemaEntry {
     pub name: String,
     pub ty: FieldTy,
     pub required: bool,
-    pub repeated: bool,          // Child only
+    pub repeated: bool,           // Child only
     pub subfields: Vec<SubField>, // Child only; non-empty => structured child
 }
 
@@ -819,16 +1030,31 @@ pub struct ModuleDraft {
 /// collections, so byte-identical output for byte-identical input.
 pub fn render_manifest(draft: &ModuleDraft) -> String {
     let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
-    let ty = |t: FieldTy| match t { FieldTy::Str => "string", FieldTy::Bool => "bool", FieldTy::Int => "int" };
-    let node = if draft.node.trim().is_empty() { draft.name.trim() } else { draft.node.trim() };
+    let ty = |t: FieldTy| match t {
+        FieldTy::Str => "string",
+        FieldTy::Bool => "bool",
+        FieldTy::Int => "int",
+    };
+    let node = if draft.node.trim().is_empty() {
+        draft.name.trim()
+    } else {
+        draft.node.trim()
+    };
 
     let mut s = String::new();
-    s.push_str(&format!("module name=\"{}\" version=\"0.1.0\" {{\n", esc(draft.name.trim())));
+    s.push_str(&format!(
+        "module name=\"{}\" version=\"0.1.0\" {{\n",
+        esc(draft.name.trim())
+    ));
     s.push_str(&format!("    summary \"{}\"\n", esc(draft.summary.trim())));
     s.push_str(&format!("    claims-node \"{}\"\n\n", esc(node)));
     s.push_str("    schema {\n");
     for e in &draft.entries {
-        let kw = match e.kind { EntryKind::Arg => "arg", EntryKind::Prop => "prop", EntryKind::Child => "child" };
+        let kw = match e.kind {
+            EntryKind::Arg => "arg",
+            EntryKind::Prop => "prop",
+            EntryKind::Child => "child",
+        };
         let structured = e.kind == EntryKind::Child && !e.subfields.is_empty();
         if structured {
             // A structured child renders the block form. It carries `required=`/`repeated=` on
@@ -836,32 +1062,48 @@ pub fn render_manifest(draft: &ModuleDraft) -> String {
             // child-with-block is Node-typed.
             s.push_str(&format!(
                 "        child \"{}\" required=#{} repeated=#{} {{\n",
-                esc(e.name.trim()), e.required, e.repeated,
+                esc(e.name.trim()),
+                e.required,
+                e.repeated,
             ));
             for sf in &e.subfields {
-                let skw = match sf.kind { SubKind::Arg => "arg", SubKind::Prop => "prop" };
+                let skw = match sf.kind {
+                    SubKind::Arg => "arg",
+                    SubKind::Prop => "prop",
+                };
                 s.push_str(&format!(
                     "            {skw} \"{}\" type=\"{}\" required=#{} doc=\"\"\n",
-                    esc(sf.name.trim()), ty(sf.ty), sf.required,
+                    esc(sf.name.trim()),
+                    ty(sf.ty),
+                    sf.required,
                 ));
             }
             s.push_str("        }\n");
         } else if e.kind == EntryKind::Child {
             s.push_str(&format!(
                 "        child \"{}\" type=\"{}\" required=#{} repeated=#{} doc=\"\"\n",
-                esc(e.name.trim()), ty(e.ty), e.required, e.repeated,
+                esc(e.name.trim()),
+                ty(e.ty),
+                e.required,
+                e.repeated,
             ));
         } else {
             s.push_str(&format!(
                 "        {kw} \"{}\" type=\"{}\" required=#{} doc=\"\"\n",
-                esc(e.name.trim()), ty(e.ty), e.required,
+                esc(e.name.trim()),
+                ty(e.ty),
+                e.required,
             ));
         }
     }
     s.push_str("    }\n\n");
     s.push_str("    emit {\n");
     for line in draft.emit.lines() {
-        if line.trim().is_empty() { s.push('\n'); } else { s.push_str(&format!("        {line}\n")); }
+        if line.trim().is_empty() {
+            s.push('\n');
+        } else {
+            s.push_str(&format!("        {line}\n"));
+        }
     }
     s.push_str("    }\n}\n");
     s
@@ -870,18 +1112,32 @@ pub fn render_manifest(draft: &ModuleDraft) -> String {
 /// Load and dry-type-check a candidate manifest, the same load path a real module goes
 /// through. Used by the TUI to give live feedback on a draft before it is written to disk.
 pub fn validate_manifest(text: &str) -> Result<(), String> {
-    let doc = text.parse::<kdl::KdlDocument>().map_err(|e| e.to_string())?;
+    let doc = text
+        .parse::<kdl::KdlDocument>()
+        .map_err(|e| e.to_string())?;
     DeclarativeModule::from_kdl(&doc, std::path::Path::new("draft"))
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
 
 impl Module for DeclarativeModule {
-    fn id(&self) -> ModuleId { self.id.clone() }
-    fn node_name(&self) -> &str { &self.node_name }
-    fn kind(&self) -> crate::ModuleKind { crate::ModuleKind::Declarative }
-    fn schema(&self) -> &NodeSchema { &self.schema }
-    fn lower(&self, node: &kdl::KdlNode, _ctx: &mut crate::LowerCtx) -> Result<LowerOutput, LowerError> {
+    fn id(&self) -> ModuleId {
+        self.id.clone()
+    }
+    fn node_name(&self) -> &str {
+        &self.node_name
+    }
+    fn kind(&self) -> crate::ModuleKind {
+        crate::ModuleKind::Declarative
+    }
+    fn schema(&self) -> &NodeSchema {
+        &self.schema
+    }
+    fn lower(
+        &self,
+        node: &kdl::KdlNode,
+        _ctx: &mut crate::LowerCtx,
+    ) -> Result<LowerOutput, LowerError> {
         let bindings = EmitTemplate::build_bindings(&self.schema, node);
         self.template.interpret(&bindings)
     }
@@ -905,7 +1161,12 @@ mod tests {
     }
 
     fn node(src: &str) -> kdl::KdlNode {
-        src.parse::<kdl::KdlDocument>().unwrap().nodes().first().unwrap().clone()
+        src.parse::<kdl::KdlDocument>()
+            .unwrap()
+            .nodes()
+            .first()
+            .unwrap()
+            .clone()
     }
 
     #[test]
@@ -918,7 +1179,10 @@ mod tests {
         let all = m.migration_notes(&v("1.0.0"), &v("1.2.0"));
         assert_eq!(all.len(), 2, "1.0.0 -> 1.2.0 crosses both steps: {all:?}");
         assert!(all[0].contains("enableACME"), "1.1.0 note first: {all:?}");
-        assert!(all[1].contains("serverAliases"), "1.2.0 note second: {all:?}");
+        assert!(
+            all[1].contains("serverAliases"),
+            "1.2.0 note second: {all:?}"
+        );
 
         // Only the final step is crossed.
         let one = m.migration_notes(&v("1.1.0"), &v("1.2.0"));
@@ -931,7 +1195,12 @@ mod tests {
     fn lower(module: &DeclarativeModule, n: &kdl::KdlNode) -> LowerOutput {
         let reg = crate::Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = crate::LowerCtx::new(crate::Scope { host: "web".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = crate::LowerCtx::new(
+            crate::Scope { host: "web".into() },
+            &reg,
+            &mut diags,
+            vec![],
+        );
         module.lower(n, &mut ctx).expect("lower")
     }
 
@@ -948,7 +1217,11 @@ mod tests {
     }
 
     fn find<'a>(out: &'a LowerOutput, path: &str) -> Option<&'a NixExpr> {
-        out.units.iter().map(|u| &u.assignment).find(|a| path_str(a) == path).map(|a| &a.value)
+        out.units
+            .iter()
+            .map(|u| &u.assignment)
+            .find(|a| path_str(a) == path)
+            .map(|a| &a.value)
     }
 
     #[test]
@@ -959,13 +1232,19 @@ mod tests {
         let n = node("web-service \"example.com\" {\n    upstream \"http://127.0.0.1:3000\"\n    acme email=\"ops@example.com\"\n    hardened #true\n}");
         let out = lower(&module, &n);
 
-        assert!(matches!(find(&out, "services.nginx.enable"), Some(NixExpr::Bool(true))));
+        assert!(matches!(
+            find(&out, "services.nginx.enable"),
+            Some(NixExpr::Bool(true))
+        ));
 
         // {host} interpolated into the path
         assert!(find(&out, "services.nginx.virtualHosts.\"example.com\".forceSSL").is_some());
 
         // {upstream} interpolated into the value; "/" is a quoted segment
-        match find(&out, "services.nginx.virtualHosts.\"example.com\".locations.\"/\".proxyPass") {
+        match find(
+            &out,
+            "services.nginx.virtualHosts.\"example.com\".locations.\"/\".proxyPass",
+        ) {
             Some(NixExpr::Str(s)) => assert_eq!(s, "http://127.0.0.1:3000"),
             other => panic!("proxyPass = {other:?}"),
         }
@@ -977,13 +1256,19 @@ mod tests {
         }
 
         // when-flag hardened=true includes the indent-str block
-        match find(&out, "services.nginx.virtualHosts.\"example.com\".locations.\"/\".extraConfig") {
+        match find(
+            &out,
+            "services.nginx.virtualHosts.\"example.com\".locations.\"/\".extraConfig",
+        ) {
             Some(NixExpr::IndentStr(s)) => assert!(s.contains("X-Frame-Options")),
             other => panic!("extraConfig = {other:?}"),
         }
 
         // collect with no aliases => empty list
-        match find(&out, "services.nginx.virtualHosts.\"example.com\".serverAliases") {
+        match find(
+            &out,
+            "services.nginx.virtualHosts.\"example.com\".serverAliases",
+        ) {
             Some(NixExpr::List(items)) => assert!(items.is_empty()),
             other => panic!("serverAliases = {other:?}"),
         }
@@ -1002,13 +1287,20 @@ mod tests {
         }
 
         // for-each binds loc.match into the path and loc.upstream into the value
-        match find(&out, "services.nginx.virtualHosts.\"ex.com\".locations.\"/api\".proxyPass") {
+        match find(
+            &out,
+            "services.nginx.virtualHosts.\"ex.com\".locations.\"/api\".proxyPass",
+        ) {
             Some(NixExpr::Str(s)) => assert_eq!(s, "http://up:4000"),
             other => panic!("for-each proxyPass = {other:?}"),
         }
 
         // hardened absent => flag false => no extraConfig emitted
-        assert!(find(&out, "services.nginx.virtualHosts.\"ex.com\".locations.\"/\".extraConfig").is_none());
+        assert!(find(
+            &out,
+            "services.nginx.virtualHosts.\"ex.com\".locations.\"/\".extraConfig"
+        )
+        .is_none());
     }
 
     #[test]
@@ -1017,7 +1309,9 @@ mod tests {
         // that must surface at load, not at generate.
         let manifest = "module name=\"bad\" version=\"0.1.0\" {\n    claims-node \"bad\"\n    schema {\n        arg \"host\" type=\"string\" required=#true\n        child \"acme\" {\n            prop \"email\" type=\"string\" required=#true\n        }\n    }\n    emit {\n        set \"services.x.{host}\" \"{acme}\"\n    }\n}";
         let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
-        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad")).err().unwrap();
+        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad"))
+            .err()
+            .unwrap();
         assert!(format!("{err}").contains("not a scalar"), "got: {err}");
     }
 
@@ -1025,8 +1319,13 @@ mod tests {
     fn dry_check_rejects_for_each_over_a_non_repeated_child() {
         let manifest = "module name=\"bad\" version=\"0.1.0\" {\n    claims-node \"bad\"\n    schema {\n        child \"upstream\" type=\"string\"\n    }\n    emit {\n        for-each \"u\" in \"upstream\" {\n            set \"a.{u}\" #true\n        }\n    }\n}";
         let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
-        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad")).err().unwrap();
-        assert!(format!("{err}").contains("not a repeated child"), "got: {err}");
+        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad"))
+            .err()
+            .unwrap();
+        assert!(
+            format!("{err}").contains("not a repeated child"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -1034,7 +1333,8 @@ mod tests {
         use knixl_ir::{Emit, Writer};
         let manifest = "module name=\"cond\" version=\"0.1.0\" {\n    claims-node \"cond\"\n    schema {\n        arg \"host\" type=\"string\" required=#true\n        arg \"svc\" type=\"string\" required=#true\n    }\n    emit {\n        when-config \"config.services.{svc}.enable\" {\n            set \"services.foo.{host}.enable\" #true\n        }\n    }\n}";
         let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
-        let module = DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
+        let module =
+            DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
         let out = lower(&module, &node("cond \"web\" \"postgresql\""));
 
         let a = out
@@ -1053,7 +1353,8 @@ mod tests {
         let mut w = Writer::new();
         a.emit(&mut w);
         assert!(
-            w.into_string().contains("lib.mkIf (config.services.postgresql.enable)"),
+            w.into_string()
+                .contains("lib.mkIf (config.services.postgresql.enable)"),
             "expected a lib.mkIf wrapper in the emitted text"
         );
     }
@@ -1062,7 +1363,8 @@ mod tests {
     fn a_set_outside_when_config_has_no_condition() {
         let manifest = "module name=\"cond\" version=\"0.1.0\" {\n    claims-node \"cond\"\n    schema {\n        arg \"host\" type=\"string\" required=#true\n    }\n    emit {\n        set \"services.foo.{host}.enable\" #true\n    }\n}";
         let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
-        let module = DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
+        let module =
+            DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
         let out = lower(&module, &node("cond \"web\""));
         assert!(out.units.iter().all(|u| u.assignment.condition.is_none()));
     }
@@ -1071,9 +1373,15 @@ mod tests {
     fn nested_when_config_and_combines() {
         let manifest = "module name=\"cond\" version=\"0.1.0\" {\n    claims-node \"cond\"\n    schema {\n        arg \"host\" type=\"string\" required=#true\n    }\n    emit {\n        when-config \"config.a.enable\" {\n            when-config \"config.b.enable\" {\n                set \"services.foo.{host}.enable\" #true\n            }\n        }\n    }\n}";
         let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
-        let module = DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
+        let module =
+            DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
         let out = lower(&module, &node("cond \"web\""));
-        let a = out.units.iter().map(|u| &u.assignment).next().expect("one assignment");
+        let a = out
+            .units
+            .iter()
+            .map(|u| &u.assignment)
+            .next()
+            .expect("one assignment");
         match &a.condition {
             Some(NixExpr::Raw(r)) => assert_eq!(r.src, "(config.a.enable) && (config.b.enable)"),
             other => panic!("condition = {other:?}"),
@@ -1084,8 +1392,12 @@ mod tests {
     fn when_config_inside_for_each_interpolates_the_loop_var() {
         let manifest = "module name=\"cond\" version=\"0.1.0\" {\n    claims-node \"cond\"\n    schema {\n        child \"item\" type=\"string\" repeated=#true\n    }\n    emit {\n        for-each \"it\" in \"item\" {\n            when-config \"config.services.{it}.enable\" {\n                set \"p.{it}\" #true\n            }\n        }\n    }\n}";
         let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
-        let module = DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
-        let out = lower(&module, &node("cond {\n    item \"nginx\"\n    item \"sshd\"\n}"));
+        let module =
+            DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
+        let out = lower(
+            &module,
+            &node("cond {\n    item \"nginx\"\n    item \"sshd\"\n}"),
+        );
 
         let cond_for = |name: &str| {
             out.units
@@ -1097,32 +1409,49 @@ mod tests {
                     _ => None,
                 })
         };
-        assert_eq!(cond_for("nginx").as_deref(), Some("config.services.nginx.enable"));
-        assert_eq!(cond_for("sshd").as_deref(), Some("config.services.sshd.enable"));
+        assert_eq!(
+            cond_for("nginx").as_deref(),
+            Some("config.services.nginx.enable")
+        );
+        assert_eq!(
+            cond_for("sshd").as_deref(),
+            Some("config.services.sshd.enable")
+        );
     }
 
     #[test]
     fn when_flag_false_drops_a_when_config_body() {
         let manifest = "module name=\"cond\" version=\"0.1.0\" {\n    claims-node \"cond\"\n    schema {\n        child \"on\" type=\"bool\"\n    }\n    emit {\n        when-flag \"on\" {\n            when-config \"config.a.enable\" {\n                set \"p\" #true\n            }\n        }\n    }\n}";
         let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
-        let module = DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
+        let module =
+            DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
         let out = lower(&module, &node("cond")); // `on` absent => flag false
-        assert!(out.units.is_empty(), "generation-time gate should drop the body");
+        assert!(
+            out.units.is_empty(),
+            "generation-time gate should drop the body"
+        );
     }
 
     #[test]
     fn when_config_rejects_an_empty_condition() {
         let manifest = "module name=\"bad\" version=\"0.1.0\" {\n    claims-node \"bad\"\n    schema {\n    }\n    emit {\n        when-config \"\" {\n            set \"p\" #true\n        }\n    }\n}";
         let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
-        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad")).err().unwrap();
-        assert!(format!("{err}").contains("non-empty condition"), "got: {err}");
+        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad"))
+            .err()
+            .unwrap();
+        assert!(
+            format!("{err}").contains("non-empty condition"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn dry_check_rejects_a_non_scalar_lookup_in_a_condition() {
         let manifest = "module name=\"bad\" version=\"0.1.0\" {\n    claims-node \"bad\"\n    schema {\n        child \"acme\" {\n            prop \"email\" type=\"string\" required=#true\n        }\n    }\n    emit {\n        when-config \"config.{acme}.enable\" {\n            set \"p\" #true\n        }\n    }\n}";
         let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
-        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad")).err().unwrap();
+        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad"))
+            .err()
+            .unwrap();
         assert!(format!("{err}").contains("not a scalar"), "got: {err}");
     }
 
@@ -1133,8 +1462,12 @@ mod tests {
             node: String::new(), // defaults to name
             summary: "a cache".into(),
             entries: vec![SchemaEntry {
-                kind: EntryKind::Arg, name: "host".into(), ty: FieldTy::Str,
-                required: true, repeated: false, subfields: vec![],
+                kind: EntryKind::Arg,
+                name: "host".into(),
+                ty: FieldTy::Str,
+                required: true,
+                repeated: false,
+                subfields: vec![],
             }],
             emit: "set \"services.cache.enable\" #true".into(),
         };
@@ -1148,18 +1481,54 @@ mod tests {
             node: String::new(),
             summary: "does things".into(),
             entries: vec![
-                SchemaEntry { kind: EntryKind::Arg, name: "host".into(), ty: FieldTy::Str, required: true, repeated: false, subfields: vec![] },
-                SchemaEntry { kind: EntryKind::Prop, name: "port".into(), ty: FieldTy::Int, required: false, repeated: false, subfields: vec![] },
-                SchemaEntry { kind: EntryKind::Child, name: "alias".into(), ty: FieldTy::Str, required: false, repeated: true, subfields: vec![] },
+                SchemaEntry {
+                    kind: EntryKind::Arg,
+                    name: "host".into(),
+                    ty: FieldTy::Str,
+                    required: true,
+                    repeated: false,
+                    subfields: vec![],
+                },
+                SchemaEntry {
+                    kind: EntryKind::Prop,
+                    name: "port".into(),
+                    ty: FieldTy::Int,
+                    required: false,
+                    repeated: false,
+                    subfields: vec![],
+                },
+                SchemaEntry {
+                    kind: EntryKind::Child,
+                    name: "alias".into(),
+                    ty: FieldTy::Str,
+                    required: false,
+                    repeated: true,
+                    subfields: vec![],
+                },
             ],
             emit: "set \"services.svc.enable\" #true".into(),
         };
         let m = render_manifest(&draft);
-        assert!(m.contains("claims-node \"svc\""), "node defaults to name: {m}");
-        assert!(m.contains("arg \"host\" type=\"string\" required=#true"), "{m}");
-        assert!(m.contains("prop \"port\" type=\"int\" required=#false"), "{m}");
-        assert!(m.contains("child \"alias\" type=\"string\" required=#false repeated=#true"), "{m}");
-        assert!(m.contains("set \"services.svc.enable\" #true"), "emit spliced: {m}");
+        assert!(
+            m.contains("claims-node \"svc\""),
+            "node defaults to name: {m}"
+        );
+        assert!(
+            m.contains("arg \"host\" type=\"string\" required=#true"),
+            "{m}"
+        );
+        assert!(
+            m.contains("prop \"port\" type=\"int\" required=#false"),
+            "{m}"
+        );
+        assert!(
+            m.contains("child \"alias\" type=\"string\" required=#false repeated=#true"),
+            "{m}"
+        );
+        assert!(
+            m.contains("set \"services.svc.enable\" #true"),
+            "emit spliced: {m}"
+        );
         // The rendered manifest must load and dry-type-check.
         validate_manifest(&m).expect("rendered flat draft is valid");
     }
@@ -1171,13 +1540,26 @@ mod tests {
             node: "web".into(),
             summary: String::new(),
             entries: vec![
-                SchemaEntry { kind: EntryKind::Arg, name: "host".into(), ty: FieldTy::Str, required: true, repeated: false, subfields: vec![] },
                 SchemaEntry {
-                    kind: EntryKind::Child, name: "acme".into(), ty: FieldTy::Str,
-                    required: true, repeated: false,
-                    subfields: vec![
-                        SubField { kind: SubKind::Prop, name: "email".into(), ty: FieldTy::Str, required: true },
-                    ],
+                    kind: EntryKind::Arg,
+                    name: "host".into(),
+                    ty: FieldTy::Str,
+                    required: true,
+                    repeated: false,
+                    subfields: vec![],
+                },
+                SchemaEntry {
+                    kind: EntryKind::Child,
+                    name: "acme".into(),
+                    ty: FieldTy::Str,
+                    required: true,
+                    repeated: false,
+                    subfields: vec![SubField {
+                        kind: SubKind::Prop,
+                        name: "email".into(),
+                        ty: FieldTy::Str,
+                        required: true,
+                    }],
                 },
             ],
             emit: "set \"services.web.virtualHosts.{host}.enable\" #true".into(),
@@ -1185,9 +1567,18 @@ mod tests {
         let m = render_manifest(&draft);
         // Structured child: block form carrying required=/repeated=, but no type= (a
         // child-with-block is Node-typed).
-        assert!(m.contains("child \"acme\" required=#true repeated=#false {"), "structured child block: {m}");
-        assert!(m.contains("prop \"email\" type=\"string\" required=#true"), "{m}");
-        assert!(!m.contains("child \"acme\" type="), "structured child omits type=: {m}");
+        assert!(
+            m.contains("child \"acme\" required=#true repeated=#false {"),
+            "structured child block: {m}"
+        );
+        assert!(
+            m.contains("prop \"email\" type=\"string\" required=#true"),
+            "{m}"
+        );
+        assert!(
+            !m.contains("child \"acme\" type="),
+            "structured child omits type=: {m}"
+        );
         validate_manifest(&m).expect("rendered structured draft is valid");
     }
 
@@ -1210,7 +1601,10 @@ mod tests {
             emit: "for-each \"loc\" in \"location\" {\n    set \"services.web.locations.{loc.match}.proxyPass\" \"{loc.upstream}\"\n}".into(),
         };
         let m = render_manifest(&draft);
-        assert!(m.contains("child \"location\" required=#false repeated=#true {"), "{m}");
+        assert!(
+            m.contains("child \"location\" required=#false repeated=#true {"),
+            "{m}"
+        );
         validate_manifest(&m).expect("repeated structured child + for-each is valid");
     }
 
@@ -1218,12 +1612,24 @@ mod tests {
     fn validate_manifest_rejects_an_undeclared_binding() {
         // emit references {missing}, which the dry type-pass rejects at load.
         let draft = ModuleDraft {
-            name: "bad".into(), node: "bad".into(), summary: String::new(),
-            entries: vec![SchemaEntry { kind: EntryKind::Arg, name: "host".into(), ty: FieldTy::Str, required: true, repeated: false, subfields: vec![] }],
+            name: "bad".into(),
+            node: "bad".into(),
+            summary: String::new(),
+            entries: vec![SchemaEntry {
+                kind: EntryKind::Arg,
+                name: "host".into(),
+                ty: FieldTy::Str,
+                required: true,
+                repeated: false,
+                subfields: vec![],
+            }],
             emit: "set \"services.bad.{missing}\" #true".into(),
         };
         let err = validate_manifest(&render_manifest(&draft)).unwrap_err();
-        assert!(err.contains("missing") || err.contains("unknown binding"), "got: {err}");
+        assert!(
+            err.contains("missing") || err.contains("unknown binding"),
+            "got: {err}"
+        );
     }
 
     #[test]

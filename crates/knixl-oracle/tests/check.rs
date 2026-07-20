@@ -7,7 +7,11 @@ use knixl_ir::{AttrKey, AttrPath, NixExpr};
 use knixl_oracle::{Oracle, TypeMismatch};
 
 fn ident_path(segs: &[&str]) -> AttrPath {
-    AttrPath(segs.iter().map(|s| AttrKey::Ident((*s).to_string())).collect())
+    AttrPath(
+        segs.iter()
+            .map(|s| AttrKey::Ident((*s).to_string()))
+            .collect(),
+    )
 }
 
 fn fixture() -> Oracle {
@@ -18,14 +22,22 @@ fn fixture() -> Oracle {
 #[test]
 fn accepts_a_known_option_of_the_right_type() {
     let oracle = fixture();
-    assert!(oracle.check(&ident_path(&["services", "nginx", "enable"]), &NixExpr::Bool(true)).is_ok());
+    assert!(oracle
+        .check(
+            &ident_path(&["services", "nginx", "enable"]),
+            &NixExpr::Bool(true)
+        )
+        .is_ok());
 }
 
 #[test]
 fn rejects_unknown_option_paths() {
     let oracle = fixture();
     let err = oracle
-        .check(&ident_path(&["services", "nginx", "bogusOption"]), &NixExpr::Bool(true))
+        .check(
+            &ident_path(&["services", "nginx", "bogusOption"]),
+            &NixExpr::Bool(true),
+        )
         .unwrap_err();
     assert!(matches!(err, TypeMismatch::UnknownOption { .. }));
 }
@@ -34,7 +46,10 @@ fn rejects_unknown_option_paths() {
 fn rejects_a_gross_type_mismatch() {
     let oracle = fixture();
     let err = oracle
-        .check(&ident_path(&["services", "nginx", "enable"]), &NixExpr::Str("yes".into()))
+        .check(
+            &ident_path(&["services", "nginx", "enable"]),
+            &NixExpr::Str("yes".into()),
+        )
         .unwrap_err();
     assert!(matches!(err, TypeMismatch::WrongType { .. }));
 }
@@ -43,7 +58,10 @@ fn rejects_a_gross_type_mismatch() {
 fn rejects_writes_to_read_only_options() {
     let oracle = fixture();
     let err = oracle
-        .check(&ident_path(&["system", "stateVersion"]), &NixExpr::Str("25.11".into()))
+        .check(
+            &ident_path(&["system", "stateVersion"]),
+            &NixExpr::Str("25.11".into()),
+        )
         .unwrap_err();
     assert!(matches!(err, TypeMismatch::ReadOnly { .. }));
 }
@@ -73,7 +91,9 @@ fn accepts_a_submodule_root_that_has_known_children() {
         AttrKey::Ident("virtualHosts".into()),
         AttrKey::Quoted("example.com".into()),
     ]);
-    assert!(oracle.check(&path, &NixExpr::AttrSet(Default::default())).is_ok());
+    assert!(oracle
+        .check(&path, &NixExpr::AttrSet(Default::default()))
+        .is_ok());
 }
 
 #[test]
@@ -83,9 +103,13 @@ fn from_rev_cache_loads_options_keyed_by_rev() {
     std::env::set_var("XDG_CACHE_HOME", &tmp);
 
     // Nothing cached yet, and an empty rev, both resolve to None (best-effort skip).
-    assert!(knixl_oracle::Oracle::from_rev_cache("").expect("empty rev").is_none());
+    assert!(knixl_oracle::Oracle::from_rev_cache("")
+        .expect("empty rev")
+        .is_none());
     let rev = "deadbeefcafef00d";
-    assert!(knixl_oracle::Oracle::from_rev_cache(rev).expect("miss").is_none());
+    assert!(knixl_oracle::Oracle::from_rev_cache(rev)
+        .expect("miss")
+        .is_none());
 
     // Populate the cache at the rev's path, then it loads and checks.
     let dest = knixl_oracle::cache_path(rev).expect("cache path under XDG_CACHE_HOME");
@@ -96,9 +120,14 @@ fn from_rev_cache_loads_options_keyed_by_rev() {
     )
     .unwrap();
 
-    let oracle = knixl_oracle::Oracle::from_rev_cache(rev).expect("load").expect("cached present");
+    let oracle = knixl_oracle::Oracle::from_rev_cache(rev)
+        .expect("load")
+        .expect("cached present");
     assert!(oracle
-        .check(&ident_path(&["services", "nginx", "enable"]), &NixExpr::Bool(true))
+        .check(
+            &ident_path(&["services", "nginx", "enable"]),
+            &NixExpr::Bool(true)
+        )
         .is_ok());
 
     std::env::remove_var("XDG_CACHE_HOME");
@@ -115,11 +144,17 @@ fn real_options_json_loads_when_provided() {
 
     // A real, well-known boolean option is accepted.
     assert!(oracle
-        .check(&ident_path(&["services", "nginx", "enable"]), &NixExpr::Bool(true))
+        .check(
+            &ident_path(&["services", "nginx", "enable"]),
+            &NixExpr::Bool(true)
+        )
         .is_ok());
     // A path that certainly does not exist is rejected.
     let err = oracle
-        .check(&ident_path(&["services", "nginx", "totallyBogusXyz"]), &NixExpr::Bool(true))
+        .check(
+            &ident_path(&["services", "nginx", "totallyBogusXyz"]),
+            &NixExpr::Bool(true),
+        )
         .unwrap_err();
     assert!(matches!(err, TypeMismatch::UnknownOption { .. }));
 }

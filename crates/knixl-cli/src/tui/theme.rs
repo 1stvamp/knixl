@@ -55,12 +55,19 @@ pub fn bad() -> Style {
 
 /// The focused/selected element: violet background, ink foreground.
 pub fn selected() -> Style {
-    Style::new().foreground(color(INK)).background(color(VIOLET)).bold(true)
+    Style::new()
+        .foreground(color(INK))
+        .background(color(VIOLET))
+        .bold(true)
 }
 
 /// A title chip: solid pink background with ink text, e.g. ` install `.
 pub fn chip(label: &str) -> String {
-    Style::new().foreground(color(INK)).background(color(PINK)).bold(true).render(label)
+    Style::new()
+        .foreground(color(INK))
+        .background(color(PINK))
+        .bold(true)
+        .render(label)
 }
 
 /// Rounded-border colour: pink when the panel is focused, violet otherwise.
@@ -74,9 +81,19 @@ pub fn toggle(on: bool) -> String {
     let track = Style::new().foreground(color(EXTRA_DIM));
     let knob = Style::new().foreground(color(if on { GREEN } else { DIM }));
     if on {
-        format!("{}{}{}", track.render("( "), knob.render("\u{25cf}"), track.render(")"))
+        format!(
+            "{}{}{}",
+            track.render("( "),
+            knob.render("\u{25cf}"),
+            track.render(")")
+        )
     } else {
-        format!("{}{}{}", track.render("("), knob.render("\u{25cf}"), track.render(" )"))
+        format!(
+            "{}{}{}",
+            track.render("("),
+            knob.render("\u{25cf}"),
+            track.render(" )")
+        )
     }
 }
 
@@ -92,9 +109,18 @@ fn gradient_fg(text: &str) -> String {
     let n = chars.len();
     let mut out = String::new();
     for (i, ch) in chars.into_iter().enumerate() {
-        let t = if n <= 1 { 0.0 } else { i as f32 / (n - 1) as f32 };
+        let t = if n <= 1 {
+            0.0
+        } else {
+            i as f32 / (n - 1) as f32
+        };
         let hex = ramp(t);
-        out.push_str(&Style::new().foreground(color(&hex)).bold(true).render(&ch.to_string()));
+        out.push_str(
+            &Style::new()
+                .foreground(color(&hex))
+                .bold(true)
+                .render(&ch.to_string()),
+        );
     }
     out
 }
@@ -102,8 +128,11 @@ fn gradient_fg(text: &str) -> String {
 /// Interpolate the three-stop ramp at `t` in [0, 1], returning a `#rrggbb` string.
 fn ramp(t: f32) -> String {
     let t = t.clamp(0.0, 1.0);
-    let (a, b, local) =
-        if t < 0.5 { (STOPS[0], STOPS[1], t * 2.0) } else { (STOPS[1], STOPS[2], (t - 0.5) * 2.0) };
+    let (a, b, local) = if t < 0.5 {
+        (STOPS[0], STOPS[1], t * 2.0)
+    } else {
+        (STOPS[1], STOPS[2], (t - 0.5) * 2.0)
+    };
     lerp_hex(a, b, local)
 }
 

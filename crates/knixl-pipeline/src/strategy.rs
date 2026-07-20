@@ -57,7 +57,10 @@ pub fn select_strategy(
         Ok(()) => Ok(PinStrategy::Override),
         Err(ov) => match build(&commit_mix_test_expr(rev, name)) {
             Ok(()) => Ok(PinStrategy::CommitMix),
-            Err(cm) => Err(SelectError::NeitherBuilds { commit_mix: cm, over: ov }),
+            Err(cm) => Err(SelectError::NeitherBuilds {
+                commit_mix: cm,
+                over: ov,
+            }),
         },
     }
 }
@@ -80,7 +83,10 @@ mod tests {
 
     impl FakeBuilder {
         fn new(script: Vec<(String, Result<(), String>)>) -> Self {
-            FakeBuilder { script: script.into_iter().collect(), calls: RefCell::new(Vec::new()) }
+            FakeBuilder {
+                script: script.into_iter().collect(),
+                calls: RefCell::new(Vec::new()),
+            }
         }
 
         fn build(&self, expr: &str) -> Result<(), String> {
@@ -105,7 +111,10 @@ mod tests {
         let fake = FakeBuilder::new(vec![]);
         let got = select_strategy(REV, BASELINE, NAME, true, true, &|e| fake.build(e));
         assert_eq!(got, Ok(PinStrategy::CommitMix));
-        assert!(fake.calls().is_empty(), "build must not be called when no_abi_check is set");
+        assert!(
+            fake.calls().is_empty(),
+            "build must not be called when no_abi_check is set"
+        );
     }
 
     #[test]
@@ -113,7 +122,10 @@ mod tests {
         let fake = FakeBuilder::new(vec![]);
         let got = select_strategy(REV, BASELINE, NAME, false, false, &|e| fake.build(e));
         assert_eq!(got, Ok(PinStrategy::CommitMix));
-        assert!(fake.calls().is_empty(), "build must not be called when nix is unavailable");
+        assert!(
+            fake.calls().is_empty(),
+            "build must not be called when nix is unavailable"
+        );
     }
 
     #[test]
@@ -121,7 +133,10 @@ mod tests {
         let fake = FakeBuilder::new(vec![]);
         let got = select_strategy(BASELINE, BASELINE, NAME, true, false, &|e| fake.build(e));
         assert_eq!(got, Ok(PinStrategy::CommitMix));
-        assert!(fake.calls().is_empty(), "build must not be called when rev == baseline_rev");
+        assert!(
+            fake.calls().is_empty(),
+            "build must not be called when rev == baseline_rev"
+        );
     }
 
     #[test]
@@ -130,7 +145,11 @@ mod tests {
         let fake = FakeBuilder::new(vec![(over.clone(), Ok(()))]);
         let got = select_strategy(REV, BASELINE, NAME, true, false, &|e| fake.build(e));
         assert_eq!(got, Ok(PinStrategy::Override));
-        assert_eq!(fake.calls(), vec![over], "only the override expr should have been built");
+        assert_eq!(
+            fake.calls(),
+            vec![over],
+            "only the override expr should have been built"
+        );
     }
 
     #[test]
@@ -143,7 +162,11 @@ mod tests {
         ]);
         let got = select_strategy(REV, BASELINE, NAME, true, false, &|e| fake.build(e));
         assert_eq!(got, Ok(PinStrategy::CommitMix));
-        assert_eq!(fake.calls(), vec![over, cm], "both exprs built, override then commit-mix");
+        assert_eq!(
+            fake.calls(),
+            vec![over, cm],
+            "both exprs built, override then commit-mix"
+        );
     }
 
     #[test]

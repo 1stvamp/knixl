@@ -68,15 +68,23 @@ fn lookup_external(bin: &Path, name: &str, version: &str) -> Result<Resolved, Pi
         if combined.to_lowercase().contains("not found") {
             return Err(PinError::NotFound(format!("{name} {version}: {combined}")));
         }
-        let err_msg =
-            if !stderr.is_empty() { stderr.trim().to_string() } else { stdout.trim().to_string() };
+        let err_msg = if !stderr.is_empty() {
+            stderr.trim().to_string()
+        } else {
+            stdout.trim().to_string()
+        };
         return Err(PinError::Failed(err_msg));
     }
     let line = String::from_utf8_lossy(&out.stdout);
     let mut it = line.split_whitespace();
     match (it.next(), it.next()) {
-        (Some(rev), None) => Ok(Resolved { nixpkgs_rev: rev.to_string() }),
-        _ => Err(PinError::Failed(format!("resolver output not `<commit>`: {}", line.trim()))),
+        (Some(rev), None) => Ok(Resolved {
+            nixpkgs_rev: rev.to_string(),
+        }),
+        _ => Err(PinError::Failed(format!(
+            "resolver output not `<commit>`: {}",
+            line.trim()
+        ))),
     }
 }
 
@@ -99,9 +107,15 @@ fn lookup_builtin(name: &str, version: &str) -> Result<Resolved, PinError> {
             )))
         }
         Err(ureq::Error::StatusCode(code)) => {
-            return Err(PinError::Unavailable(format!("version index returned HTTP {code}")))
+            return Err(PinError::Unavailable(format!(
+                "version index returned HTTP {code}"
+            )))
         }
-        Err(e) => return Err(PinError::Unavailable(format!("version index unreachable: {e}"))),
+        Err(e) => {
+            return Err(PinError::Unavailable(format!(
+                "version index unreachable: {e}"
+            )))
+        }
     };
     let commit = commit_hash(&body).ok_or_else(|| {
         PinError::Failed(format!(
@@ -109,7 +123,9 @@ fn lookup_builtin(name: &str, version: &str) -> Result<Resolved, PinError> {
             body.chars().take(200).collect::<String>()
         ))
     })?;
-    Ok(Resolved { nixpkgs_rev: commit })
+    Ok(Resolved {
+        nixpkgs_rev: commit,
+    })
 }
 
 /// The top-level `commit_hash` string from a resolve-API response body.
@@ -166,37 +182,55 @@ mod tests {
     #[test]
     fn lookup_not_found_maps_to_notfound() {
         let r = PinResolver::External(shim("nf", "", "version not found", 1));
-        assert!(matches!(r.lookup("htop", "9.9.9"), Err(PinError::NotFound(_))));
+        assert!(matches!(
+            r.lookup("htop", "9.9.9"),
+            Err(PinError::NotFound(_))
+        ));
     }
 
     #[test]
     fn lookup_other_failure_maps_to_failed() {
         let r = PinResolver::External(shim("fail", "", "boom", 2));
-        assert!(matches!(r.lookup("htop", "3.2.1"), Err(PinError::Failed(_))));
+        assert!(matches!(
+            r.lookup("htop", "3.2.1"),
+            Err(PinError::Failed(_))
+        ));
     }
 
     #[test]
     fn lookup_missing_binary_is_unavailable() {
         let r = PinResolver::External(PathBuf::from("/nonexistent/knixl-no-such-resolver"));
-        assert!(matches!(r.lookup("htop", "3.2.1"), Err(PinError::Unavailable(_))));
+        assert!(matches!(
+            r.lookup("htop", "3.2.1"),
+            Err(PinError::Unavailable(_))
+        ));
     }
 
     #[test]
     fn lookup_empty_stdout_is_failed() {
         let r = PinResolver::External(shim("bad", "", "", 0));
-        assert!(matches!(r.lookup("htop", "3.2.1"), Err(PinError::Failed(_))));
+        assert!(matches!(
+            r.lookup("htop", "3.2.1"),
+            Err(PinError::Failed(_))
+        ));
     }
 
     #[test]
     fn lookup_not_found_on_stdout_maps_to_notfound() {
         let r = PinResolver::External(shim("nf-stdout", "version not found", "", 1));
-        assert!(matches!(r.lookup("htop", "9.9.9"), Err(PinError::NotFound(_))));
+        assert!(matches!(
+            r.lookup("htop", "9.9.9"),
+            Err(PinError::NotFound(_))
+        ));
     }
 
     #[test]
     fn lookup_trailing_tokens_is_failed() {
         let r = PinResolver::External(shim("trailing", "abc123 extra", "", 0));
-        assert!(matches!(r.lookup("htop", "3.2.1"), Err(PinError::Failed(_))));
+        assert!(matches!(
+            r.lookup("htop", "3.2.1"),
+            Err(PinError::Failed(_))
+        ));
     }
 
     const SAMPLE_RESOLVE: &str = r#"{"commit_hash":"5629520edecb69630a3f4d17d3d33fc96c13f6fe","version":"14.1.0","platforms":["x86_64-linux"],"name":"ripgrep"}"#;

@@ -11,11 +11,18 @@ use knixl_nix::Formatter;
 use knixl_pipeline::gather::gather;
 
 fn identity_formatter() -> Formatter {
-    Formatter { name: "identity".into(), version: "0".into(), bin: PathBuf::from("cat") }
+    Formatter {
+        name: "identity".into(),
+        version: "0".into(),
+        bin: PathBuf::from("cat"),
+    }
 }
 
 fn temp_root(tag: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("knixl-baseline-validation-{}-{tag}", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "knixl-baseline-validation-{}-{tag}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("hosts")).unwrap();
     root
@@ -31,11 +38,21 @@ fn declared_release_with_no_lock_baseline_is_a_validation_error() {
     .unwrap();
 
     let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
-    let plan = Plan::compute(&project.inputs, &project.disk, &project.lock, &project.versions);
+    let plan = Plan::compute(
+        &project.inputs,
+        &project.disk,
+        &project.lock,
+        &project.versions,
+    );
 
-    assert!(plan.has_validation_errors(), "unresolved baseline must surface as a validation error");
     assert!(
-        plan.validation_errors.iter().any(|e| e.contains("web") && e.contains("25.05") && e.contains("knixl upgrade")),
+        plan.has_validation_errors(),
+        "unresolved baseline must surface as a validation error"
+    );
+    assert!(
+        plan.validation_errors
+            .iter()
+            .any(|e| e.contains("web") && e.contains("25.05") && e.contains("knixl upgrade")),
         "got: {:?}",
         plan.validation_errors
     );
@@ -69,7 +86,11 @@ fn declared_release_matching_the_lock_baseline_has_no_validation_error() {
 
     let project = gather(&root, &formatter, tool).expect("gather");
     assert!(
-        !project.inputs.validation_errors.iter().any(|e| e.contains("is not resolved")),
+        !project
+            .inputs
+            .validation_errors
+            .iter()
+            .any(|e| e.contains("is not resolved")),
         "got: {:?}",
         project.inputs.validation_errors
     );

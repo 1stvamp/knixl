@@ -13,7 +13,9 @@ use lipgloss::{join_vertical, rounded_border, Style, LEFT};
 
 use knixl_pipeline::install::HostInfo;
 
-use super::{config, theme, widgets, BuildOutcome, Entry, Nav, PinOutcome, Step, StrategyOutcome, Verified};
+use super::{
+    config, theme, widgets, BuildOutcome, Entry, Nav, PinOutcome, Step, StrategyOutcome, Verified,
+};
 
 /// Does `pkgs.<pkg>` resolve. Host-independent, recomputed when the package changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,8 +100,14 @@ enum Focus {
     Cancel,
 }
 
-const FOCUS_ORDER: [Focus; 6] =
-    [Focus::Host, Focus::Package, Focus::Strict, Focus::Preview, Focus::Apply, Focus::Cancel];
+const FOCUS_ORDER: [Focus; 6] = [
+    Focus::Host,
+    Focus::Package,
+    Focus::Strict,
+    Focus::Preview,
+    Focus::Apply,
+    Focus::Cancel,
+];
 
 pub struct InstallModel {
     pkg: textinput::Model,
@@ -165,7 +173,13 @@ impl InstallModel {
     pub fn enter(size: (u16, u16)) -> (Self, Option<Cmd>) {
         let cfg = config();
         let (host_sel, pkg_value, strict, version, no_abi_check) = match &cfg.entry {
-            Entry::Install { pkg, strict, host, version, no_abi_check } => {
+            Entry::Install {
+                pkg,
+                strict,
+                host,
+                version,
+                no_abi_check,
+            } => {
                 let idx = host
                     .as_ref()
                     .and_then(|n| cfg.hosts.iter().position(|h| &h.name == n))
@@ -191,8 +205,11 @@ impl InstallModel {
         } else {
             BuildState::Off
         };
-        let pin_state =
-            if cfg.pin.is_some() && version.is_some() { PinState::Resolving } else { PinState::Off };
+        let pin_state = if cfg.pin.is_some() && version.is_some() {
+            PinState::Resolving
+        } else {
+            PinState::Off
+        };
         let mut model = InstallModel {
             pkg,
             hosts: cfg.hosts.clone(),
@@ -268,7 +285,10 @@ impl InstallModel {
     }
 
     fn focus_index(&self) -> usize {
-        FOCUS_ORDER.iter().position(|f| *f == self.focus).unwrap_or(0)
+        FOCUS_ORDER
+            .iter()
+            .position(|f| *f == self.focus)
+            .unwrap_or(0)
     }
 
     fn focus_next(&mut self) {
@@ -411,7 +431,10 @@ impl InstallModel {
         let seq = self.mark_verifying();
         let pkg = self.pkg.value();
         let host = self.hosts[self.host_sel].clone();
-        Some(command::batch(vec![verify_cmd(seq, pkg, host), spin_start(self.spinner.tick_msg())]))
+        Some(command::batch(vec![
+            verify_cmd(seq, pkg, host),
+            spin_start(self.spinner.tick_msg()),
+        ]))
     }
 
     /// Start a build for the current package, if `--build` was requested. Host-independent,
@@ -424,7 +447,10 @@ impl InstallModel {
         config().build.as_ref()?; // None => --build not requested
         let seq = self.mark_building();
         let pkg = self.pkg.value();
-        Some(command::batch(vec![build_cmd(seq, pkg), spin_start(self.build_spinner.tick_msg())]))
+        Some(command::batch(vec![
+            build_cmd(seq, pkg),
+            spin_start(self.build_spinner.tick_msg()),
+        ]))
     }
 
     /// Start a pin resolve for the current package, if a version was requested. Host-
@@ -434,7 +460,10 @@ impl InstallModel {
         let version = self.version.clone()?;
         let seq = self.mark_resolving();
         let pkg = self.pkg.value();
-        Some(command::batch(vec![pin_cmd(seq, pkg, version), spin_start(self.pin_spinner.tick_msg())]))
+        Some(command::batch(vec![
+            pin_cmd(seq, pkg, version),
+            spin_start(self.pin_spinner.tick_msg()),
+        ]))
     }
 
     /// Start strategy selection for the resolved pin, if a strategy fn was injected. Called
@@ -489,11 +518,16 @@ impl InstallModel {
             // A fresh resolve (not a stale one) for a versioned install kicks strategy
             // selection instead of the ambient build (see `begin_build`'s guard).
             let cmd = if seq == self.pin_seq && self.pin == PinState::Resolved {
-                self.pin_resolved.clone().and_then(|rev| self.begin_strategy(rev))
+                self.pin_resolved
+                    .clone()
+                    .and_then(|rev| self.begin_strategy(rev))
             } else {
                 None
             };
-            return Step { nav: Nav::Stay, cmd };
+            return Step {
+                nav: Nav::Stay,
+                cmd,
+            };
         }
         if let Some(done) = msg.downcast_ref::<StrategyDone>() {
             self.on_strategy_done(done.seq, done.outcome.clone());
@@ -506,27 +540,44 @@ impl InstallModel {
                 let cmd = self.build_spinner.update(msg);
                 return Step {
                     nav: Nav::Stay,
-                    cmd: if self.build == BuildState::Building { cmd } else { None },
+                    cmd: if self.build == BuildState::Building {
+                        cmd
+                    } else {
+                        None
+                    },
                 };
             }
             if tick.id == self.pin_spinner.id() {
                 let cmd = self.pin_spinner.update(msg);
                 return Step {
                     nav: Nav::Stay,
-                    cmd: if self.pin == PinState::Resolving { cmd } else { None },
+                    cmd: if self.pin == PinState::Resolving {
+                        cmd
+                    } else {
+                        None
+                    },
                 };
             }
             if tick.id == self.strategy_spinner.id() {
                 let cmd = self.strategy_spinner.update(msg);
                 return Step {
                     nav: Nav::Stay,
-                    cmd: if self.strategy == StrategyState::Selecting { cmd } else { None },
+                    cmd: if self.strategy == StrategyState::Selecting {
+                        cmd
+                    } else {
+                        None
+                    },
                 };
             }
             let cmd = self.spinner.update(msg);
-            return Step { nav: Nav::Stay, cmd: if self.verifying { cmd } else { None } };
+            return Step {
+                nav: Nav::Stay,
+                cmd: if self.verifying { cmd } else { None },
+            };
         }
-        let Some((code, mods)) = key_of(&msg) else { return Step::stay() };
+        let Some((code, mods)) = key_of(&msg) else {
+            return Step::stay();
+        };
 
         // Ctrl-C and Esc always back out, regardless of focus (so they still work while the
         // package field has focus and would otherwise swallow the key).
@@ -551,14 +602,20 @@ impl InstallModel {
             Focus::Host => match code {
                 KeyCode::Left => {
                     if self.host_sel > 0 && self.set_host(self.host_sel - 1) {
-                        Step { nav: Nav::Stay, cmd: self.on_host_changed() }
+                        Step {
+                            nav: Nav::Stay,
+                            cmd: self.on_host_changed(),
+                        }
                     } else {
                         Step::stay()
                     }
                 }
                 KeyCode::Right => {
                     if self.set_host(self.host_sel + 1) {
-                        Step { nav: Nav::Stay, cmd: self.on_host_changed() }
+                        Step {
+                            nav: Nav::Stay,
+                            cmd: self.on_host_changed(),
+                        }
                     } else {
                         Step::stay()
                     }
@@ -573,11 +630,17 @@ impl InstallModel {
                     let v = self.begin_verify();
                     let b = self.begin_build();
                     let p = self.begin_pin();
-                    Step { nav: Nav::Stay, cmd: batch_all(vec![v, b, p]) }
+                    Step {
+                        nav: Nav::Stay,
+                        cmd: batch_all(vec![v, b, p]),
+                    }
                 }
                 _ => {
                     let cmd = self.pkg.update(msg);
-                    Step { nav: Nav::Stay, cmd }
+                    Step {
+                        nav: Nav::Stay,
+                        cmd,
+                    }
                 }
             },
             Focus::Strict => match code {
@@ -589,7 +652,10 @@ impl InstallModel {
             },
             Focus::Preview => {
                 let cmd = self.preview.update(msg);
-                Step { nav: Nav::Stay, cmd }
+                Step {
+                    nav: Nav::Stay,
+                    cmd,
+                }
             }
             Focus::Apply => match code {
                 KeyCode::Enter if self.apply_allowed() => Step::nav(Nav::Apply {
@@ -648,8 +714,12 @@ impl InstallModel {
             theme::toggle(self.strict),
         );
 
-        let verify_line =
-            format!("{}{}{}", marker(false), theme::dim().render("verify "), self.verify_status());
+        let verify_line = format!(
+            "{}{}{}",
+            marker(false),
+            theme::dim().render("verify "),
+            self.verify_status()
+        );
 
         let build_line = (self.build != BuildState::Off).then(|| {
             let status = match self.build {
@@ -659,20 +729,34 @@ impl InstallModel {
                 BuildState::Skipped => theme::amber().render("\u{00b7} build skipped"),
                 BuildState::Off => String::new(),
             };
-            format!("{}{}{}", marker(false), theme::dim().render("build  "), status)
+            format!(
+                "{}{}{}",
+                marker(false),
+                theme::dim().render("build  "),
+                status
+            )
         });
 
         let pin_line = (self.pin != PinState::Off).then(|| {
             let status = match self.pin {
                 PinState::Resolving => format!("{} resolving", self.pin_spinner.view()),
                 PinState::Resolved => {
-                    let rev = self.pin_resolved.as_deref().map(short_rev).unwrap_or_default();
+                    let rev = self
+                        .pin_resolved
+                        .as_deref()
+                        .map(short_rev)
+                        .unwrap_or_default();
                     theme::good().render(&format!("\u{2713} pinned {rev}"))
                 }
                 PinState::Failed => theme::bad().render("\u{2717} pin failed"),
                 PinState::Off => String::new(),
             };
-            format!("{}{}{}", marker(false), theme::dim().render("pin    "), status)
+            format!(
+                "{}{}{}",
+                marker(false),
+                theme::dim().render("pin    "),
+                status
+            )
         });
 
         let strategy_line = (self.strategy != StrategyState::Off).then(|| {
@@ -688,7 +772,12 @@ impl InstallModel {
                 }
                 StrategyState::Off => String::new(),
             };
-            format!("{}{}{}", marker(false), theme::dim().render("strategy "), status)
+            format!(
+                "{}{}{}",
+                marker(false),
+                theme::dim().render("strategy "),
+                status
+            )
         });
 
         let preview_box = Style::new()
@@ -713,7 +802,13 @@ impl InstallModel {
             ("esc", "back"),
         ]);
 
-        let mut lines = vec![theme::chip(" install "), host_line, pkg_line, strict_line, verify_line];
+        let mut lines = vec![
+            theme::chip(" install "),
+            host_line,
+            pkg_line,
+            strict_line,
+            verify_line,
+        ];
         if let Some(b) = build_line {
             lines.push(b);
         }
@@ -788,7 +883,10 @@ fn verify_cmd(seq: u64, pkg: String, host: HostInfo) -> Cmd {
 /// a stale build (package edited again) is discarded. Only called when `config().build` is
 /// `Some`.
 fn build_cmd(seq: u64, pkg: String) -> Cmd {
-    let build = config().build.clone().expect("build fn present when begin_build ran");
+    let build = config()
+        .build
+        .clone()
+        .expect("build fn present when begin_build ran");
     Box::pin(async move {
         match tokio::task::spawn_blocking(move || build(&pkg)).await {
             Ok(outcome) => Some(Box::new(BuildDone { seq, outcome }) as Msg),
@@ -801,7 +899,10 @@ fn build_cmd(seq: u64, pkg: String) -> Cmd {
 /// stale resolve (package edited again) is discarded. Only called when `config().pin` is
 /// `Some` and a version was requested.
 fn pin_cmd(seq: u64, pkg: String, version: String) -> Cmd {
-    let pin = config().pin.clone().expect("pin fn present when begin_pin ran");
+    let pin = config()
+        .pin
+        .clone()
+        .expect("pin fn present when begin_pin ran");
     Box::pin(async move {
         match tokio::task::spawn_blocking(move || pin(&pkg, &version)).await {
             Ok(outcome) => Some(Box::new(PinDone { seq, outcome }) as Msg),
@@ -816,7 +917,10 @@ fn pin_cmd(seq: u64, pkg: String, version: String) -> Cmd {
 /// resolved. `host` is the currently selected host's name: the decision is host-dependent
 /// (#28 review fix), so it is forwarded rather than fixed at injection time.
 fn strategy_cmd(seq: u64, pkg: String, rev: String, host: String) -> Cmd {
-    let strategy = config().strategy.clone().expect("strategy fn present when begin_strategy ran");
+    let strategy = config()
+        .strategy
+        .clone()
+        .expect("strategy fn present when begin_strategy ran");
     Box::pin(async move {
         match tokio::task::spawn_blocking(move || strategy(&pkg, &rev, &host)).await {
             Ok(outcome) => Some(Box::new(StrategyDone { seq, outcome }) as Msg),
@@ -855,7 +959,11 @@ mod tests {
     use std::sync::{Arc, Once};
 
     fn host(name: &str) -> HostInfo {
-        HostInfo { name: name.into(), default: false, path: PathBuf::from(format!("hosts/{name}.kdl")) }
+        HostInfo {
+            name: name.into(),
+            default: false,
+            path: PathBuf::from(format!("hosts/{name}.kdl")),
+        }
     }
 
     /// Sets the TUI's process-global config, once, with a `strategy` fn present. Most tests
@@ -883,7 +991,10 @@ mod tests {
                 build: None,
                 pin: None,
                 strategy: Some(Arc::new(|_pkg: &str, _rev: &str, host: &str| {
-                    StrategyOutcome::Chosen { strategy: PinStrategy::CommitMix, label: host.to_string() }
+                    StrategyOutcome::Chosen {
+                        strategy: PinStrategy::CommitMix,
+                        label: host.to_string(),
+                    }
                 })),
             });
         });
@@ -924,7 +1035,11 @@ mod tests {
     }
 
     fn verified(resolves: Resolve, parses: Parse) -> Verified {
-        Verified { preview: "environment.systemPackages = [ pkgs.ripgrep ];".into(), resolves, parses }
+        Verified {
+            preview: "environment.systemPackages = [ pkgs.ripgrep ];".into(),
+            resolves,
+            parses,
+        }
     }
 
     #[test]
@@ -943,7 +1058,12 @@ mod tests {
     fn arrow_keys_move_the_focus_selector() {
         let mut m = model(2);
         assert_eq!(m.focus, Focus::Package);
-        let key = |c| Box::new(KeyMsg { key: c, modifiers: KeyModifiers::NONE }) as Msg;
+        let key = |c| {
+            Box::new(KeyMsg {
+                key: c,
+                modifiers: KeyModifiers::NONE,
+            }) as Msg
+        };
         m.update(key(KeyCode::Down), (80, 24));
         assert_eq!(m.focus, Focus::Strict, "down moves to the next control");
         m.update(key(KeyCode::Up), (80, 24));
@@ -1015,7 +1135,10 @@ mod tests {
         let first = m.mark_verifying();
         let _second = m.mark_verifying(); // supersedes the first
         m.on_verify_done(first, verified(Resolve::No, Parse::Ok));
-        assert!(m.verifying, "the superseded result must not clear the in-flight state");
+        assert!(
+            m.verifying,
+            "the superseded result must not clear the in-flight state"
+        );
         assert_eq!(m.resolves, Resolve::Yes, "stale resolve discarded");
     }
 
@@ -1089,7 +1212,11 @@ mod tests {
         let stale = seq; // superseded
         m.mark_building();
         m.on_build_done(stale, BuildOutcome::Failed);
-        assert_eq!(m.build, BuildState::Building, "stale build result discarded");
+        assert_eq!(
+            m.build,
+            BuildState::Building,
+            "stale build result discarded"
+        );
     }
 
     #[test]
@@ -1125,8 +1252,15 @@ mod tests {
         // this is safe to call even without `with_strategy_config`.
         let mut m = model(1);
         m.version = Some("1.2.3".into());
-        assert!(m.begin_build().is_none(), "a versioned install gets strategy, not the ambient build");
-        assert_eq!(m.build, BuildState::Off, "build state is left untouched, never Building");
+        assert!(
+            m.begin_build().is_none(),
+            "a versioned install gets strategy, not the ambient build"
+        );
+        assert_eq!(
+            m.build,
+            BuildState::Off,
+            "build state is left untouched, never Building"
+        );
     }
 
     #[test]
@@ -1136,18 +1270,32 @@ mod tests {
         m.version = Some("1.2.3".into());
         m.build = BuildState::Off; // what `enter()` seeds for a versioned install
         let seq = m.mark_resolving();
-        let msg = Box::new(PinDone { seq, outcome: PinOutcome::Resolved("deadbeef".into()) }) as Msg;
+        let msg = Box::new(PinDone {
+            seq,
+            outcome: PinOutcome::Resolved("deadbeef".into()),
+        }) as Msg;
         let step = m.update(msg, (80, 24));
 
         assert_eq!(m.pin, PinState::Resolved);
-        assert_eq!(m.build, BuildState::Off, "the ambient build never enters Building");
-        assert_eq!(m.strategy, StrategyState::Selecting, "the resolved pin kicks strategy selection");
+        assert_eq!(
+            m.build,
+            BuildState::Off,
+            "the ambient build never enters Building"
+        );
+        assert_eq!(
+            m.strategy,
+            StrategyState::Selecting,
+            "the resolved pin kicks strategy selection"
+        );
         assert!(step.cmd.is_some(), "strategy selection spawns a command");
 
         let strat_seq = m.strategy_seq;
         m.on_strategy_done(
             strat_seq,
-            StrategyOutcome::Chosen { strategy: PinStrategy::CommitMix, label: "commit-mix".into() },
+            StrategyOutcome::Chosen {
+                strategy: PinStrategy::CommitMix,
+                label: "commit-mix".into(),
+            },
         );
         assert_eq!(m.strategy, StrategyState::Chosen(PinStrategy::CommitMix));
     }
@@ -1159,18 +1307,31 @@ mod tests {
         m.version = Some("1.2.3".into());
         let first = m.mark_resolving();
         m.mark_resolving(); // supersedes the first
-        let msg = Box::new(PinDone { seq: first, outcome: PinOutcome::Resolved("deadbeef".into()) }) as Msg;
+        let msg = Box::new(PinDone {
+            seq: first,
+            outcome: PinOutcome::Resolved("deadbeef".into()),
+        }) as Msg;
         m.update(msg, (80, 24));
-        assert_eq!(m.strategy, StrategyState::Off, "a stale pin resolve must not kick strategy selection");
+        assert_eq!(
+            m.strategy,
+            StrategyState::Off,
+            "a stale pin resolve must not kick strategy selection"
+        );
     }
 
     #[test]
     fn strategy_gating_blocks_apply_while_selecting_and_on_failure() {
         let mut m = model(1);
         m.strategy = StrategyState::Selecting;
-        assert!(!m.apply_allowed(), "in-flight strategy selection blocks apply");
+        assert!(
+            !m.apply_allowed(),
+            "in-flight strategy selection blocks apply"
+        );
         m.strategy = StrategyState::Failed;
-        assert!(!m.apply_allowed(), "a failed strategy selection blocks apply");
+        assert!(
+            !m.apply_allowed(),
+            "a failed strategy selection blocks apply"
+        );
         m.strategy = StrategyState::Chosen(PinStrategy::CommitMix);
         assert!(m.apply_allowed(), "a chosen strategy allows apply");
     }
@@ -1188,7 +1349,10 @@ mod tests {
         let seq = m.mark_selecting();
         m.on_strategy_done(
             seq,
-            StrategyOutcome::Chosen { strategy: PinStrategy::Override, label: "override".into() },
+            StrategyOutcome::Chosen {
+                strategy: PinStrategy::Override,
+                label: "override".into(),
+            },
         );
         assert_eq!(m.strategy, StrategyState::Chosen(PinStrategy::Override));
         assert_eq!(m.strategy_msg.as_deref(), Some("override"));
@@ -1196,14 +1360,21 @@ mod tests {
         let stale = seq;
         m.mark_selecting();
         m.on_strategy_done(stale, StrategyOutcome::Failed("boom".into()));
-        assert_eq!(m.strategy, StrategyState::Selecting, "stale strategy result discarded");
+        assert_eq!(
+            m.strategy,
+            StrategyState::Selecting,
+            "stale strategy result discarded"
+        );
     }
 
     #[test]
     fn on_strategy_done_sets_failed_with_message() {
         let mut m = model(1);
         let seq = m.mark_selecting();
-        m.on_strategy_done(seq, StrategyOutcome::Failed("neither strategy builds".into()));
+        m.on_strategy_done(
+            seq,
+            StrategyOutcome::Failed("neither strategy builds".into()),
+        );
         assert_eq!(m.strategy, StrategyState::Failed);
         assert_eq!(m.strategy_msg.as_deref(), Some("neither strategy builds"));
     }
@@ -1217,13 +1388,27 @@ mod tests {
         m.strategy = StrategyState::Chosen(PinStrategy::Override);
         m.strategy_msg = Some("build ok".into());
         m.focus = Focus::Apply;
-        let key = |c| Box::new(KeyMsg { key: c, modifiers: KeyModifiers::NONE }) as Msg;
+        let key = |c| {
+            Box::new(KeyMsg {
+                key: c,
+                modifiers: KeyModifiers::NONE,
+            }) as Msg
+        };
         let step = m.update(key(KeyCode::Enter), (80, 24));
         match step.nav {
-            Nav::Apply { strategy, version, strategy_reason, .. } => {
+            Nav::Apply {
+                strategy,
+                version,
+                strategy_reason,
+                ..
+            } => {
                 assert_eq!(strategy, Some(PinStrategy::Override));
                 assert_eq!(version, Some("1.2.3".to_string()));
-                assert_eq!(strategy_reason.as_deref(), Some("build ok"), "#28: the reason is carried alongside the strategy");
+                assert_eq!(
+                    strategy_reason.as_deref(),
+                    Some("build ok"),
+                    "#28: the reason is carried alongside the strategy"
+                );
             }
             _ => panic!("expected Nav::Apply"),
         }
@@ -1233,10 +1418,19 @@ mod tests {
     fn apply_carries_no_strategy_for_an_unversioned_install() {
         let mut m = model(1); // version stays None, strategy stays Off
         m.focus = Focus::Apply;
-        let key = |c| Box::new(KeyMsg { key: c, modifiers: KeyModifiers::NONE }) as Msg;
+        let key = |c| {
+            Box::new(KeyMsg {
+                key: c,
+                modifiers: KeyModifiers::NONE,
+            }) as Msg
+        };
         let step = m.update(key(KeyCode::Enter), (80, 24));
         match step.nav {
-            Nav::Apply { strategy, strategy_reason, .. } => {
+            Nav::Apply {
+                strategy,
+                strategy_reason,
+                ..
+            } => {
                 assert_eq!(strategy, None);
                 assert_eq!(strategy_reason, None);
             }
@@ -1261,11 +1455,19 @@ mod tests {
         let stale_seq = m.mark_selecting();
         m.on_strategy_done(
             stale_seq,
-            StrategyOutcome::Chosen { strategy: PinStrategy::CommitMix, label: "h0".into() },
+            StrategyOutcome::Chosen {
+                strategy: PinStrategy::CommitMix,
+                label: "h0".into(),
+            },
         );
         assert_eq!(m.strategy, StrategyState::Chosen(PinStrategy::CommitMix));
 
-        let key = |c| Box::new(KeyMsg { key: c, modifiers: KeyModifiers::NONE }) as Msg;
+        let key = |c| {
+            Box::new(KeyMsg {
+                key: c,
+                modifiers: KeyModifiers::NONE,
+            }) as Msg
+        };
         let step = m.update(key(KeyCode::Right), (80, 24));
         assert_eq!(m.host_sel, 1, "the host switched");
         assert_eq!(
@@ -1273,16 +1475,29 @@ mod tests {
             StrategyState::Selecting,
             "the switch re-fires strategy selection rather than leaving h0's stale decision"
         );
-        assert_ne!(m.strategy_seq, stale_seq, "a fresh token supersedes h0's in-flight/chosen result");
-        assert!(step.cmd.is_some(), "verify and strategy selection are batched for the new host");
+        assert_ne!(
+            m.strategy_seq, stale_seq,
+            "a fresh token supersedes h0's in-flight/chosen result"
+        );
+        assert!(
+            step.cmd.is_some(),
+            "verify and strategy selection are batched for the new host"
+        );
 
         // A late `StrategyDone` carrying the old (stale) token must not clobber the fresh
         // selection under way for h1.
         m.on_strategy_done(
             stale_seq,
-            StrategyOutcome::Chosen { strategy: PinStrategy::Override, label: "h0".into() },
+            StrategyOutcome::Chosen {
+                strategy: PinStrategy::Override,
+                label: "h0".into(),
+            },
         );
-        assert_eq!(m.strategy, StrategyState::Selecting, "the stale result from h0 is discarded");
+        assert_eq!(
+            m.strategy,
+            StrategyState::Selecting,
+            "the stale result from h0 is discarded"
+        );
     }
 
     /// #28 review fix: the injected `StrategyFn` must actually be called with the newly
@@ -1300,9 +1515,14 @@ mod tests {
         m.pin_resolved = Some("deadbeef".into());
 
         assert!(m.set_host(2), "host selection changes to h2");
-        let cmd = m.begin_strategy(m.pin_resolved.clone().unwrap()).expect("strategy fn is injected");
+        let cmd = m
+            .begin_strategy(m.pin_resolved.clone().unwrap())
+            .expect("strategy fn is injected");
 
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let batch_msg = rt
             .block_on(cmd)
             .expect("the batched command resolves")
@@ -1318,7 +1538,10 @@ mod tests {
         }
         match outcome.expect("the strategy command ran and produced a StrategyDone") {
             StrategyOutcome::Chosen { label, .. } => {
-                assert_eq!(label, "h2", "the injected StrategyFn was called with the selected host, h2");
+                assert_eq!(
+                    label, "h2",
+                    "the injected StrategyFn was called with the selected host, h2"
+                );
             }
             StrategyOutcome::Failed(msg) => panic!("expected Chosen, got Failed({msg})"),
         }

@@ -43,8 +43,16 @@ impl BrowseModel {
     pub fn enter(size: (u16, u16)) -> BrowseModel {
         let cfg = config();
         let (w, h) = view_dims(size);
-        let items = cfg.modules.iter().map(|m| DefaultItem::new(&m.node, &m.kind)).collect();
-        let host_items = cfg.hosts.iter().map(|h| DefaultItem::new(&h.name, "")).collect();
+        let items = cfg
+            .modules
+            .iter()
+            .map(|m| DefaultItem::new(&m.node, &m.kind))
+            .collect();
+        let host_items = cfg
+            .hosts
+            .iter()
+            .map(|h| DefaultItem::new(&h.name, ""))
+            .collect();
         let mut model = BrowseModel {
             modules: cfg.modules.clone(),
             hosts: cfg.hosts.clone(),
@@ -71,7 +79,10 @@ impl BrowseModel {
     }
 
     fn sync_doc(&mut self) {
-        let text = self.selected_module().map(|m| m.doc.clone()).unwrap_or_default();
+        let text = self
+            .selected_module()
+            .map(|m| m.doc.clone())
+            .unwrap_or_default();
         self.doc.goto_top();
         self.doc.set_content(&text);
     }
@@ -82,7 +93,10 @@ impl BrowseModel {
             self.dims = dims;
             self.list.set_size(dims.0, dims.1);
             self.host_list.set_size(dims.0, dims.1);
-            let text = self.selected_module().map(|m| m.doc.clone()).unwrap_or_default();
+            let text = self
+                .selected_module()
+                .map(|m| m.doc.clone())
+                .unwrap_or_default();
             self.doc = viewport::new(dims.0, dims.1);
             self.doc.set_content(&text);
         }
@@ -99,16 +113,14 @@ impl BrowseModel {
                 self.mode = Mode::PickHost;
                 Nav::Stay
             }
-            Mode::PickHost => {
-                match (self.selected_module(), self.selected_host()) {
-                    (Some(m), Some(h)) => Nav::Insert {
-                        host: h.clone(),
-                        node: m.node.clone(),
-                        skeleton: m.skeleton.clone(),
-                    },
-                    _ => Nav::Stay,
-                }
-            }
+            Mode::PickHost => match (self.selected_module(), self.selected_host()) {
+                (Some(m), Some(h)) => Nav::Insert {
+                    host: h.clone(),
+                    node: m.node.clone(),
+                    skeleton: m.skeleton.clone(),
+                },
+                _ => Nav::Stay,
+            },
         }
     }
 
@@ -117,7 +129,9 @@ impl BrowseModel {
             self.resize(size);
             return Step::stay();
         }
-        let Some((code, mods)) = key_of(&msg) else { return Step::stay() };
+        let Some((code, mods)) = key_of(&msg) else {
+            return Step::stay();
+        };
 
         if matches!(code, KeyCode::Char('c')) && mods.contains(KeyModifiers::CONTROL) {
             return Step::nav(Nav::Back);
@@ -130,12 +144,18 @@ impl BrowseModel {
                 // PgUp/PgDn scroll the doc; everything else drives the module list.
                 KeyCode::PageUp | KeyCode::PageDown => {
                     let cmd = self.doc.update(msg);
-                    Step { nav: Nav::Stay, cmd }
+                    Step {
+                        nav: Nav::Stay,
+                        cmd,
+                    }
                 }
                 _ => {
                     let cmd = self.list.update(msg);
                     self.sync_doc();
-                    Step { nav: Nav::Stay, cmd }
+                    Step {
+                        nav: Nav::Stay,
+                        cmd,
+                    }
                 }
             },
             Mode::PickHost => match code {
@@ -146,7 +166,10 @@ impl BrowseModel {
                 KeyCode::Enter => Step::nav(self.activate()),
                 _ => {
                     let cmd = self.host_list.update(msg);
-                    Step { nav: Nav::Stay, cmd }
+                    Step {
+                        nav: Nav::Stay,
+                        cmd,
+                    }
                 }
             },
         }
@@ -197,7 +220,10 @@ impl BrowseModel {
     }
 
     fn view_pick(&self) -> String {
-        let node = self.selected_module().map(|m| m.node.as_str()).unwrap_or("module");
+        let node = self
+            .selected_module()
+            .map(|m| m.node.as_str())
+            .unwrap_or("module");
         let boxed = Style::new()
             .border(rounded_border())
             .border_foreground(theme::border(true))
@@ -206,7 +232,11 @@ impl BrowseModel {
             "{}\n{}\n{}",
             theme::chip(&format!(" insert {node} into ")),
             boxed,
-            widgets::footer(&[("\u{2191}/\u{2193}", "pick"), ("enter", "insert"), ("esc", "cancel")]),
+            widgets::footer(&[
+                ("\u{2191}/\u{2193}", "pick"),
+                ("enter", "insert"),
+                ("esc", "cancel")
+            ]),
         )
     }
 }
@@ -221,7 +251,11 @@ mod tests {
     use std::path::PathBuf;
 
     fn host(name: &str) -> HostInfo {
-        HostInfo { name: name.into(), default: false, path: PathBuf::from(format!("hosts/{name}.kdl")) }
+        HostInfo {
+            name: name.into(),
+            default: false,
+            path: PathBuf::from(format!("hosts/{name}.kdl")),
+        }
     }
 
     fn module(node: &str, kind: &str) -> BrowseModule {
@@ -236,8 +270,14 @@ mod tests {
     fn model(mods: &[(&str, &str)], hosts: usize) -> BrowseModel {
         let modules: Vec<BrowseModule> = mods.iter().map(|(n, k)| module(n, k)).collect();
         let host_infos: Vec<HostInfo> = (0..hosts).map(|i| host(&format!("h{i}"))).collect();
-        let items = modules.iter().map(|m| DefaultItem::new(&m.node, &m.kind)).collect();
-        let host_items = host_infos.iter().map(|h| DefaultItem::new(&h.name, "")).collect();
+        let items = modules
+            .iter()
+            .map(|m| DefaultItem::new(&m.node, &m.kind))
+            .collect();
+        let host_items = host_infos
+            .iter()
+            .map(|h| DefaultItem::new(&h.name, ""))
+            .collect();
         let mut m = BrowseModel {
             modules,
             hosts: host_infos,
@@ -252,27 +292,43 @@ mod tests {
     }
 
     fn key(code: KeyCode) -> Msg {
-        Box::new(KeyMsg { key: code, modifiers: KeyModifiers::NONE }) as Msg
+        Box::new(KeyMsg {
+            key: code,
+            modifiers: KeyModifiers::NONE,
+        }) as Msg
     }
 
     #[test]
     fn selecting_moves_and_updates_the_doc() {
-        let mut m = model(&[("postgres", "built-in"), ("web-service", "declarative")], 1);
+        let mut m = model(
+            &[("postgres", "built-in"), ("web-service", "declarative")],
+            1,
+        );
         assert!(m.doc.view().contains("postgres"));
         m.update(key(KeyCode::Down), (120, 30));
         assert_eq!(m.list.cursor(), 1);
-        assert!(m.doc.view().contains("web-service"), "doc follows selection");
+        assert!(
+            m.doc.view().contains("web-service"),
+            "doc follows selection"
+        );
     }
 
     #[test]
     fn insert_opens_the_host_picker_then_commits() {
         let mut m = model(&[("postgres", "built-in")], 2);
-        assert!(matches!(m.update(key(KeyCode::Char('i')), (120, 30)).nav, Nav::Stay));
+        assert!(matches!(
+            m.update(key(KeyCode::Char('i')), (120, 30)).nav,
+            Nav::Stay
+        ));
         assert_eq!(m.mode, Mode::PickHost);
         m.update(key(KeyCode::Down), (120, 30)); // pick the second host
         assert_eq!(m.host_list.cursor(), 1);
         match m.update(key(KeyCode::Enter), (120, 30)).nav {
-            Nav::Insert { host, node, skeleton } => {
+            Nav::Insert {
+                host,
+                node,
+                skeleton,
+            } => {
                 assert_eq!(host.name, "h1");
                 assert_eq!(node, "postgres");
                 assert_eq!(skeleton, "postgres");
@@ -298,7 +354,10 @@ mod tests {
 
     #[test]
     fn view_lists_modules_with_kind_tags() {
-        let m = model(&[("postgres", "built-in"), ("web-service", "declarative")], 1);
+        let m = model(
+            &[("postgres", "built-in"), ("web-service", "declarative")],
+            1,
+        );
         let v = m.view((120, 30));
         assert!(v.contains("postgres"));
         assert!(v.contains("web-service"));

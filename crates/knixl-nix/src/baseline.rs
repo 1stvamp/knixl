@@ -63,15 +63,21 @@ fn lookup_external(bin: &Path, release: &str) -> Result<String, BaselineError> {
         if combined.to_lowercase().contains("not found") {
             return Err(BaselineError::NotFound(format!("{release}: {combined}")));
         }
-        let err_msg =
-            if !stderr.is_empty() { stderr.trim().to_string() } else { stdout.trim().to_string() };
+        let err_msg = if !stderr.is_empty() {
+            stderr.trim().to_string()
+        } else {
+            stdout.trim().to_string()
+        };
         return Err(BaselineError::Failed(err_msg));
     }
     let line = String::from_utf8_lossy(&out.stdout);
     let mut it = line.split_whitespace();
     match (it.next(), it.next()) {
         (Some(rev), None) => Ok(rev.to_string()),
-        _ => Err(BaselineError::Failed(format!("resolver output not `<commit>`: {}", line.trim()))),
+        _ => Err(BaselineError::Failed(format!(
+            "resolver output not `<commit>`: {}",
+            line.trim()
+        ))),
     }
 }
 
@@ -111,9 +117,15 @@ fn lookup_github(release: &str) -> Result<String, BaselineError> {
             )))
         }
         Err(ureq::Error::StatusCode(code)) => {
-            return Err(BaselineError::Unavailable(format!("GitHub API returned HTTP {code}")))
+            return Err(BaselineError::Unavailable(format!(
+                "GitHub API returned HTTP {code}"
+            )))
         }
-        Err(e) => return Err(BaselineError::Unavailable(format!("GitHub API unreachable: {e}"))),
+        Err(e) => {
+            return Err(BaselineError::Unavailable(format!(
+                "GitHub API unreachable: {e}"
+            )))
+        }
     };
     rev_from_github_json(&body).ok_or_else(|| {
         BaselineError::Failed(format!(
@@ -136,7 +148,11 @@ pub fn rev_from_ls_remote(out: &str) -> Option<String> {
 
 /// The top-level `sha` string from a GitHub commits-API response body.
 pub fn rev_from_github_json(json: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(json).ok()?.get("sha")?.as_str().map(str::to_string)
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()?
+        .get("sha")?
+        .as_str()
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -183,7 +199,10 @@ mod tests {
     #[test]
     fn lookup_missing_binary_is_unavailable() {
         let r = BaselineResolver::External(PathBuf::from("/nonexistent/knixl-no-such-resolver"));
-        assert!(matches!(r.lookup("25.05"), Err(BaselineError::Unavailable(_))));
+        assert!(matches!(
+            r.lookup("25.05"),
+            Err(BaselineError::Unavailable(_))
+        ));
     }
 
     #[test]
@@ -217,7 +236,10 @@ mod tests {
     #[test]
     fn rev_from_ls_remote_garbage_is_none() {
         assert_eq!(rev_from_ls_remote("not a valid line\n"), None);
-        assert_eq!(rev_from_ls_remote("tooshortsha\trefs/heads/nixos-25.05\n"), None);
+        assert_eq!(
+            rev_from_ls_remote("tooshortsha\trefs/heads/nixos-25.05\n"),
+            None
+        );
     }
 
     const SAMPLE_GITHUB_COMMIT: &str = r#"{
@@ -239,7 +261,10 @@ mod tests {
 
     #[test]
     fn rev_from_github_json_missing_sha_is_none() {
-        assert_eq!(rev_from_github_json(r#"{"commit": {"message": "hi"}}"#), None);
+        assert_eq!(
+            rev_from_github_json(r#"{"commit": {"message": "hi"}}"#),
+            None
+        );
     }
 
     #[test]

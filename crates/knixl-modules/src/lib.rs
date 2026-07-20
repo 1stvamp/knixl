@@ -2,9 +2,9 @@
 //! KDL module are indistinguishable to the generator: the declarative loader is itself
 //! one Module impl. SPEC-GRADE SKETCH.
 
+pub mod builtin;
 pub mod registry;
 pub mod template;
-pub mod builtin;
 
 use kdl::KdlNode;
 use knixl_ir::{Assignment, RawNix};
@@ -14,18 +14,26 @@ use semver::Version;
 pub use registry::{Registry, RegistryError};
 
 #[derive(Clone)]
-pub struct ModuleId { pub name: String, pub version: Version }
+pub struct ModuleId {
+    pub name: String,
+    pub version: Version,
+}
 
 /// Where a module came from: compiled into knixl, or loaded from a `knixl-module.kdl`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ModuleKind { Builtin, Declarative }
+pub enum ModuleKind {
+    Builtin,
+    Declarative,
+}
 
 pub trait Module: Send + Sync {
     fn id(&self) -> ModuleId;
     /// The KDL node name this module claims (e.g. "postgres"). The generator dispatches by it.
     fn node_name(&self) -> &str;
     /// Built-in or declarative. Declarative modules override this; the default is built-in.
-    fn kind(&self) -> ModuleKind { ModuleKind::Builtin }
+    fn kind(&self) -> ModuleKind {
+        ModuleKind::Builtin
+    }
     /// Structured description of accepted args/props/children. Validates input AND drives `knixl doc`.
     fn schema(&self) -> &NodeSchema;
     /// Lower a node into bucketed assignments. The node is schema-valid here (the generator
@@ -34,42 +42,56 @@ pub trait Module: Send + Sync {
     /// Human-readable notes for a version move, shown by `upgrade`. `from` is the recorded
     /// version, `to` the running one; a note applies when its target lands in `(from, to]`.
     /// Default: none.
-    fn migration_notes(&self, _from: &Version, _to: &Version) -> Vec<String> { Vec::new() }
+    fn migration_notes(&self, _from: &Version, _to: &Version) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// One declared migration step: notes shown when an upgrade crosses up to `to`.
 #[derive(Debug, Clone)]
-pub struct MigrationNote { pub to: Version, pub notes: Vec<String> }
+pub struct MigrationNote {
+    pub to: Version,
+    pub notes: Vec<String>,
+}
 
 /// Select the notes that apply to a move from `from` to `to`: every step whose target
 /// lands in the half-open range `(from, to]`, in ascending version order.
 pub fn notes_in_range(steps: &[MigrationNote], from: &Version, to: &Version) -> Vec<String> {
-    let mut hits: Vec<&MigrationNote> =
-        steps.iter().filter(|s| &s.to > from && &s.to <= to).collect();
+    let mut hits: Vec<&MigrationNote> = steps
+        .iter()
+        .filter(|s| &s.to > from && &s.to <= to)
+        .collect();
     hits.sort_by(|a, b| a.to.cmp(&b.to));
-    hits.into_iter().flat_map(|s| s.notes.iter().cloned()).collect()
+    hits.into_iter()
+        .flat_map(|s| s.notes.iter().cloned())
+        .collect()
 }
 
 // ---- schema: validates INPUT shape (distinct from the oracle, which validates OUTPUT) ----
 
 pub struct NodeSchema {
     pub summary: String,
-    pub args: Vec<Field>,      // positional args on the node itself
-    pub props: Vec<Field>,     // key=value on the node
-    pub children: Vec<Child>,  // nested nodes
+    pub args: Vec<Field>,     // positional args on the node itself
+    pub props: Vec<Field>,    // key=value on the node
+    pub children: Vec<Child>, // nested nodes
     /// A container (e.g. `host`) accepts children beyond those declared here and delegates
     /// them to their own modules; a leaf rejects unknown children as typos.
     pub open_children: bool,
 }
 
-pub struct Field { pub name: String, pub ty: ValueTy, pub required: bool, pub doc: String }
+pub struct Field {
+    pub name: String,
+    pub ty: ValueTy,
+    pub required: bool,
+    pub doc: String,
+}
 
 pub struct Child {
     pub name: String,
     pub ty: ValueTy,
     pub required: bool,
-    pub repeated: bool,   // `database "app"; database "metrics"` => repeated
-    pub delegate: bool,   // true => another module's node, dispatched, not read here
+    pub repeated: bool, // `database "app"; database "metrics"` => repeated
+    pub delegate: bool, // true => another module's node, dispatched, not read here
     pub doc: String,
     /// Sub-fields of a structured child (ty == Node): positional sub-args and key=value
     /// sub-props. Empty for scalar/flag children. These build the `Scope` bindings that a
@@ -79,7 +101,13 @@ pub struct Child {
 }
 
 /// KDL-side INPUT types. Not oracle NixType (which is OUTPUT option types).
-pub enum ValueTy { Bool, Int, Str, Enum(Vec<String>), Node }
+pub enum ValueTy {
+    Bool,
+    Int,
+    Str,
+    Enum(Vec<String>),
+    Node,
+}
 
 impl NodeSchema {
     /// Missing-required, unknown-field, arity, value-type errors, each with a KDL span.
@@ -88,13 +116,21 @@ impl NodeSchema {
         let node_span = node.span();
 
         // positional arguments
-        let positional: Vec<&kdl::KdlEntry> =
-            node.entries().iter().filter(|e| e.name().is_none()).collect();
+        let positional: Vec<&kdl::KdlEntry> = node
+            .entries()
+            .iter()
+            .filter(|e| e.name().is_none())
+            .collect();
         for (i, field) in self.args.iter().enumerate() {
             match positional.get(i) {
-                Some(entry) => check_ty(entry.value(), &field.ty, &field.name, node_span, &mut diags),
+                Some(entry) => {
+                    check_ty(entry.value(), &field.ty, &field.name, node_span, &mut diags)
+                }
                 None if field.required => {
-                    diags.push(diag_at(node_span, format!("missing required argument `{}`", field.name)));
+                    diags.push(diag_at(
+                        node_span,
+                        format!("missing required argument `{}`", field.name),
+                    ));
                 }
                 None => {}
             }
@@ -125,7 +161,10 @@ impl NodeSchema {
                 .iter()
                 .any(|e| e.name().map(|n| n.value()) == Some(field.name.as_str()));
             if field.required && !present {
-                diags.push(diag_at(node_span, format!("missing required property `{}`", field.name)));
+                diags.push(diag_at(
+                    node_span,
+                    format!("missing required property `{}`", field.name),
+                ));
             }
         }
 
@@ -135,13 +174,21 @@ impl NodeSchema {
             None => &[],
         };
         for spec in &self.children {
-            let matching: Vec<&KdlNode> =
-                children.iter().filter(|c| c.name().value() == spec.name).collect();
+            let matching: Vec<&KdlNode> = children
+                .iter()
+                .filter(|c| c.name().value() == spec.name)
+                .collect();
             if spec.required && matching.is_empty() {
-                diags.push(diag_at(node_span, format!("missing required child `{}`", spec.name)));
+                diags.push(diag_at(
+                    node_span,
+                    format!("missing required child `{}`", spec.name),
+                ));
             }
             if !spec.repeated && matching.len() > 1 {
-                diags.push(diag_at(node_span, format!("child `{}` may appear at most once", spec.name)));
+                diags.push(diag_at(
+                    node_span,
+                    format!("child `{}` may appear at most once", spec.name),
+                ));
             }
             if !spec.delegate && !matches!(spec.ty, ValueTy::Node) {
                 for c in matching {
@@ -149,7 +196,10 @@ impl NodeSchema {
                         Some(e) => check_ty(e.value(), &spec.ty, &spec.name, c.span(), &mut diags),
                         // A bare boolean child is presence-as-true (see knixl_kdl::child_flag).
                         None if matches!(spec.ty, ValueTy::Bool) => {}
-                        None => diags.push(diag_at(c.span(), format!("child `{}` needs a value", spec.name))),
+                        None => diags.push(diag_at(
+                            c.span(),
+                            format!("child `{}` needs a value", spec.name),
+                        )),
                     }
                 }
             }
@@ -163,7 +213,11 @@ impl NodeSchema {
             }
         }
 
-        if diags.is_empty() { Ok(()) } else { Err(diags) }
+        if diags.is_empty() {
+            Ok(())
+        } else {
+            Err(diags)
+        }
     }
 }
 
@@ -174,15 +228,21 @@ impl NodeSchema {
         let mut s = format!("{node_name}: {}\n", self.summary);
         if !self.args.is_empty() {
             s.push_str("\nArguments:\n");
-            for f in &self.args { s.push_str(&field_line(f)); }
+            for f in &self.args {
+                s.push_str(&field_line(f));
+            }
         }
         if !self.props.is_empty() {
             s.push_str("\nProperties:\n");
-            for f in &self.props { s.push_str(&field_line(f)); }
+            for f in &self.props {
+                s.push_str(&field_line(f));
+            }
         }
         if !self.children.is_empty() {
             s.push_str("\nChildren:\n");
-            for c in &self.children { s.push_str(&child_line(c)); }
+            for c in &self.children {
+                s.push_str(&child_line(c));
+            }
         }
         s
     }
@@ -205,22 +265,41 @@ fn field_line(f: &Field) -> String {
 
 fn child_line(c: &Child) -> String {
     let mut flags = Vec::new();
-    if c.required { flags.push("required"); }
-    if c.repeated { flags.push("repeated"); }
-    let flags = if flags.is_empty() { String::new() } else { format!(" ({})", flags.join(", ")) };
+    if c.required {
+        flags.push("required");
+    }
+    if c.repeated {
+        flags.push("repeated");
+    }
+    let flags = if flags.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", flags.join(", "))
+    };
     format!("  {} : {}{}  {}\n", c.name, ty_str(&c.ty), flags, c.doc)
 }
 
 fn diag_at(span: SourceSpan, message: String) -> Diagnostic {
-    Diagnostic { span: Some(span), message }
+    Diagnostic {
+        span: Some(span),
+        message,
+    }
 }
 
-fn check_ty(value: &kdl::KdlValue, ty: &ValueTy, name: &str, span: SourceSpan, diags: &mut Vec<Diagnostic>) {
+fn check_ty(
+    value: &kdl::KdlValue,
+    ty: &ValueTy,
+    name: &str,
+    span: SourceSpan,
+    diags: &mut Vec<Diagnostic>,
+) {
     let ok = match ty {
         ValueTy::Bool => value.as_bool().is_some(),
         ValueTy::Int => value.as_integer().is_some(),
         ValueTy::Str => value.as_string().is_some(),
-        ValueTy::Enum(variants) => value.as_string().is_some_and(|s| variants.iter().any(|v| v == s)),
+        ValueTy::Enum(variants) => value
+            .as_string()
+            .is_some_and(|s| variants.iter().any(|v| v == s)),
         ValueTy::Node => true, // a block child, not a scalar value
     };
     if !ok {
@@ -255,7 +334,9 @@ pub struct LowerCtx<'a> {
     pins: Vec<ResolvedPin>,
 }
 
-pub struct Scope { pub host: String }
+pub struct Scope {
+    pub host: String,
+}
 
 impl<'a> LowerCtx<'a> {
     pub fn new(
@@ -264,26 +345,40 @@ impl<'a> LowerCtx<'a> {
         diags: &'a mut Vec<Diagnostic>,
         pins: Vec<ResolvedPin>,
     ) -> Self {
-        Self { scope, registry, diags, pins }
+        Self {
+            scope,
+            registry,
+            diags,
+            pins,
+        }
     }
 
-    pub fn scope(&self) -> &Scope { &self.scope }
+    pub fn scope(&self) -> &Scope {
+        &self.scope
+    }
 
     /// The resolved pin for a package at a version on this host, if any.
     pub fn pin(&self, package: &str, version: &str) -> Option<&ResolvedPin> {
-        self.pins.iter().find(|p| p.package == package && p.version == version)
+        self.pins
+            .iter()
+            .find(|p| p.package == package && p.version == version)
     }
 
     /// Dispatch each child NOT in `consumed` to its registered module, collect outputs.
     /// Only container modules (host) call this; leaf modules read their own subtree.
-    pub fn lower_children(&mut self, node: &KdlNode, consumed: &[&str])
-        -> Result<Vec<LowerOutput>, LowerError> {
+    pub fn lower_children(
+        &mut self,
+        node: &KdlNode,
+        consumed: &[&str],
+    ) -> Result<Vec<LowerOutput>, LowerError> {
         let registry = self.registry;
         let mut outputs = Vec::new();
         if let Some(doc) = node.children() {
             for child in doc.nodes() {
                 let name = child.name().value();
-                if consumed.contains(&name) { continue; }
+                if consumed.contains(&name) {
+                    continue;
+                }
                 match registry.get(name) {
                     Some(module) => {
                         // Validate the delegated child against its own module's schema before
@@ -305,40 +400,78 @@ impl<'a> LowerCtx<'a> {
     }
 
     pub fn lint(&mut self, span: SourceSpan, msg: impl Into<String>) {
-        self.diags.push(Diagnostic { span: Some(span), message: msg.into() });
+        self.diags.push(Diagnostic {
+            span: Some(span),
+            message: msg.into(),
+        });
     }
 }
 
-pub struct LowerOutput { pub units: Vec<Unit>, pub raw: Vec<RawUnit> }
+pub struct LowerOutput {
+    pub units: Vec<Unit>,
+    pub raw: Vec<RawUnit>,
+}
 /// `module` names the module that produced this unit (for per-file lock attribution).
 /// Modules leave it empty; the framework stamps it at the dispatch boundary.
-pub struct Unit { pub bucket: Bucket, pub assignment: Assignment, pub module: String }
+pub struct Unit {
+    pub bucket: Bucket,
+    pub assignment: Assignment,
+    pub module: String,
+}
 /// A verbatim raw-nix passthrough statement, bucketed like a Unit.
-pub struct RawUnit { pub bucket: Bucket, pub raw: RawNix, pub module: String }
+pub struct RawUnit {
+    pub bucket: Bucket,
+    pub raw: RawNix,
+    pub module: String,
+}
 
 impl LowerOutput {
-    pub fn new() -> Self { Self { units: Vec::new(), raw: Vec::new() } }
+    pub fn new() -> Self {
+        Self {
+            units: Vec::new(),
+            raw: Vec::new(),
+        }
+    }
     /// Convenience for the common case of assignments with no raw passthrough.
-    pub fn units(units: Vec<Unit>) -> Self { Self { units, raw: Vec::new() } }
+    pub fn units(units: Vec<Unit>) -> Self {
+        Self {
+            units,
+            raw: Vec::new(),
+        }
+    }
 
     /// Stamp the producing module on any unit that has not already been attributed, so a
     /// container's own units keep its name while delegated units keep the child's.
     pub fn attribute(&mut self, module: &str) {
         for u in &mut self.units {
-            if u.module.is_empty() { u.module = module.to_string(); }
+            if u.module.is_empty() {
+                u.module = module.to_string();
+            }
         }
         for r in &mut self.raw {
-            if r.module.is_empty() { r.module = module.to_string(); }
+            if r.module.is_empty() {
+                r.module = module.to_string();
+            }
         }
     }
 }
-impl Default for LowerOutput { fn default() -> Self { Self::new() } }
+impl Default for LowerOutput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// A module says "main file" or "a named side-file"; the generator resolves the path.
-pub enum Bucket { Default, Named(String) }
+pub enum Bucket {
+    Default,
+    Named(String),
+}
 
 #[derive(Debug)]
-pub struct Diagnostic { pub span: Option<SourceSpan>, pub message: String }
+pub struct Diagnostic {
+    pub span: Option<SourceSpan>,
+    pub message: String,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum LowerError {
@@ -347,26 +480,47 @@ pub enum LowerError {
     #[error("{0}")]
     Other(String),
 }
-impl LowerError { pub fn missing(s: &str) -> Self { Self::Missing(s.to_string()) } }
+impl LowerError {
+    pub fn missing(s: &str) -> Self {
+        Self::Missing(s.to_string())
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn node(src: &str) -> KdlNode {
-        src.parse::<kdl::KdlDocument>().unwrap().nodes().first().unwrap().clone()
+        src.parse::<kdl::KdlDocument>()
+            .unwrap()
+            .nodes()
+            .first()
+            .unwrap()
+            .clone()
     }
 
     #[test]
     fn notes_in_range_selects_crossed_steps_in_order() {
         let v = |s: &str| s.parse::<Version>().unwrap();
         let steps = vec![
-            MigrationNote { to: v("0.4.0"), notes: vec!["b".into()] },
-            MigrationNote { to: v("0.2.0"), notes: vec!["a".into()] },
-            MigrationNote { to: v("0.9.0"), notes: vec!["c".into()] },
+            MigrationNote {
+                to: v("0.4.0"),
+                notes: vec!["b".into()],
+            },
+            MigrationNote {
+                to: v("0.2.0"),
+                notes: vec!["a".into()],
+            },
+            MigrationNote {
+                to: v("0.9.0"),
+                notes: vec!["c".into()],
+            },
         ];
         // (0.1.0, 0.4.0] crosses 0.2.0 and 0.4.0, ascending; 0.9.0 is beyond `to`.
-        assert_eq!(notes_in_range(&steps, &v("0.1.0"), &v("0.4.0")), vec!["a", "b"]);
+        assert_eq!(
+            notes_in_range(&steps, &v("0.1.0"), &v("0.4.0")),
+            vec!["a", "b"]
+        );
         // Boundary: `from` is exclusive, `to` inclusive.
         assert_eq!(notes_in_range(&steps, &v("0.2.0"), &v("0.4.0")), vec!["b"]);
         assert!(notes_in_range(&steps, &v("0.9.0"), &v("0.9.0")).is_empty());
@@ -375,8 +529,18 @@ mod tests {
     fn host_like_schema() -> NodeSchema {
         NodeSchema {
             summary: "test".into(),
-            args: vec![Field { name: "name".into(), ty: ValueTy::Str, required: true, doc: String::new() }],
-            props: vec![Field { name: "count".into(), ty: ValueTy::Int, required: false, doc: String::new() }],
+            args: vec![Field {
+                name: "name".into(),
+                ty: ValueTy::Str,
+                required: true,
+                doc: String::new(),
+            }],
+            props: vec![Field {
+                name: "count".into(),
+                ty: ValueTy::Int,
+                required: false,
+                doc: String::new(),
+            }],
             children: vec![Child {
                 name: "system".into(),
                 ty: ValueTy::Str,
@@ -392,7 +556,10 @@ mod tests {
     }
 
     fn leaf_schema() -> NodeSchema {
-        NodeSchema { open_children: false, ..host_like_schema() }
+        NodeSchema {
+            open_children: false,
+            ..host_like_schema()
+        }
     }
 
     #[test]
@@ -456,7 +623,10 @@ mod tests {
             open_children: false,
         };
         let n = node("svc {\n    flag\n}");
-        assert!(schema.validate(&n).is_ok(), "a bare boolean flag is presence-as-true");
+        assert!(
+            schema.validate(&n).is_ok(),
+            "a bare boolean flag is presence-as-true"
+        );
     }
 
     #[test]
@@ -466,7 +636,9 @@ mod tests {
         assert!(errs.iter().any(|d| d.message.contains("once")));
     }
 
-    struct StubModule { schema: NodeSchema }
+    struct StubModule {
+        schema: NodeSchema,
+    }
     impl StubModule {
         fn new() -> Self {
             Self {
@@ -481,9 +653,18 @@ mod tests {
         }
     }
     impl Module for StubModule {
-        fn id(&self) -> ModuleId { ModuleId { name: "stub".into(), version: "1.0.0".parse().unwrap() } }
-        fn node_name(&self) -> &str { "stub" }
-        fn schema(&self) -> &NodeSchema { &self.schema }
+        fn id(&self) -> ModuleId {
+            ModuleId {
+                name: "stub".into(),
+                version: "1.0.0".parse().unwrap(),
+            }
+        }
+        fn node_name(&self) -> &str {
+            "stub"
+        }
+        fn schema(&self) -> &NodeSchema {
+            &self.schema
+        }
         fn lower(&self, _node: &KdlNode, _ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError> {
             Ok(LowerOutput::units(vec![]))
         }
@@ -508,7 +689,14 @@ mod tests {
         let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
         let outputs = ctx.lower_children(&host, &["system"]).unwrap();
         drop(ctx);
-        assert_eq!(outputs.len(), 1, "the one registered child (stub) is dispatched");
-        assert!(diags.iter().any(|d| d.message.contains("mystery")), "unknown node flagged");
+        assert_eq!(
+            outputs.len(),
+            1,
+            "the one registered child (stub) is dispatched"
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("mystery")),
+            "unknown node flagged"
+        );
     }
 }

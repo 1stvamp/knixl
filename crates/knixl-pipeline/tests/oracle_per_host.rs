@@ -15,11 +15,19 @@ use knixl_nix::Formatter;
 use knixl_pipeline::gather::gather;
 
 fn ident_path(segs: &[&str]) -> AttrPath {
-    AttrPath(segs.iter().map(|s| AttrKey::Ident((*s).to_string())).collect())
+    AttrPath(
+        segs.iter()
+            .map(|s| AttrKey::Ident((*s).to_string()))
+            .collect(),
+    )
 }
 
 fn identity_formatter() -> Formatter {
-    Formatter { name: "identity".into(), version: "0".into(), bin: PathBuf::from("cat") }
+    Formatter {
+        name: "identity".into(),
+        version: "0".into(),
+        bin: PathBuf::from("cat"),
+    }
 }
 
 /// Write a minimal options.json fixture (one known boolean option) into the cache directory
@@ -27,12 +35,19 @@ fn identity_formatter() -> Formatter {
 fn seed_cache(rev: &str, known_option: &str) {
     let dest = knixl_oracle::cache_path(rev).expect("cache path under XDG_CACHE_HOME");
     fs::create_dir_all(dest.parent().unwrap()).unwrap();
-    fs::write(&dest, format!(r#"{{ "{known_option}": {{ "type": "boolean" }} }}"#)).unwrap();
+    fs::write(
+        &dest,
+        format!(r#"{{ "{known_option}": {{ "type": "boolean" }} }}"#),
+    )
+    .unwrap();
 }
 
 #[test]
 fn gather_selects_each_hosts_own_baseline_rev_for_its_oracle() {
-    let tmp = std::env::temp_dir().join(format!("knixl-oracle-per-host-cache-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!(
+        "knixl-oracle-per-host-cache-{}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&tmp);
     std::env::set_var("XDG_CACHE_HOME", &tmp);
 
@@ -43,7 +58,8 @@ fn gather_selects_each_hosts_own_baseline_rev_for_its_oracle() {
     seed_cache("rev-a", "services.foo.enable");
     seed_cache("rev-b", "services.bar.enable");
 
-    let root = std::env::temp_dir().join(format!("knixl-proj-oracle-per-host-{}", std::process::id()));
+    let root =
+        std::env::temp_dir().join(format!("knixl-proj-oracle-per-host-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("hosts")).unwrap();
     fs::write(
@@ -60,13 +76,23 @@ fn gather_selects_each_hosts_own_baseline_rev_for_its_oracle() {
     let mut baselines = BTreeMap::new();
     baselines.insert(
         "a".to_string(),
-        HostBaseline { release: "24.11".into(), nixpkgs_rev: "rev-a".into(), options_hash: String::new() },
+        HostBaseline {
+            release: "24.11".into(),
+            nixpkgs_rev: "rev-a".into(),
+            options_hash: String::new(),
+        },
     );
     let lock = Lock {
         version: 1,
         tool: "0.3.1".parse().unwrap(),
-        formatter: FormatterPin { name: "identity".into(), version: "0".into() },
-        oracle: OraclePin { nixpkgs_rev: "rev-b".into(), options_hash: String::new() },
+        formatter: FormatterPin {
+            name: "identity".into(),
+            version: "0".into(),
+        },
+        oracle: OraclePin {
+            nixpkgs_rev: "rev-b".into(),
+            options_hash: String::new(),
+        },
         inputs: BTreeMap::new(),
         modules: BTreeMap::new(),
         outputs: Vec::new(),
@@ -75,22 +101,35 @@ fn gather_selects_each_hosts_own_baseline_rev_for_its_oracle() {
     };
     fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();
 
-    let project =
-        gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
 
-    assert!(project.oracles.contains_key("a"), "host a should have an oracle entry");
-    assert!(project.oracles.contains_key("b"), "host b should have an oracle entry");
+    assert!(
+        project.oracles.contains_key("a"),
+        "host a should have an oracle entry"
+    );
+    assert!(
+        project.oracles.contains_key("b"),
+        "host b should have an oracle entry"
+    );
 
     let foo = ident_path(&["services", "foo", "enable"]);
     let bar = ident_path(&["services", "bar", "enable"]);
 
     // Host a was validated against rev-a's option set: it knows foo, not bar.
-    assert!(project.oracles["a"].check(&foo, &NixExpr::Bool(true)).is_ok());
-    assert!(project.oracles["a"].check(&bar, &NixExpr::Bool(true)).is_err());
+    assert!(project.oracles["a"]
+        .check(&foo, &NixExpr::Bool(true))
+        .is_ok());
+    assert!(project.oracles["a"]
+        .check(&bar, &NixExpr::Bool(true))
+        .is_err());
 
     // Host b fell back to the lock's default rev-b: it knows bar, not foo.
-    assert!(project.oracles["b"].check(&bar, &NixExpr::Bool(true)).is_ok());
-    assert!(project.oracles["b"].check(&foo, &NixExpr::Bool(true)).is_err());
+    assert!(project.oracles["b"]
+        .check(&bar, &NixExpr::Bool(true))
+        .is_ok());
+    assert!(project.oracles["b"]
+        .check(&foo, &NixExpr::Bool(true))
+        .is_err());
 
     std::env::remove_var("XDG_CACHE_HOME");
     let _ = fs::remove_dir_all(&tmp);

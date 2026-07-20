@@ -24,7 +24,11 @@ impl ItemDelegate<DefaultItem> for CompactDelegate {
             format!(" {}", theme::dim().render(&format!("({})", item.desc)))
         };
         if index == m.cursor() {
-            format!("{}{}", theme::selected().render(&format!(" \u{25b8} {title} ")), tag)
+            format!(
+                "{}{}",
+                theme::selected().render(&format!(" \u{25b8} {title} ")),
+                tag
+            )
         } else {
             format!("   {}{}", theme::dim().render(title), tag)
         }

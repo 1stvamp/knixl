@@ -43,33 +43,46 @@ pub fn child_flag(node: &KdlNode, child: &str) -> Option<bool> {
     Some(explicit.unwrap_or(true))
 }
 
-pub fn children_named<'a>(node: &'a KdlNode, name: &'a str) -> impl Iterator<Item = &'a KdlNode> + 'a {
+pub fn children_named<'a>(
+    node: &'a KdlNode,
+    name: &'a str,
+) -> impl Iterator<Item = &'a KdlNode> + 'a {
     node.children()
         .into_iter()
         .flat_map(|doc| doc.nodes().iter())
         .filter(move |n| n.name().value() == name)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn first_node(src: &str) -> KdlNode {
-        parse(src).expect("parse").nodes().first().expect("a node").clone()
+        parse(src)
+            .expect("parse")
+            .nodes()
+            .first()
+            .expect("a node")
+            .clone()
     }
 
     #[test]
     fn child_arg_str_reads_first_positional() {
         let n = first_node("host \"web\" {\n    system \"x86_64-linux\"\n}");
-        assert_eq!(child_arg_str(&n, "system"), Some("x86_64-linux".to_string()));
+        assert_eq!(
+            child_arg_str(&n, "system"),
+            Some("x86_64-linux".to_string())
+        );
         assert_eq!(child_arg_str(&n, "absent"), None);
     }
 
     #[test]
     fn child_prop_str_reads_named_property() {
         let n = first_node("svc {\n    acme email=\"ops@example.com\"\n}");
-        assert_eq!(child_prop_str(&n, "acme", "email"), Some("ops@example.com".to_string()));
+        assert_eq!(
+            child_prop_str(&n, "acme", "email"),
+            Some("ops@example.com".to_string())
+        );
         assert_eq!(child_prop_str(&n, "acme", "missing"), None);
         assert_eq!(child_prop_str(&n, "absent", "email"), None);
     }
