@@ -1,8 +1,8 @@
 //! EmitTemplate: the substitution grammar for declarative modules. Parsed once from a
 //! module's `emit { }` block, interpreted per-node against a bindings tree built from the
-//! validated input. Three statement forms only (set, when-flag, for-each). SPEC-GRADE SKETCH.
+//! validated input. Four statement forms (set, when-flag, when-config, for-each). SPEC-GRADE SKETCH.
 
-use knixl_ir::{Assignment, AttrKey, AttrPath, NixExpr};
+use knixl_ir::{Assignment, AttrKey, AttrPath, NixExpr, RawNix};
 use knixl_kdl::children_named;
 use crate::{Bucket, Child, Field, LowerError, LowerOutput, NodeSchema, Unit, ValueTy};
 
@@ -11,6 +11,7 @@ pub struct EmitTemplate { pub stmts: Vec<Stmt> }
 pub enum Stmt {
     Set { path: PathTemplate, value: ValueTemplate },
     WhenFlag { flag: String, body: Vec<Stmt> },               // generation-time gate
+    WhenConfig { cond: Vec<StrPart>, body: Vec<Stmt> },        // runtime lib.mkIf off config.*
     ForEach { var: String, source: String, body: Vec<Stmt> }, // binds <var> per item
 }
 
@@ -136,33 +137,49 @@ impl EmitTemplate {
     pub fn interpret(&self, b: &Bindings) -> Result<LowerOutput, LowerError> {
         let mut units = Vec::new();
         let mut loops = LoopScopes::new();
-        self.run(&self.stmts, b, &mut loops, &mut units)?;
+        self.run(&self.stmts, b, &mut loops, None, &mut units)?;
         Ok(LowerOutput::units(units))
     }
 
     // self only recurses today; kept as a method so template state stays reachable
     // once bind/interpret are fleshed out.
     #[allow(clippy::only_used_in_recursion)]
-    fn run(&self, stmts: &[Stmt], b: &Bindings, loops: &mut LoopScopes, out: &mut Vec<Unit>)
-        -> Result<(), LowerError>
-    {
+    fn run(
+        &self,
+        stmts: &[Stmt],
+        b: &Bindings,
+        loops: &mut LoopScopes,
+        cond: Option<&str>,
+        out: &mut Vec<Unit>,
+    ) -> Result<(), LowerError> {
         for st in stmts {
             match st {
                 Stmt::Set { path, value } => {
                     let a = Assignment {
                         path: path.interpret(b, loops)?,
                         value: value.interpret(b, loops)?, // Collect => NixExpr::List
-                        priority: None, condition: None, doc: None,
+                        priority: None,
+                        condition: cond.map(|c| NixExpr::Raw(RawNix { src: c.to_string(), span: None })),
+                        doc: None,
                     };
                     out.push(Unit { bucket: Bucket::Default, assignment: a, module: String::new() });
                 }
                 Stmt::WhenFlag { flag, body } => {
-                    if resolve_flag(flag, b, loops)? { self.run(body, b, loops, out)?; }
+                    if resolve_flag(flag, b, loops)? { self.run(body, b, loops, cond, out)?; }
+                }
+                Stmt::WhenConfig { cond: parts, body } => {
+                    let inner = interp_parts(parts, b, loops)?;
+                    // Nested conditions conjoin: `lib.mkIf ((A) && (B)) ..`.
+                    let combined = match cond {
+                        Some(outer) => format!("({outer}) && ({inner})"),
+                        None => inner,
+                    };
+                    self.run(body, b, loops, Some(&combined), out)?;
                 }
                 Stmt::ForEach { var, source, body } => {
                     for item in resolve_list(source, b)? { // source order => stable
                         loops.push(var, item);
-                        self.run(body, b, loops, out)?;
+                        self.run(body, b, loops, cond, out)?;
                         loops.pop();
                     }
                 }
@@ -438,6 +455,14 @@ fn parse_stmt(n: &kdl::KdlNode) -> Result<Stmt, LowerError> {
             let flag = arg_str(n, 0).ok_or_else(|| LowerError::Other("`when-flag` missing flag".into()))?;
             Ok(Stmt::WhenFlag { flag, body: parse_stmts(n.children())? })
         }
+        "when-config" => {
+            // An empty or whitespace-only condition would emit `lib.mkIf () <value>`, invalid
+            // Nix. Reject it at load, where the rest of the grammar errors live.
+            let cond = arg_str(n, 0)
+                .filter(|c| !c.trim().is_empty())
+                .ok_or_else(|| LowerError::Other("`when-config` needs a non-empty condition".into()))?;
+            Ok(Stmt::WhenConfig { cond: parse_str_parts(&cond), body: parse_stmts(n.children())? })
+        }
         "for-each" => {
             // `for-each "loc" in "location"`: the bare `in` is noise; take first + last.
             let args: Vec<String> = n
@@ -624,6 +649,14 @@ fn check_stmts<'a>(
             }
             Stmt::WhenFlag { flag, body } => {
                 expect_scalar(std::slice::from_ref(flag), shapes, loops, errors);
+                check_stmts(body, shapes, loops, errors);
+            }
+            Stmt::WhenConfig { cond, body } => {
+                for part in cond {
+                    if let StrPart::Interp(lk) = part {
+                        expect_scalar(&lk.0, shapes, loops, errors);
+                    }
+                }
                 check_stmts(body, shapes, loops, errors);
             }
             Stmt::ForEach { var, source, body } => {
@@ -960,5 +993,102 @@ mod tests {
         let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
         let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad")).err().unwrap();
         assert!(format!("{err}").contains("not a repeated child"), "got: {err}");
+    }
+
+    #[test]
+    fn when_config_stamps_an_interpolated_runtime_condition() {
+        use knixl_ir::{Emit, Writer};
+        let manifest = "module name=\"cond\" version=\"0.1.0\" {\n    claims-node \"cond\"\n    schema {\n        arg \"host\" type=\"string\" required=#true\n        arg \"svc\" type=\"string\" required=#true\n    }\n    emit {\n        when-config \"config.services.{svc}.enable\" {\n            set \"services.foo.{host}.enable\" #true\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let module = DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
+        let out = lower(&module, &node("cond \"web\" \"postgresql\""));
+
+        let a = out
+            .units
+            .iter()
+            .map(|u| &u.assignment)
+            .find(|a| path_str(a) == "services.foo.\"web\".enable")
+            .expect("assignment present");
+
+        match &a.condition {
+            Some(NixExpr::Raw(r)) => assert_eq!(r.src, "config.services.postgresql.enable"),
+            other => panic!("condition = {other:?}"),
+        }
+
+        // End-to-end: the IR emit path renders lib.mkIf for this assignment.
+        let mut w = Writer::new();
+        a.emit(&mut w);
+        assert!(
+            w.into_string().contains("lib.mkIf (config.services.postgresql.enable)"),
+            "expected a lib.mkIf wrapper in the emitted text"
+        );
+    }
+
+    #[test]
+    fn a_set_outside_when_config_has_no_condition() {
+        let manifest = "module name=\"cond\" version=\"0.1.0\" {\n    claims-node \"cond\"\n    schema {\n        arg \"host\" type=\"string\" required=#true\n    }\n    emit {\n        set \"services.foo.{host}.enable\" #true\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let module = DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
+        let out = lower(&module, &node("cond \"web\""));
+        assert!(out.units.iter().all(|u| u.assignment.condition.is_none()));
+    }
+
+    #[test]
+    fn nested_when_config_and_combines() {
+        let manifest = "module name=\"cond\" version=\"0.1.0\" {\n    claims-node \"cond\"\n    schema {\n        arg \"host\" type=\"string\" required=#true\n    }\n    emit {\n        when-config \"config.a.enable\" {\n            when-config \"config.b.enable\" {\n                set \"services.foo.{host}.enable\" #true\n            }\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let module = DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
+        let out = lower(&module, &node("cond \"web\""));
+        let a = out.units.iter().map(|u| &u.assignment).next().expect("one assignment");
+        match &a.condition {
+            Some(NixExpr::Raw(r)) => assert_eq!(r.src, "(config.a.enable) && (config.b.enable)"),
+            other => panic!("condition = {other:?}"),
+        }
+    }
+
+    #[test]
+    fn when_config_inside_for_each_interpolates_the_loop_var() {
+        let manifest = "module name=\"cond\" version=\"0.1.0\" {\n    claims-node \"cond\"\n    schema {\n        child \"item\" type=\"string\" repeated=#true\n    }\n    emit {\n        for-each \"it\" in \"item\" {\n            when-config \"config.services.{it}.enable\" {\n                set \"p.{it}\" #true\n            }\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let module = DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
+        let out = lower(&module, &node("cond {\n    item \"nginx\"\n    item \"sshd\"\n}"));
+
+        let cond_for = |name: &str| {
+            out.units
+                .iter()
+                .map(|u| &u.assignment)
+                .find(|a| path_str(a) == format!("p.\"{name}\""))
+                .and_then(|a| match &a.condition {
+                    Some(NixExpr::Raw(r)) => Some(r.src.clone()),
+                    _ => None,
+                })
+        };
+        assert_eq!(cond_for("nginx").as_deref(), Some("config.services.nginx.enable"));
+        assert_eq!(cond_for("sshd").as_deref(), Some("config.services.sshd.enable"));
+    }
+
+    #[test]
+    fn when_flag_false_drops_a_when_config_body() {
+        let manifest = "module name=\"cond\" version=\"0.1.0\" {\n    claims-node \"cond\"\n    schema {\n        child \"on\" type=\"bool\"\n    }\n    emit {\n        when-flag \"on\" {\n            when-config \"config.a.enable\" {\n                set \"p\" #true\n            }\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let module = DeclarativeModule::from_kdl(&doc, std::path::Path::new("cond")).expect("loads");
+        let out = lower(&module, &node("cond")); // `on` absent => flag false
+        assert!(out.units.is_empty(), "generation-time gate should drop the body");
+    }
+
+    #[test]
+    fn when_config_rejects_an_empty_condition() {
+        let manifest = "module name=\"bad\" version=\"0.1.0\" {\n    claims-node \"bad\"\n    schema {\n    }\n    emit {\n        when-config \"\" {\n            set \"p\" #true\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad")).err().unwrap();
+        assert!(format!("{err}").contains("non-empty condition"), "got: {err}");
+    }
+
+    #[test]
+    fn dry_check_rejects_a_non_scalar_lookup_in_a_condition() {
+        let manifest = "module name=\"bad\" version=\"0.1.0\" {\n    claims-node \"bad\"\n    schema {\n        child \"acme\" {\n            prop \"email\" type=\"string\" required=#true\n        }\n    }\n    emit {\n        when-config \"config.{acme}.enable\" {\n            set \"p\" #true\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad")).err().unwrap();
+        assert!(format!("{err}").contains("not a scalar"), "got: {err}");
     }
 }
