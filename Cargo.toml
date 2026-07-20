@@ -8,7 +8,7 @@ members = [
     "crates/knixl-lock",
     "crates/knixl-nix",
     "crates/knixl-pipeline",
-    "crates/knixl-cli",
+    "crates/knixl",
 ]
 
 [workspace.package]

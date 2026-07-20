@@ -22,7 +22,7 @@ The "hoist lets" step is `knixl-ir::hoist`: within a file, a compound value (att
 
 ## Crate layout and dependency direction
 
-Strictly one direction. No crate imports `knixl-cli`.
+Strictly one direction. No crate imports `knixl`.
 
 - `knixl-ir` : IR types (`NixExpr`, `NixModule`, `Assignment`), the `Emit` trait, escaping/float/attr-key helpers. Depends on nothing but `miette` and `semver`.
 - `knixl-kdl` : input parsing over the `kdl` crate, span-carrying diagnostics.
@@ -31,7 +31,7 @@ Strictly one direction. No crate imports `knixl-cli`.
 - `knixl-lock` : lockfile model and the reconcile state machine. Depends on `knixl-nix` (for hashing).
 - `knixl-nix` : formatter invocation (pinned nixfmt) and blake3 hashing.
 - `knixl-pipeline` : the single generation entry point (gather, dispatch, lower, emit, format, install/strategy helpers). Depends on `knixl-ir` + `knixl-kdl` + `knixl-modules` + `knixl-nix` + `knixl-lock` + `knixl-oracle`.
-- `knixl-cli` : arg parsing, orchestration, exit codes. Depends on everything.
+- `knixl` : arg parsing, orchestration, exit codes. Depends on everything.
 
 Keeping the library layers free of the CLI is deliberate: a language server or a GitHub Action can reuse `Plan::compute` and the emitter without dragging in clap or process handling.
 
