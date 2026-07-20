@@ -2,6 +2,10 @@
 
 Status: accepted
 
+Amended by: ADR 0006 (2026-07-20): lifted the `overrideAttrs` deferral named below, adding
+an `override` pin strategy alongside commit-mix. Amended by: ADR 0007 (2026-07-20): lifted
+the per-host baseline nixpkgs rev deferral named below.
+
 ## Context
 
 `knixl install <pkg>` installs whatever version of a package the locked nixpkgs

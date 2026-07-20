@@ -27,6 +27,14 @@ cp result/share/doc/nixos/options.json "$HOME/.cache/knixl/options-<rev>.json"
 
 Fetching by rev is not yet automated inside knixl (it needs a nix evaluation); the lookup is. `knixl_oracle::cache_path(rev)` returns the exact path to write.
 
+## Per-host baselines
+
+A single global oracle rev is not always enough: fleets migrate host by host, not all at once. A host can declare its own nixpkgs release with a `nixpkgs` node, e.g. `nixpkgs release="25.05"` inside `host "shared" { ... }` (`examples/hosts/shared.kdl`). That host is then validated against its own release's option set instead of the project-wide one; a host with no declared release simply falls back to the global oracle rev.
+
+Declaring a release does not resolve it on its own. The release string (`"25.05"`) has to become a nixpkgs commit, and that resolution is recorded per host in the lock as a `baseline` line (`release`, `nixpkgs-rev`, `options-hash`; see docs/02). Resolution goes through `KNIXL_BASELINE_RESOLVER` if set (an external `<bin> <release>` command), otherwise a built-in resolver: `git ls-remote` against the `nixos-<release>` branch, falling back to the GitHub commits API if `git` is unavailable or fails. A failure to resolve blocks, it never guesses.
+
+Planning keys the option set per host: `gather` (the read side of `Plan::compute`, in `crates/knixl-pipeline/src/gather.rs`) builds a `BTreeMap<String, Oracle>` from host name to oracle, each host's rev taken from its lock baseline if declared, else the lock's default `oracle nixpkgs-rev`. A host absent from the map (nothing cached for its rev) generates without option checks for that host alone, the same best-effort fallback as the single-oracle case, just scoped to one host instead of the whole project.
+
 ## The honest limit, and how to live with it
 
 In `options.json` the option *type* is a human-readable string (`"boolean"`, `"list of string"`, `"attribute set of submodule"`), not a structured type. So the oracle does best-effort structural checking, not full inference:
@@ -44,7 +52,8 @@ That is still most of the value. Do not over-invest in parsing every type descri
   - `UnknownOption` if the path is not in the set,
   - `ReadOnly` if the option is read-only,
   - `WrongType` if the parsed `NixType` rejects the value,
-  - `Ok` if the type is `Unknown` (punt) or accepts the value.
+  - `Ok` if the type is `Unknown` (punt) or accepts the value,
+  - `Ok` if the path is not itself a leaf option but is a strict prefix of a real one: an intermediate attrset such as a dynamic-key submodule root (e.g. `services.restic.backups.<name>`), detected via `is_option_prefix`. The interior stays unchecked; a genuine typo has no known children and is still rejected.
 - `NixType::parse_description(s)` is best-effort: `"boolean"` -> `Bool`, `"list of string"` -> `List(Str)`, `"null or (attribute set of package)"` -> `NullOr(AttrsOf(Package))`, `"one of ..."` -> `Enum`, anything else -> `Unknown(s)`.
 
 ## What it cannot catch
