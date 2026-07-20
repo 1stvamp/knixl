@@ -4,14 +4,20 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+homepage.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "knixl's generation pipeline: KDL in, formatted Nix files out."
+keywords = ["nix", "kdl", "codegen"]
+categories = ["development-tools"]
 
 [dependencies]
-knixl-ir = { path = "../knixl-ir" }
-knixl-kdl = { path = "../knixl-kdl" }
-knixl-modules = { path = "../knixl-modules" }
-knixl-nix = { path = "../knixl-nix" }
-knixl-lock = { path = "../knixl-lock" }
-knixl-oracle = { path = "../knixl-oracle" }
+knixl-ir = { path = "../knixl-ir", version = "0.3.1" }
+knixl-kdl = { path = "../knixl-kdl", version = "0.3.1" }
+knixl-modules = { path = "../knixl-modules", version = "0.3.1" }
+knixl-nix = { path = "../knixl-nix", version = "0.3.1" }
+knixl-lock = { path = "../knixl-lock", version = "0.3.1" }
+knixl-oracle = { path = "../knixl-oracle", version = "0.3.1" }
 kdl.workspace = true
 semver.workspace = true
 thiserror.workspace = true

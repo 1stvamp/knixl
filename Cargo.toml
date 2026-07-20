@@ -17,6 +17,8 @@ edition = "2021"
 rust-version = "1.87"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/1stvamp/knixl"
+authors = ["Wesley Mason <wes@1stvamp.org>"]
+homepage = "https://github.com/1stvamp/knixl"
 
 # Pinned deliberately. The kdl crate is the reference impl, formatting-preserving,
 # KDL v2 by default. miette gives span diagnostics that kdl-rs already integrates with.

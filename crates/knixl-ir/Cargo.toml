@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+homepage.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "knixl IR: a constrained subset of Nix (module bodies) with a deterministic emitter."
+keywords = ["nix", "kdl", "codegen"]
+categories = ["development-tools"]
 
 [dependencies]
 miette.workspace = true

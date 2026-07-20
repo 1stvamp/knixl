@@ -4,9 +4,15 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+homepage.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "knixl's lockfile model and reconcile/drift state machine."
+keywords = ["nix", "lockfile", "reproducibility"]
+categories = ["development-tools"]
 
 [dependencies]
-knixl-nix = { path = "../knixl-nix" }
+knixl-nix = { path = "../knixl-nix", version = "0.3.1" }
 kdl.workspace = true
 semver.workspace = true
 thiserror.workspace = true
