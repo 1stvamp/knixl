@@ -1297,7 +1297,9 @@ fn set_child_first_arg(body: &mut kdl::KdlDocument, kw: &str, val: &str) {
 /// Parse `text` (expected to be exactly one node, as produced by `render_entry` /
 /// `render_subfield`) and take that node.
 fn parse_one_node(text: &str) -> Result<kdl::KdlNode, String> {
-    let mut doc = text.parse::<kdl::KdlDocument>().map_err(|e| e.to_string())?;
+    let mut doc = text
+        .parse::<kdl::KdlDocument>()
+        .map_err(|e| e.to_string())?;
     if doc.nodes().is_empty() {
         return Err(format!("expected a node, got nothing from: {text}"));
     }
@@ -2012,10 +2014,20 @@ mod tests {
     fn load_editable_reads_header_entries_and_emit() {
         let ed = load_editable(&web_service_manifest()).expect("loads");
         assert_eq!(ed.node, "web-service");
-        assert!(ed.entries.iter().any(|e| e.name == "host"), "has the host entry");
-        assert!(ed.entries.iter().any(|e| e.kind == EntryKind::Child && e.name == "location" && e.repeated),
-            "location is a repeated child");
-        assert!(ed.entries.iter().all(|e| e.origin.is_some()), "every loaded entry has an origin");
+        assert!(
+            ed.entries.iter().any(|e| e.name == "host"),
+            "has the host entry"
+        );
+        assert!(
+            ed.entries
+                .iter()
+                .any(|e| e.kind == EntryKind::Child && e.name == "location" && e.repeated),
+            "location is a repeated child"
+        );
+        assert!(
+            ed.entries.iter().all(|e| e.origin.is_some()),
+            "every loaded entry has an origin"
+        );
         assert!(!ed.emit.trim().is_empty(), "emit text captured");
     }
 
@@ -2024,35 +2036,65 @@ mod tests {
         let src = web_service_manifest();
         let ed = load_editable(&src).expect("loads");
         let draft = ModuleDraft {
-            name: ed.name.clone(), node: ed.node.clone(), summary: ed.summary.clone(),
-            entries: ed.entries.clone(), emit: ed.emit.clone(),
+            name: ed.name.clone(),
+            node: ed.node.clone(),
+            summary: ed.summary.clone(),
+            entries: ed.entries.clone(),
+            emit: ed.emit.clone(),
         };
         let out = reconcile(&ed.doc, &draft).expect("reconcile");
         validate_manifest(&out).expect("reconciled manifest is valid");
         // Content the editor does not model must survive.
-        assert!(out.contains("migrations"), "migrations block preserved: {out}");
-        assert!(out.contains("serverAliases is generated"), "a migration note preserved");
-        assert!(out.contains("doc=\"Additional server name.\""), "a doc string preserved");
+        assert!(
+            out.contains("migrations"),
+            "migrations block preserved: {out}"
+        );
+        assert!(
+            out.contains("serverAliases is generated"),
+            "a migration note preserved"
+        );
+        assert!(
+            out.contains("doc=\"Additional server name.\""),
+            "a doc string preserved"
+        );
         // version is not 0.1.0 (render_manifest's default) : the original version survived.
-        let orig_ver = src.split("version=\"").nth(1).unwrap().split('"').next().unwrap();
-        assert!(out.contains(&format!("version=\"{orig_ver}\"")), "version {orig_ver} preserved: {out}");
+        let orig_ver = src
+            .split("version=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        assert!(
+            out.contains(&format!("version=\"{orig_ver}\"")),
+            "version {orig_ver} preserved: {out}"
+        );
     }
 
     #[test]
     fn reconcile_toggling_required_updates_only_that_node() {
         let ed = load_editable(&web_service_manifest()).expect("loads");
         let mut entries = ed.entries.clone();
-        let host = entries.iter_mut().find(|e| e.name == "host").expect("host entry");
+        let host = entries
+            .iter_mut()
+            .find(|e| e.name == "host")
+            .expect("host entry");
         let was = host.required;
         host.required = !was;
         let draft = ModuleDraft {
-            name: ed.name.clone(), node: ed.node.clone(), summary: ed.summary.clone(),
-            entries, emit: ed.emit.clone(),
+            name: ed.name.clone(),
+            node: ed.node.clone(),
+            summary: ed.summary.clone(),
+            entries,
+            emit: ed.emit.clone(),
         };
         let out = reconcile(&ed.doc, &draft).expect("reconcile");
         validate_manifest(&out).expect("valid");
         // doc strings still present (node was updated in place, not rebuilt fresh).
-        assert!(out.contains("doc=\"Additional server name.\""), "unrelated doc preserved: {out}");
+        assert!(
+            out.contains("doc=\"Additional server name.\""),
+            "unrelated doc preserved: {out}"
+        );
     }
 
     #[test]
@@ -2065,13 +2107,21 @@ mod tests {
         let mut entries = ed.entries.clone();
         // add a fresh arg (origin None) and drop the unreferenced `spare` prop.
         entries.push(SchemaEntry {
-            kind: EntryKind::Arg, name: "extra".into(), ty: FieldTy::Str,
-            required: false, repeated: false, subfields: vec![], origin: None,
+            kind: EntryKind::Arg,
+            name: "extra".into(),
+            ty: FieldTy::Str,
+            required: false,
+            repeated: false,
+            subfields: vec![],
+            origin: None,
         });
         entries.retain(|e| e.name != "spare");
         let draft = ModuleDraft {
-            name: ed.name.clone(), node: ed.node.clone(), summary: ed.summary.clone(),
-            entries, emit: ed.emit.clone(),
+            name: ed.name.clone(),
+            node: ed.node.clone(),
+            summary: ed.summary.clone(),
+            entries,
+            emit: ed.emit.clone(),
         };
         let out = reconcile(&ed.doc, &draft).expect("reconcile");
         assert!(out.contains("arg \"extra\""), "new entry rendered: {out}");
@@ -2086,12 +2136,21 @@ mod tests {
         let src = "module name=\"demo\" version=\"1.0.0\" {\n    summary \"s\"\n    claims-node \"demo\"\n    schema {\n        arg \"host\"\n    }\n    emit {\n        set \"services.demo.{host}.enable\" #true\n    }\n}\n";
         let ed = load_editable(src).expect("loads");
         let draft = ModuleDraft {
-            name: ed.name.clone(), node: ed.node.clone(), summary: ed.summary.clone(),
-            entries: ed.entries.clone(), emit: ed.emit.clone(),
+            name: ed.name.clone(),
+            node: ed.node.clone(),
+            summary: ed.summary.clone(),
+            entries: ed.entries.clone(),
+            emit: ed.emit.clone(),
         };
         let out = reconcile(&ed.doc, &draft).expect("reconcile");
-        assert!(!out.contains("required=#false"), "no default required= churn: {out}");
-        assert!(!out.contains("type=\"string\""), "no default type= churn: {out}");
+        assert!(
+            !out.contains("required=#false"),
+            "no default required= churn: {out}"
+        );
+        assert!(
+            !out.contains("type=\"string\""),
+            "no default type= churn: {out}"
+        );
         validate_manifest(&out).expect("valid");
     }
 
@@ -2099,13 +2158,21 @@ mod tests {
     fn reconcile_replaces_the_emit_block() {
         let ed = load_editable(&web_service_manifest()).expect("loads");
         let draft = ModuleDraft {
-            name: ed.name.clone(), node: ed.node.clone(), summary: ed.summary.clone(),
+            name: ed.name.clone(),
+            node: ed.node.clone(),
+            summary: ed.summary.clone(),
             entries: ed.entries.clone(),
             emit: "set \"services.nginx.enable\" #true".into(),
         };
         let out = reconcile(&ed.doc, &draft).expect("reconcile");
-        assert!(out.contains("services.nginx.enable"), "new emit present: {out}");
-        assert!(out.contains("migrations"), "migrations still preserved: {out}");
+        assert!(
+            out.contains("services.nginx.enable"),
+            "new emit present: {out}"
+        );
+        assert!(
+            out.contains("migrations"),
+            "migrations still preserved: {out}"
+        );
         validate_manifest(&out).expect("valid");
     }
 }
