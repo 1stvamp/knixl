@@ -79,7 +79,9 @@ impl NixEval {
         let expr = format!("builtins.hasAttr \"{name}\" ({})", src.expr());
         let out = self.run(&["--eval", "-E", &expr])?;
         if !out.status.success() {
-            return Err(NixError::Failed(String::from_utf8_lossy(&out.stderr).trim().to_string()));
+            return Err(NixError::Failed(
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ));
         }
         Ok(String::from_utf8_lossy(&out.stdout).trim() == "true")
     }
@@ -90,7 +92,9 @@ impl NixEval {
         if out.status.success() {
             Ok(())
         } else {
-            Err(NixError::Failed(String::from_utf8_lossy(&out.stderr).trim().to_string()))
+            Err(NixError::Failed(
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ))
         }
     }
 
@@ -113,7 +117,9 @@ impl NixEval {
         if out.status.success() {
             Ok(())
         } else {
-            Err(NixError::Failed(String::from_utf8_lossy(&out.stderr).trim().to_string()))
+            Err(NixError::Failed(
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ))
         }
     }
 
@@ -135,7 +141,9 @@ impl NixEval {
         if out.status.success() {
             Ok(())
         } else {
-            Err(NixError::Failed(String::from_utf8_lossy(&out.stderr).trim().to_string()))
+            Err(NixError::Failed(
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ))
         }
     }
 }
@@ -164,7 +172,8 @@ mod tests {
 
     /// A shim mimicking `nix-build`: exits 0 when `build_ok`, else 1 with a message on stderr.
     fn build_shim(tag: &str, build_ok: bool) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("knixl-buildshim-{}-{tag}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("knixl-buildshim-{}-{tag}", std::process::id()));
         let exit = if build_ok { 0 } else { 1 };
         let script = format!("#!/bin/sh\necho 'boom' 1>&2\nexit {exit}\n");
         let mut f = std::fs::File::create(&path).unwrap();
@@ -177,27 +186,45 @@ mod tests {
 
     #[test]
     fn package_exists_true_when_shim_says_true() {
-        let e = NixEval { bin: shim("exists", "true", true), build_bin: PathBuf::from("nix-build") };
+        let e = NixEval {
+            bin: shim("exists", "true", true),
+            build_bin: PathBuf::from("nix-build"),
+        };
         assert!(e.package_exists(&Nixpkgs::Ambient, "ripgrep").unwrap());
     }
 
     #[test]
     fn package_exists_false_when_shim_says_false() {
-        let e = NixEval { bin: shim("missing", "false", true), build_bin: PathBuf::from("nix-build") };
+        let e = NixEval {
+            bin: shim("missing", "false", true),
+            build_bin: PathBuf::from("nix-build"),
+        };
         assert!(!e.package_exists(&Nixpkgs::Ambient, "nope").unwrap());
     }
 
     #[test]
     fn parses_ok_and_error() {
-        let ok = NixEval { bin: shim("parseok", "true", true), build_bin: PathBuf::from("nix-build") };
+        let ok = NixEval {
+            bin: shim("parseok", "true", true),
+            build_bin: PathBuf::from("nix-build"),
+        };
         assert!(ok.parses(Path::new("/tmp/whatever.nix")).is_ok());
-        let bad = NixEval { bin: shim("parsebad", "true", false), build_bin: PathBuf::from("nix-build") };
-        assert!(matches!(bad.parses(Path::new("/tmp/whatever.nix")), Err(NixError::Failed(_))));
+        let bad = NixEval {
+            bin: shim("parsebad", "true", false),
+            build_bin: PathBuf::from("nix-build"),
+        };
+        assert!(matches!(
+            bad.parses(Path::new("/tmp/whatever.nix")),
+            Err(NixError::Failed(_))
+        ));
     }
 
     #[test]
     fn missing_binary_is_unavailable_not_failure() {
-        let e = NixEval { bin: PathBuf::from("/nonexistent/knixl-no-such-nix"), build_bin: PathBuf::from("nix-build") };
+        let e = NixEval {
+            bin: PathBuf::from("/nonexistent/knixl-no-such-nix"),
+            build_bin: PathBuf::from("nix-build"),
+        };
         assert!(matches!(
             e.package_exists(&Nixpkgs::Ambient, "x"),
             Err(NixError::Unavailable(_))
@@ -212,14 +239,23 @@ mod tests {
 
     #[test]
     fn builds_ok_when_shim_exits_zero() {
-        let e = NixEval { bin: PathBuf::from("nix-instantiate"), build_bin: build_shim("bok", true) };
+        let e = NixEval {
+            bin: PathBuf::from("nix-instantiate"),
+            build_bin: build_shim("bok", true),
+        };
         assert!(e.builds(&Nixpkgs::Ambient, "ripgrep").is_ok());
     }
 
     #[test]
     fn builds_failed_when_shim_exits_nonzero() {
-        let e = NixEval { bin: PathBuf::from("nix-instantiate"), build_bin: build_shim("bbad", false) };
-        assert!(matches!(e.builds(&Nixpkgs::Ambient, "ripgrep"), Err(NixError::Failed(_))));
+        let e = NixEval {
+            bin: PathBuf::from("nix-instantiate"),
+            build_bin: build_shim("bbad", false),
+        };
+        assert!(matches!(
+            e.builds(&Nixpkgs::Ambient, "ripgrep"),
+            Err(NixError::Failed(_))
+        ));
     }
 
     #[test]
@@ -228,18 +264,27 @@ mod tests {
             bin: PathBuf::from("nix-instantiate"),
             build_bin: PathBuf::from("/nonexistent/knixl-no-such-nix-build"),
         };
-        assert!(matches!(e.builds(&Nixpkgs::Ambient, "x"), Err(NixError::Unavailable(_))));
+        assert!(matches!(
+            e.builds(&Nixpkgs::Ambient, "x"),
+            Err(NixError::Unavailable(_))
+        ));
     }
 
     #[test]
     fn builds_expr_ok_when_shim_exits_zero() {
-        let e = NixEval { bin: PathBuf::from("nix-instantiate"), build_bin: build_shim("beok", true) };
+        let e = NixEval {
+            bin: PathBuf::from("nix-instantiate"),
+            build_bin: build_shim("beok", true),
+        };
         assert!(e.builds_expr("1 + 1").is_ok());
     }
 
     #[test]
     fn builds_expr_failed_when_shim_exits_nonzero() {
-        let e = NixEval { bin: PathBuf::from("nix-instantiate"), build_bin: build_shim("bebad", false) };
+        let e = NixEval {
+            bin: PathBuf::from("nix-instantiate"),
+            build_bin: build_shim("bebad", false),
+        };
         assert!(matches!(e.builds_expr("1 + 1"), Err(NixError::Failed(_))));
     }
 
@@ -249,6 +294,9 @@ mod tests {
             bin: PathBuf::from("nix-instantiate"),
             build_bin: PathBuf::from("/nonexistent/knixl-no-such-nix-build"),
         };
-        assert!(matches!(e.builds_expr("1 + 1"), Err(NixError::Unavailable(_))));
+        assert!(matches!(
+            e.builds_expr("1 + 1"),
+            Err(NixError::Unavailable(_))
+        ));
     }
 }

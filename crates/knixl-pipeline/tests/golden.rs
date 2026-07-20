@@ -40,8 +40,10 @@ fn build_registry() -> Registry {
             }
             let src = fs::read_to_string(&manifest).expect("read module manifest");
             let doc = knixl_kdl::parse(&src).expect("parse module manifest");
-            let module = DeclarativeModule::from_kdl(&doc, &manifest).expect("load declarative module");
-            reg.register(Box::new(module)).expect("register declarative module");
+            let module =
+                DeclarativeModule::from_kdl(&doc, &manifest).expect("load declarative module");
+            reg.register(Box::new(module))
+                .expect("register declarative module");
         }
     }
     reg
@@ -57,7 +59,11 @@ fn formatter() -> Formatter {
 /// An identity "formatter" (`cat`), so the full pipeline can be exercised end to end even
 /// where nixfmt is not installed. The text is the emitter's structural output, pre-format.
 fn identity_formatter() -> Formatter {
-    Formatter { name: "identity".into(), version: "0".into(), bin: PathBuf::from("cat") }
+    Formatter {
+        name: "identity".into(),
+        version: "0".into(),
+        bin: PathBuf::from("cat"),
+    }
 }
 
 fn generate_host(host_file: &str) -> Vec<knixl_pipeline::GeneratedFile> {
@@ -67,8 +73,15 @@ fn generate_host(host_file: &str) -> Vec<knixl_pipeline::GeneratedFile> {
     let tool = "0.3.1".parse().unwrap();
     let no_pins = std::collections::BTreeMap::new();
     let no_oracles = std::collections::BTreeMap::new();
-    generate(&[HostSource { path, src }], &build_registry(), &identity_formatter(), &tool, &no_oracles, &no_pins)
-        .expect("generate")
+    generate(
+        &[HostSource { path, src }],
+        &build_registry(),
+        &identity_formatter(),
+        &tool,
+        &no_oracles,
+        &no_pins,
+    )
+    .expect("generate")
 }
 
 /// Assemble a realistic project root in a temp dir: hosts + lock from examples/, and the
@@ -81,7 +94,11 @@ fn temp_project(tag: &str) -> PathBuf {
 
     let examples = examples_dir();
     for host in ["web.kdl", "db.kdl"] {
-        fs::copy(examples.join("hosts").join(host), root.join("hosts").join(host)).unwrap();
+        fs::copy(
+            examples.join("hosts").join(host),
+            root.join("hosts").join(host),
+        )
+        .unwrap();
     }
     fs::copy(examples.join("knixl.lock.kdl"), root.join("knixl.lock.kdl")).unwrap();
     fs::copy(
@@ -100,12 +117,19 @@ fn gather_and_plan_report_missing_when_disk_is_empty() {
     let root = temp_project("missing");
     let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
     // The project has hosts + modules + a lock, but no generated/ dir, so nothing is on disk.
-    let plan = Plan::compute(&project.inputs, &project.disk, &project.lock, &project.versions);
+    let plan = Plan::compute(
+        &project.inputs,
+        &project.disk,
+        &project.lock,
+        &project.versions,
+    );
 
     assert!(!plan.has_validation_errors());
     assert_eq!(plan.files.len(), 3, "web.nix, db.nix, db-backup.nix");
     assert!(
-        plan.files.iter().all(|f| matches!(f.state, FileState::Missing { .. })),
+        plan.files
+            .iter()
+            .all(|f| matches!(f.state, FileState::Missing { .. })),
         "every output is Missing when nothing is generated on disk"
     );
     // the declarative module was discovered and registered alongside the built-ins
@@ -125,7 +149,10 @@ fn unknown_child_node_surfaces_as_a_warning_not_an_error() {
     let no_pins = std::collections::BTreeMap::new();
     let no_oracles = std::collections::BTreeMap::new();
     let files = generate(
-        &[HostSource { path: PathBuf::from("hosts/web.kdl"), src }],
+        &[HostSource {
+            path: PathBuf::from("hosts/web.kdl"),
+            src,
+        }],
         &build_registry(),
         &identity_formatter(),
         &tool,
@@ -136,7 +163,10 @@ fn unknown_child_node_surfaces_as_a_warning_not_an_error() {
 
     assert_eq!(files.len(), 1);
     assert!(
-        files[0].warnings.iter().any(|w| w.contains("mystery-service")),
+        files[0]
+            .warnings
+            .iter()
+            .any(|w| w.contains("mystery-service")),
         "unknown child should surface as a warning, got {:?}",
         files[0].warnings
     );
@@ -165,10 +195,19 @@ fn db_pipeline_produces_two_files_with_mkif_backup() {
     let files = generate_host("db.kdl");
     assert_eq!(files.len(), 2, "db has a backup side-file");
 
-    let db = files.iter().find(|f| f.path.file_name().unwrap() == "db.nix").expect("db.nix");
+    let db = files
+        .iter()
+        .find(|f| f.path.file_name().unwrap() == "db.nix")
+        .expect("db.nix");
     assert!(db.text.contains("services.postgresql.enable = true"));
-    assert!(db.text.contains("lib.mkForce"), "listen-tcp forces the preset");
-    assert!(db.text.contains("./db-backup.nix"), "main file imports the side-file");
+    assert!(
+        db.text.contains("lib.mkForce"),
+        "listen-tcp forces the preset"
+    );
+    assert!(
+        db.text.contains("./db-backup.nix"),
+        "main file imports the side-file"
+    );
 
     let backup = files
         .iter()
@@ -176,26 +215,44 @@ fn db_pipeline_produces_two_files_with_mkif_backup() {
         .expect("db-backup.nix");
     // Pre-format the dynamic host key is quoted (services.restic.backups."db").
     assert!(backup.text.contains("services.restic.backups"));
-    assert!(backup.text.contains("lib.mkIf"), "backup is gated by a runtime condition");
+    assert!(
+        backup.text.contains("lib.mkIf"),
+        "backup is gated by a runtime condition"
+    );
 }
 
 #[test]
 fn lock_records_only_the_modules_that_contributed_to_each_file() {
     let files = generate_host("db.kdl");
-    let db = files.iter().find(|f| f.path.file_name().unwrap() == "db.nix").expect("db.nix");
+    let db = files
+        .iter()
+        .find(|f| f.path.file_name().unwrap() == "db.nix")
+        .expect("db.nix");
     let backup = files
         .iter()
         .find(|f| f.path.file_name().unwrap() == "db-backup.nix")
         .expect("db-backup.nix");
 
-    assert!(db.modules.contains(&"host".to_string()), "db.nix modules: {:?}", db.modules);
-    assert!(db.modules.contains(&"postgres".to_string()), "db.nix modules: {:?}", db.modules);
+    assert!(
+        db.modules.contains(&"host".to_string()),
+        "db.nix modules: {:?}",
+        db.modules
+    );
+    assert!(
+        db.modules.contains(&"postgres".to_string()),
+        "db.nix modules: {:?}",
+        db.modules
+    );
     assert!(
         !db.modules.contains(&"backups".to_string()),
         "backups belongs to the side-file, not db.nix: {:?}",
         db.modules
     );
-    assert_eq!(backup.modules, vec!["backups".to_string()], "db-backup.nix is backups only");
+    assert_eq!(
+        backup.modules,
+        vec!["backups".to_string()],
+        "db-backup.nix is backups only"
+    );
 }
 
 #[test]
@@ -219,7 +276,10 @@ fn repeated_block_is_hoisted_into_a_let() {
     assert_eq!(files.len(), 1);
     let text = &files[0].text;
     assert!(text.contains("let"), "a let block is emitted:\n{text}");
-    assert!(text.contains("_knixl0 ="), "the shared block is bound:\n{text}");
+    assert!(
+        text.contains("_knixl0 ="),
+        "the shared block is bound:\n{text}"
+    );
     let refs = text.matches("= _knixl0;").count();
     assert_eq!(refs, 2, "both vhosts reference the binding:\n{text}");
 }
@@ -241,16 +301,31 @@ fn assert_host_matches(host_file: &str) {
     let tool = "0.3.1".parse().unwrap();
     let no_pins = std::collections::BTreeMap::new();
     let no_oracles = std::collections::BTreeMap::new();
-    let files = generate(&[HostSource { path, src }], &registry, &formatter(), &tool, &no_oracles, &no_pins)
-        .expect("generate");
+    let files = generate(
+        &[HostSource { path, src }],
+        &registry,
+        &formatter(),
+        &tool,
+        &no_oracles,
+        &no_pins,
+    )
+    .expect("generate");
 
-    assert!(!files.is_empty(), "generate produced no files for {host_file}");
+    assert!(
+        !files.is_empty(),
+        "generate produced no files for {host_file}"
+    );
     for f in files {
         let basename = f.path.file_name().expect("output has a file name");
         let expected_path = examples.join("expected").join(basename);
         let expected = fs::read_to_string(&expected_path)
             .unwrap_or_else(|_| panic!("no expected output at {}", expected_path.display()));
-        assert_eq!(f.text, expected, "generated {} does not match golden", f.path.display());
+        assert_eq!(
+            f.text,
+            expected,
+            "generated {} does not match golden",
+            f.path.display()
+        );
     }
 }
 
@@ -298,7 +373,10 @@ fn generate_is_byte_identical_across_runs() {
 
     let run = || {
         generate(
-            &[HostSource { path: path.clone(), src: src.clone() }],
+            &[HostSource {
+                path: path.clone(),
+                src: src.clone(),
+            }],
             &build_registry(),
             &formatter(),
             &tool,
@@ -345,8 +423,15 @@ fn pinned_matches_golden() {
     let tool = "0.3.1".parse().unwrap();
     let no_oracles = std::collections::BTreeMap::new();
 
-    let files = generate(&[HostSource { path, src }], &build_registry(), &formatter(), &tool, &no_oracles, &pins)
-        .expect("generate");
+    let files = generate(
+        &[HostSource { path, src }],
+        &build_registry(),
+        &formatter(),
+        &tool,
+        &no_oracles,
+        &pins,
+    )
+    .expect("generate");
 
     assert_eq!(files.len(), 1, "pinned host has no side-files");
     let expected = fs::read_to_string(examples.join("expected/pinned.nix"))
@@ -369,7 +454,10 @@ fn pinned_generate_is_byte_identical_across_runs() {
 
     let run = || {
         generate(
-            &[HostSource { path: path.clone(), src: src.clone() }],
+            &[HostSource {
+                path: path.clone(),
+                src: src.clone(),
+            }],
             &build_registry(),
             &formatter(),
             &tool,
@@ -382,7 +470,11 @@ fn pinned_generate_is_byte_identical_across_runs() {
         .collect::<Vec<_>>()
     };
 
-    assert_eq!(run(), run(), "two generate runs produced different bytes for the pinned host");
+    assert_eq!(
+        run(),
+        run(),
+        "two generate runs produced different bytes for the pinned host"
+    );
 }
 
 /// The override emit path (issue #23): a host with one version-pinned package (htop) whose
@@ -401,13 +493,23 @@ fn pinned_override_matches_golden() {
     let tool = "0.3.1".parse().unwrap();
     let no_oracles = std::collections::BTreeMap::new();
 
-    let files = generate(&[HostSource { path, src }], &build_registry(), &formatter(), &tool, &no_oracles, &pins)
-        .expect("generate");
+    let files = generate(
+        &[HostSource { path, src }],
+        &build_registry(),
+        &formatter(),
+        &tool,
+        &no_oracles,
+        &pins,
+    )
+    .expect("generate");
 
     assert_eq!(files.len(), 1, "pinned-override host has no side-files");
     let expected = fs::read_to_string(examples.join("expected/pinned-override.nix"))
         .expect("no expected output at examples/expected/pinned-override.nix");
-    assert_eq!(files[0].text, expected, "pinned-override.nix does not match golden");
+    assert_eq!(
+        files[0].text, expected,
+        "pinned-override.nix does not match golden"
+    );
 }
 
 /// GC (issue #24): a pin for a package no longer declared in the host's KDL must not
@@ -434,15 +536,31 @@ fn generate_prunes_pins_for_packages_no_longer_declared() {
     pins.insert(
         "app".to_string(),
         vec![
-            Pin { package: "jq".into(), version: "1.7".into(), nixpkgs_rev: rev.clone(), strategy: PinStrategy::CommitMix },
-            Pin { package: "htop".into(), version: "3.2.1".into(), nixpkgs_rev: rev, strategy: PinStrategy::CommitMix },
+            Pin {
+                package: "jq".into(),
+                version: "1.7".into(),
+                nixpkgs_rev: rev.clone(),
+                strategy: PinStrategy::CommitMix,
+            },
+            Pin {
+                package: "htop".into(),
+                version: "3.2.1".into(),
+                nixpkgs_rev: rev,
+                strategy: PinStrategy::CommitMix,
+            },
         ],
     );
     let lock = Lock {
         version: 1,
         tool: "0.3.1".parse().unwrap(),
-        formatter: FormatterPin { name: "identity".into(), version: "0".into() },
-        oracle: OraclePin { nixpkgs_rev: String::new(), options_hash: String::new() },
+        formatter: FormatterPin {
+            name: "identity".into(),
+            version: "0".into(),
+        },
+        oracle: OraclePin {
+            nixpkgs_rev: String::new(),
+            options_hash: String::new(),
+        },
         inputs: std::collections::BTreeMap::new(),
         modules: std::collections::BTreeMap::new(),
         outputs: Vec::new(),
@@ -452,11 +570,28 @@ fn generate_prunes_pins_for_packages_no_longer_declared() {
     fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();
 
     let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
-    let plan = Plan::compute(&project.inputs, &project.disk, &project.lock, &project.versions);
-    assert!(!plan.has_validation_errors(), "unexpected validation errors: {:?}", plan.validation_errors);
+    let plan = Plan::compute(
+        &project.inputs,
+        &project.disk,
+        &project.lock,
+        &project.versions,
+    );
+    assert!(
+        !plan.has_validation_errors(),
+        "unexpected validation errors: {:?}",
+        plan.validation_errors
+    );
 
-    let app_pins = plan.lock_next.pins.get("app").expect("app host keeps its surviving pin");
-    assert_eq!(app_pins.len(), 1, "htop's pin should have been pruned: {app_pins:?}");
+    let app_pins = plan
+        .lock_next
+        .pins
+        .get("app")
+        .expect("app host keeps its surviving pin");
+    assert_eq!(
+        app_pins.len(),
+        1,
+        "htop's pin should have been pruned: {app_pins:?}"
+    );
     assert_eq!(app_pins[0].package, "jq");
 
     let _ = fs::remove_dir_all(&root);

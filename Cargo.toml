@@ -8,15 +8,17 @@ members = [
     "crates/knixl-lock",
     "crates/knixl-nix",
     "crates/knixl-pipeline",
-    "crates/knixl-cli",
+    "crates/knixl",
 ]
 
 [workspace.package]
 version = "0.3.1"
 edition = "2021"
 rust-version = "1.87"
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/1stvamp/knixl"
+authors = ["Wesley Mason <wes@1stvamp.org>"]
+homepage = "https://github.com/1stvamp/knixl"
 
 # Pinned deliberately. The kdl crate is the reference impl, formatting-preserving,
 # KDL v2 by default. miette gives span diagnostics that kdl-rs already integrates with.
@@ -33,3 +35,23 @@ thiserror = "2"
 
 [profile.release]
 lto = "thin"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+# Config for 'dist'
+[workspace.metadata.dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false

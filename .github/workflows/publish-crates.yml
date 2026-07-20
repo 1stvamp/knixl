@@ -1,0 +1,24 @@
+name: Publish crates
+# Publishes the workspace to crates.io on a `v*` tag push. Kept as a sibling to
+# release.yml (dist-generated) rather than an appended job there: `dist generate`
+# rewrites release.yml wholesale on every `dist init`/`dist generate`, so a
+# hand-added job in that file would be silently dropped on the next dist upgrade.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish-crates:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      # Stable, not the 1.87 build floor: cargo-workspaces needs a newer rustc to
+      # compile, and publishing against a newer toolchain is fine (rust-version is a
+      # minimum, not a ceiling).
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-workspaces --locked
+      - run: cargo ws publish --from-git --yes --no-git-commit --token "$CARGO_REGISTRY_TOKEN"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

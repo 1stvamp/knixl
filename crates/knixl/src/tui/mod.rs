@@ -77,7 +77,10 @@ pub type PinFn = Arc<dyn Fn(&str, &str) -> PinOutcome + Send + Sync>;
 pub enum StrategyOutcome {
     /// A strategy was chosen; `label` is the same short phrase the `pinned ... via ...` status
     /// line prints (e.g. "build ok", "override build failed").
-    Chosen { strategy: knixl_lock::model::PinStrategy, label: String },
+    Chosen {
+        strategy: knixl_lock::model::PinStrategy,
+        label: String,
+    },
     /// Neither candidate strategy build-tested successfully; carries a message for display.
     Failed(String),
 }
@@ -144,7 +147,11 @@ pub enum Outcome {
         strategy_reason: Option<String>,
     },
     /// Scaffold this module's node into this host's KDL.
-    Insert { host: HostInfo, node: String, skeleton: String },
+    Insert {
+        host: HostInfo,
+        node: String,
+        skeleton: String,
+    },
     /// Write a new declarative module manifest (`modules/<name>/knixl-module.kdl`).
     Scaffold { name: String, manifest: String },
 }
@@ -194,9 +201,16 @@ pub enum Nav {
         strategy_reason: Option<String>,
     },
     /// Scaffold a module node into a host and end the session.
-    Insert { host: HostInfo, node: String, skeleton: String },
+    Insert {
+        host: HostInfo,
+        node: String,
+        skeleton: String,
+    },
     /// Write a new module manifest and end the session.
-    Scaffold { name: String, manifest: String },
+    Scaffold {
+        name: String,
+        manifest: String,
+    },
 }
 
 /// A reducer's result: a navigation intent plus an optional command to run.
@@ -207,7 +221,10 @@ pub struct Step {
 
 impl Step {
     fn stay() -> Step {
-        Step { nav: Nav::Stay, cmd: None }
+        Step {
+            nav: Nav::Stay,
+            cmd: None,
+        }
     }
     fn nav(nav: Nav) -> Step {
         Step { nav, cmd: None }
@@ -244,7 +261,14 @@ impl Model for App {
             Some(c) => command::batch(vec![command::window_size(), c]),
             None => command::window_size(),
         };
-        (App { size, screen, outcome: Outcome::Quit }, Some(init_cmd))
+        (
+            App {
+                size,
+                screen,
+                outcome: Outcome::Quit,
+            },
+            Some(init_cmd),
+        )
     }
 
     fn update(&mut self, msg: Msg) -> Option<Cmd> {
@@ -281,7 +305,16 @@ impl App {
         match step.nav {
             Nav::Stay => step.cmd,
             Nav::Quit => Some(command::quit()),
-            Nav::Apply { host, pkg, strict, version, pin, no_abi_check, strategy, strategy_reason } => {
+            Nav::Apply {
+                host,
+                pkg,
+                strict,
+                version,
+                pin,
+                no_abi_check,
+                strategy,
+                strategy_reason,
+            } => {
                 self.outcome = Outcome::Install {
                     host,
                     pkg,
@@ -294,8 +327,16 @@ impl App {
                 };
                 Some(command::quit())
             }
-            Nav::Insert { host, node, skeleton } => {
-                self.outcome = Outcome::Insert { host, node, skeleton };
+            Nav::Insert {
+                host,
+                node,
+                skeleton,
+            } => {
+                self.outcome = Outcome::Insert {
+                    host,
+                    node,
+                    skeleton,
+                };
                 Some(command::quit())
             }
             Nav::Scaffold { name, manifest } => {
@@ -344,14 +385,25 @@ pub fn run(
     pin: Option<PinFn>,
     strategy: Option<StrategyFn>,
 ) -> Result<Outcome, String> {
-    let _ = CONFIG.set(TuiConfig { root, hosts, entry, verify, modules, build, pin, strategy });
+    let _ = CONFIG.set(TuiConfig {
+        root,
+        hosts,
+        entry,
+        verify,
+        modules,
+        build,
+        pin,
+        strategy,
+    });
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
     rt.block_on(async {
-        let program =
-            Program::<App>::builder().alt_screen(true).build().map_err(|e| e.to_string())?;
+        let program = Program::<App>::builder()
+            .alt_screen(true)
+            .build()
+            .map_err(|e| e.to_string())?;
         let app = program.run().await.map_err(|e| e.to_string())?;
         Ok(app.outcome)
     })

@@ -1,9 +1,9 @@
 //! knixl.lock.kdl: KDL for grep/diff friendliness. Records everything on the
 //! reproducibility boundary: tool, formatter, oracle rev, and per-file hashes.
-use std::collections::BTreeMap;
-use std::path::PathBuf;
 use kdl::{KdlDocument, KdlNode};
 use semver::Version;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 pub type Hash = String; // "blake3:...."
 
@@ -21,9 +21,15 @@ pub struct Lock {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FormatterPin { pub name: String, pub version: String }
+pub struct FormatterPin {
+    pub name: String,
+    pub version: String,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OraclePin { pub nixpkgs_rev: String, pub options_hash: Hash }
+pub struct OraclePin {
+    pub nixpkgs_rev: String,
+    pub options_hash: Hash,
+}
 
 /// The oracle rev and release a host was last generated against, recorded per host so a
 /// host can move to a newer nixpkgs baseline independently of the others (issue #22).
@@ -108,7 +114,10 @@ impl Lock {
                     inputs.insert(PathBuf::from(arg_str(node, 0)?), prop_str(node, "hash")?);
                 }
                 "module" => {
-                    modules.insert(arg_str(node, 0)?, parse_version(&prop_str(node, "version")?)?);
+                    modules.insert(
+                        arg_str(node, 0)?,
+                        parse_version(&prop_str(node, "version")?)?,
+                    );
                 }
                 "output" => outputs.push(parse_output(node)?),
                 "host" => {
@@ -151,7 +160,9 @@ impl Lock {
                     }
                 }
                 other => {
-                    return Err(LockError::Malformed(format!("unexpected node `{other}` in lock")))
+                    return Err(LockError::Malformed(format!(
+                        "unexpected node `{other}` in lock"
+                    )))
                 }
             }
         }
@@ -159,7 +170,8 @@ impl Lock {
         Ok(Lock {
             version,
             tool: tool.ok_or_else(|| LockError::Malformed("missing `tool`".into()))?,
-            formatter: formatter.ok_or_else(|| LockError::Malformed("missing `formatter`".into()))?,
+            formatter: formatter
+                .ok_or_else(|| LockError::Malformed("missing `formatter`".into()))?,
             oracle: oracle.ok_or_else(|| LockError::Malformed("missing `oracle`".into()))?,
             inputs,
             modules,
@@ -171,7 +183,10 @@ impl Lock {
     pub fn render(&self) -> String {
         let mut s = String::new();
         s.push_str(&format!("lock version={} {{\n", self.version));
-        s.push_str(&format!("    tool version=\"{}\"\n", esc(&self.tool.to_string())));
+        s.push_str(&format!(
+            "    tool version=\"{}\"\n",
+            esc(&self.tool.to_string())
+        ));
         s.push_str(&format!(
             "    formatter name=\"{}\" version=\"{}\"\n",
             esc(&self.formatter.name),
@@ -202,20 +217,29 @@ impl Lock {
         }
 
         let mut hosts: std::collections::BTreeSet<&String> = self.baselines.keys().collect();
-        hosts.extend(self.pins.iter().filter(|(_, list)| !list.is_empty()).map(|(host, _)| host));
+        hosts.extend(
+            self.pins
+                .iter()
+                .filter(|(_, list)| !list.is_empty())
+                .map(|(host, _)| host),
+        );
         for host in hosts {
             s.push('\n');
             s.push_str(&format!("    host \"{}\" {{\n", esc(host)));
             if let Some(baseline) = self.baselines.get(host) {
                 s.push_str(&format!(
                     "        baseline release=\"{}\" nixpkgs-rev=\"{}\" options-hash=\"{}\"\n",
-                    esc(&baseline.release), esc(&baseline.nixpkgs_rev), esc(&baseline.options_hash),
+                    esc(&baseline.release),
+                    esc(&baseline.nixpkgs_rev),
+                    esc(&baseline.options_hash),
                 ));
             }
             for p in self.pins.get(host).into_iter().flatten() {
                 s.push_str(&format!(
                     "        pin \"{}\" version=\"{}\" nixpkgs-rev=\"{}\"",
-                    esc(&p.package), esc(&p.version), esc(&p.nixpkgs_rev),
+                    esc(&p.package),
+                    esc(&p.version),
+                    esc(&p.nixpkgs_rev),
                 ));
                 if p.strategy == PinStrategy::Override {
                     s.push_str(" strategy=\"override\"");
@@ -227,9 +251,15 @@ impl Lock {
 
         for out in &self.outputs {
             s.push('\n');
-            s.push_str(&format!("    output \"{}\" {{\n", esc(&out.path.display().to_string())));
+            s.push_str(&format!(
+                "    output \"{}\" {{\n",
+                esc(&out.path.display().to_string())
+            ));
             s.push_str(&format!("        hash \"{}\"\n", esc(&out.hash)));
-            s.push_str(&format!("        from \"{}\"\n", esc(&out.from.display().to_string())));
+            s.push_str(&format!(
+                "        from \"{}\"\n",
+                esc(&out.from.display().to_string())
+            ));
             s.push_str("        modules");
             for m in &out.modules {
                 s.push_str(&format!(" \"{}\"", esc(m)));
@@ -258,7 +288,9 @@ fn parse_output(node: &KdlNode) -> Result<OutputEntry, LockError> {
             "from" => from = Some(PathBuf::from(arg_str(child, 0)?)),
             "modules" => modules = all_args(child),
             other => {
-                return Err(LockError::Malformed(format!("unexpected `{other}` in output body")))
+                return Err(LockError::Malformed(format!(
+                    "unexpected `{other}` in output body"
+                )))
             }
         }
     }
@@ -276,7 +308,10 @@ fn prop_str(node: &KdlNode, key: &str) -> Result<String, LockError> {
         .and_then(|v| v.as_string())
         .map(str::to_string)
         .ok_or_else(|| {
-            LockError::Malformed(format!("`{}` missing string prop `{key}`", node.name().value()))
+            LockError::Malformed(format!(
+                "`{}` missing string prop `{key}`",
+                node.name().value()
+            ))
         })
 }
 
@@ -301,7 +336,10 @@ fn arg_str(node: &KdlNode, idx: usize) -> Result<String, LockError> {
         .and_then(|e| e.value().as_string())
         .map(str::to_string)
         .ok_or_else(|| {
-            LockError::Malformed(format!("`{}` missing positional arg {idx}", node.name().value()))
+            LockError::Malformed(format!(
+                "`{}` missing positional arg {idx}",
+                node.name().value()
+            ))
         })
 }
 
@@ -330,7 +368,6 @@ pub enum LockError {
     Malformed(String),
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,8 +384,14 @@ mod tests {
         Lock {
             version: 1,
             tool: Version::parse("0.3.1").unwrap(),
-            formatter: FormatterPin { name: "nixfmt-rfc-style".into(), version: "0.6.0".into() },
-            oracle: OraclePin { nixpkgs_rev: "a1b2c3d".into(), options_hash: "blake3:77de".into() },
+            formatter: FormatterPin {
+                name: "nixfmt-rfc-style".into(),
+                version: "0.6.0".into(),
+            },
+            oracle: OraclePin {
+                nixpkgs_rev: "a1b2c3d".into(),
+                options_hash: "blake3:77de".into(),
+            },
             inputs,
             modules,
             outputs: vec![
@@ -426,7 +469,10 @@ mod tests {
 }
 "#;
         let lock = Lock::parse(src).expect("parse");
-        assert!(lock.pins.is_empty(), "back-compat: no host block means no pins");
+        assert!(
+            lock.pins.is_empty(),
+            "back-compat: no host block means no pins"
+        );
     }
 
     #[test]
@@ -525,7 +571,10 @@ mod tests {
 }
 "#;
         let lock = Lock::parse(src).expect("parse");
-        assert!(lock.baselines.is_empty(), "back-compat: no baseline line means no baselines");
+        assert!(
+            lock.baselines.is_empty(),
+            "back-compat: no baseline line means no baselines"
+        );
         // Byte-for-byte back-compat: a host with no baseline renders exactly the same
         // host block as before this field existed, with no `baseline` line at all.
         let rendered = lock.render();

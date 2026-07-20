@@ -19,7 +19,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use kdl::{KdlDocument, KdlNode};
-use knixl_ir::{Assignment, Emit, Formals, ModuleRef, NixExpr, NixModule, Provenance, RawNix, Writer};
+use knixl_ir::{
+    Assignment, Emit, Formals, ModuleRef, NixExpr, NixModule, Provenance, RawNix, Writer,
+};
 use knixl_kdl::{parse, ParseError};
 use knixl_modules::{Bucket, LowerCtx, LowerError, Registry, Scope};
 use knixl_nix::{FormatError, Formatter};
@@ -68,7 +70,9 @@ pub fn generate(
 ) -> Result<Vec<GeneratedFile>, GenerateError> {
     let mut out = Vec::new();
     for host in hosts {
-        out.extend(generate_one(host, registry, formatter, tool, oracles, pins)?);
+        out.extend(generate_one(
+            host, registry, formatter, tool, oracles, pins,
+        )?);
     }
     Ok(out)
 }
@@ -108,8 +112,12 @@ fn generate_one(
                     version: p.version.clone(),
                     nixpkgs_rev: p.nixpkgs_rev.clone(),
                     strategy: match p.strategy {
-                        knixl_lock::model::PinStrategy::CommitMix => knixl_modules::PinStrategy::CommitMix,
-                        knixl_lock::model::PinStrategy::Override => knixl_modules::PinStrategy::Override,
+                        knixl_lock::model::PinStrategy::CommitMix => {
+                            knixl_modules::PinStrategy::CommitMix
+                        }
+                        knixl_lock::model::PinStrategy::Override => {
+                            knixl_modules::PinStrategy::Override
+                        }
                     },
                 })
                 .collect()
@@ -122,14 +130,17 @@ fn generate_one(
             .get(name)
             .ok_or_else(|| GenerateError::UnknownNode(name.to_string()))?;
 
-        module.schema().validate(node).map_err(|ds| {
-            GenerateError::Validation(ds.into_iter().map(|d| d.message).collect())
-        })?;
+        module
+            .schema()
+            .validate(node)
+            .map_err(|ds| GenerateError::Validation(ds.into_iter().map(|d| d.message).collect()))?;
 
         let module_name = module.id().name;
 
         let mut ctx = LowerCtx::new(
-            Scope { host: host_name.clone() },
+            Scope {
+                host: host_name.clone(),
+            },
             registry,
             &mut diags,
             resolved_pins.clone(),
@@ -140,12 +151,18 @@ fn generate_one(
 
         for unit in output.units {
             let key = bucket_key(&unit.bucket, &host_name);
-            file_modules.entry(key.clone()).or_default().insert(unit.module);
+            file_modules
+                .entry(key.clone())
+                .or_default()
+                .insert(unit.module);
             files.entry(key).or_default().push(unit.assignment);
         }
         for r in output.raw {
             let key = bucket_key(&r.bucket, &host_name);
-            file_modules.entry(key.clone()).or_default().insert(r.module);
+            file_modules
+                .entry(key.clone())
+                .or_default()
+                .insert(r.module);
             raw_files.entry(key).or_default().push(r.raw);
         }
     }
@@ -215,7 +232,10 @@ fn generate_one(
             .iter()
             .map(|n| ModuleRef {
                 name: n.clone(),
-                version: module_versions.get(n).cloned().unwrap_or_else(|| Version::new(0, 0, 0)),
+                version: module_versions
+                    .get(n)
+                    .cloned()
+                    .unwrap_or_else(|| Version::new(0, 0, 0)),
             })
             .collect();
 
@@ -270,7 +290,8 @@ fn merge_list_assignments(body: &mut Vec<Assignment>) {
     for a in body.iter() {
         let key = exact_path_key(&a.path);
         *seen.entry(key.clone()).or_insert(0) += 1;
-        let ok = matches!(a.value, NixExpr::List(_)) && a.priority.is_none() && a.condition.is_none();
+        let ok =
+            matches!(a.value, NixExpr::List(_)) && a.priority.is_none() && a.condition.is_none();
         let e = mergeable.entry(key).or_insert(true);
         *e = *e && ok;
     }
@@ -303,7 +324,10 @@ fn merge_list_assignments(body: &mut Vec<Assignment>) {
         if targets.contains(&key) {
             if placed.insert(key.clone()) {
                 let merged = items.remove(&key).unwrap_or_default();
-                out.push(Assignment { value: NixExpr::List(merged), ..a });
+                out.push(Assignment {
+                    value: NixExpr::List(merged),
+                    ..a
+                });
             }
             // else: a later duplicate, dropped (its items are already merged in).
         } else {
@@ -390,7 +414,10 @@ mod tests {
 
     #[test]
     fn conflict_flagged_when_two_unprioritised_assignments_share_a_path() {
-        let a = [assign(&["services", "x"], None), assign(&["services", "x"], None)];
+        let a = [
+            assign(&["services", "x"], None),
+            assign(&["services", "x"], None),
+        ];
         let w = detect_conflicts(&a);
         assert_eq!(w.len(), 1);
         assert!(w[0].contains("services.x"));
@@ -407,7 +434,10 @@ mod tests {
 
     #[test]
     fn distinct_paths_do_not_conflict() {
-        let a = [assign(&["services", "x"], None), assign(&["services", "y"], None)];
+        let a = [
+            assign(&["services", "x"], None),
+            assign(&["services", "y"], None),
+        ];
         assert!(detect_conflicts(&a).is_empty());
     }
 
@@ -417,7 +447,9 @@ mod tests {
             value: NixExpr::List(
                 items
                     .iter()
-                    .map(|i| NixExpr::Select(Box::new(NixExpr::Ref("pkgs".into())), vec![(*i).into()]))
+                    .map(|i| {
+                        NixExpr::Select(Box::new(NixExpr::Ref("pkgs".into())), vec![(*i).into()])
+                    })
                     .collect(),
             ),
             priority: None,
@@ -466,9 +498,16 @@ mod tests {
 
     #[test]
     fn non_list_duplicates_are_not_merged() {
-        let mut body = vec![assign(&["services", "x"], None), assign(&["services", "x"], None)];
+        let mut body = vec![
+            assign(&["services", "x"], None),
+            assign(&["services", "x"], None),
+        ];
         merge_list_assignments(&mut body);
-        assert_eq!(body.len(), 2, "scalar duplicates are left for the conflict lint");
+        assert_eq!(
+            body.len(),
+            2,
+            "scalar duplicates are left for the conflict lint"
+        );
     }
 
     #[test]

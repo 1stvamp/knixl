@@ -4,6 +4,10 @@
 
 # knixl
 
+[![CI](https://github.com/1stvamp/knixl/actions/workflows/ci.yml/badge.svg)](https://github.com/1stvamp/knixl/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/knixl.svg)](https://crates.io/crates/knixl)
+[![licence](https://img.shields.io/crates/l/knixl.svg)](https://github.com/1stvamp/knixl#licence)
+
 knixl generates maintainable, human-readable Nix from small amounts of opinionated KDL.
 
 Pronounced "nix-ull". Written in Rust. KDL is the source of truth, the generated Nix is a committed build artefact, and regeneration is version-aware so a framework upgrade cannot change your output without telling you first.
@@ -123,4 +127,6 @@ Nothing does KDL to committed Nix source. The ecosystem goes the other way (home
 
 ## Licence
 
-Intended: Apache-2.0 (matches the `kdl` crate). Not yet applied.
+Licensed under either of Apache License, Version 2.0 (LICENSE-APACHE) or the MIT licence
+(LICENSE-MIT) at your option. Unless you state otherwise, any contribution you submit for
+inclusion is dual licensed as above, with no additional terms.

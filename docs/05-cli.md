@@ -1,10 +1,10 @@
 # 05: CLI and exit codes
 
-Full sketch in `crates/knixl-cli/src/main.rs`. The design rule: `Plan::compute` is the only thing that inspects the world, every command is a thin policy over the same `Plan`, and exit codes are stable and documented so CI can branch on them.
+Full sketch in `crates/knixl/src/main.rs`. The design rule: `Plan::compute` is the only thing that inspects the world, every command is a thin policy over the same `Plan`, and exit codes are stable and documented so CI can branch on them.
 
 ## Finding your project
 
-Every command discovers its project root by walking up from the current directory: the first directory holding either `knixl.lock.kdl` or a `hosts/` directory wins (`discover_root` in `crates/knixl-cli/src/main.rs`). If neither turns up before the filesystem root, the starting directory is used as-is. `modules/` is not itself part of that walk, but once a root is found it is expected to sit beside `hosts/` at that root (module lookups resolve it as `<root>/modules`), so run knixl from inside a project tree, not above or beside it.
+Every command discovers its project root by walking up from the current directory: the first directory holding either `knixl.lock.kdl` or a `hosts/` directory wins (`discover_root` in `crates/knixl/src/main.rs`). If neither turns up before the filesystem root, the starting directory is used as-is. `modules/` is not itself part of that walk, but once a root is found it is expected to sit beside `hosts/` at that root (module lookups resolve it as `<root>/modules`), so run knixl from inside a project tree, not above or beside it.
 
 ## Commands
 

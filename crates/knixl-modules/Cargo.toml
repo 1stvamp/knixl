@@ -4,11 +4,17 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+homepage.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The knixl Module trait, built-in modules, and the declarative KDL module loader."
+keywords = ["nix", "kdl", "modules"]
+categories = ["development-tools"]
 
 [dependencies]
-knixl-ir = { path = "../knixl-ir" }
-knixl-oracle = { path = "../knixl-oracle" }
-knixl-kdl = { path = "../knixl-kdl" }
+knixl-ir = { path = "../knixl-ir", version = "0.3.1" }
+knixl-oracle = { path = "../knixl-oracle", version = "0.3.1" }
+knixl-kdl = { path = "../knixl-kdl", version = "0.3.1" }
 kdl.workspace = true
 miette.workspace = true
 semver.workspace = true

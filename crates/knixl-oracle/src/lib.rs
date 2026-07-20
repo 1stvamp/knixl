@@ -4,12 +4,14 @@
 
 pub mod nixtype;
 
-use std::collections::BTreeMap;
-use std::path::Path;
 use knixl_ir::{AttrPath, NixExpr};
 use nixtype::NixType;
+use std::collections::BTreeMap;
+use std::path::Path;
 
-pub struct Oracle { options: BTreeMap<String, OptionInfo> }
+pub struct Oracle {
+    options: BTreeMap<String, OptionInfo>,
+}
 
 pub struct OptionInfo {
     pub ty: NixType,
@@ -20,15 +22,25 @@ pub struct OptionInfo {
 
 #[derive(Debug, thiserror::Error)]
 pub enum OracleError {
-    #[error(transparent)] Io(#[from] std::io::Error),
-    #[error(transparent)] Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
 }
 
 #[derive(Debug)]
 pub enum TypeMismatch {
-    UnknownOption { key: String },
-    ReadOnly { key: String },
-    WrongType { key: String, expected: String, got: String },
+    UnknownOption {
+        key: String,
+    },
+    ReadOnly {
+        key: String,
+    },
+    WrongType {
+        key: String,
+        expected: String,
+        got: String,
+    },
 }
 
 mod options_json {
@@ -36,10 +48,13 @@ mod options_json {
     // the whole reason the oracle is best-effort.
     #[derive(serde::Deserialize)]
     pub struct Entry {
-        #[serde(rename = "type")] pub ty: String,
+        #[serde(rename = "type")]
+        pub ty: String,
         pub default: Option<serde_json::Value>,
-        #[serde(rename = "readOnly", default)] pub read_only: bool,
-        #[serde(default)] pub declarations: Vec<String>,
+        #[serde(rename = "readOnly", default)]
+        pub read_only: bool,
+        #[serde(default)]
+        pub declarations: Vec<String>,
     }
     pub type Raw = std::collections::BTreeMap<String, Entry>;
 }
@@ -48,12 +63,20 @@ impl Oracle {
     /// Build from a cached options.json. The caller pins the rev and caches by it.
     pub fn from_options_json(path: &Path) -> Result<Self, OracleError> {
         let raw: options_json::Raw = serde_json::from_slice(&std::fs::read(path)?)?;
-        let options = raw.into_iter().map(|(k, v)| (k, OptionInfo {
-            ty: NixType::parse_description(&v.ty),
-            has_default: v.default.is_some(),
-            read_only: v.read_only,
-            declarations: v.declarations,
-        })).collect();
+        let options = raw
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    OptionInfo {
+                        ty: NixType::parse_description(&v.ty),
+                        has_default: v.default.is_some(),
+                        read_only: v.read_only,
+                        declarations: v.declarations,
+                    },
+                )
+            })
+            .collect();
         Ok(Self { options })
     }
 
@@ -77,9 +100,14 @@ impl Oracle {
             None if self.is_option_prefix(&key) => Ok(()),
             None => Err(TypeMismatch::UnknownOption { key }),
             Some(info) if info.read_only => Err(TypeMismatch::ReadOnly { key }),
-            Some(info) => info.ty.accepts(value).map_err(|expected| TypeMismatch::WrongType {
-                key, expected, got: value_kind(value),
-            }),
+            Some(info) => info
+                .ty
+                .accepts(value)
+                .map_err(|expected| TypeMismatch::WrongType {
+                    key,
+                    expected,
+                    got: value_kind(value),
+                }),
         }
     }
 

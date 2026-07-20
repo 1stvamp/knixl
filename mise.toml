@@ -36,11 +36,11 @@ run = "cargo check --workspace"
 
 [tasks."run:debug"]
 description = "Run the knixl CLI (args pass through, e.g. `mise run run -- check`)"
-run = "cargo run --quiet -p knixl-cli --"
+run = "cargo run --quiet -p knixl --"
 
 [tasks."run:release"]
 description = "Run the release knixl CLI (args pass through)"
-run = "cargo run --quiet --release -p knixl-cli --"
+run = "cargo run --quiet --release -p knixl --"
 
 [tasks."install:release"]
 description = "Build release and install `knixl` to ~/.local/bin (override with KNIXL_INSTALL_DIR)"

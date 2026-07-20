@@ -7,8 +7,8 @@ pub mod pin;
 
 #[derive(Debug, Clone)]
 pub struct Formatter {
-    pub name: String,     // "nixfmt-rfc-style"
-    pub version: String,  // pinned; recorded in the lock
+    pub name: String,    // "nixfmt-rfc-style"
+    pub version: String, // pinned; recorded in the lock
     pub bin: std::path::PathBuf,
 }
 
@@ -55,7 +55,11 @@ impl Formatter {
                     .and_then(|line| line.split_whitespace().last().map(str::to_string))
             })
             .unwrap_or_else(|| fallback.to_string());
-        Formatter { name: name.to_string(), version, bin }
+        Formatter {
+            name: name.to_string(),
+            version,
+            bin,
+        }
     }
 
     /// Pipe emitted (structurally-correct-but-ugly) Nix through the pinned formatter.
@@ -138,7 +142,6 @@ pub fn hash(bytes: &[u8]) -> String {
     format!("blake3:{}", h.to_hex())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,7 +159,9 @@ mod tests {
     fn missing_formatter_is_a_clear_error_not_a_bare_io_error() {
         let f = formatter_with_bin("knixl-definitely-no-such-formatter-xyz");
         match f.format("{ }\n").unwrap_err() {
-            FormatError::NotFound(name) => assert!(name.contains("knixl-definitely-no-such-formatter-xyz")),
+            FormatError::NotFound(name) => {
+                assert!(name.contains("knixl-definitely-no-such-formatter-xyz"))
+            }
             other => panic!("expected NotFound, got {other:?}"),
         }
     }
@@ -172,15 +177,18 @@ mod tests {
     #[test]
     fn format_reports_non_zero_exit() {
         let f = formatter_with_bin("false");
-        assert!(matches!(f.format("x").unwrap_err(), FormatError::NonZero(_)));
+        assert!(matches!(
+            f.format("x").unwrap_err(),
+            FormatError::NonZero(_)
+        ));
     }
 
     /// Write a throwaway executable that mimics `nixfmt --version` and otherwise cats.
     fn fake_nixfmt(tag: &str, version: &str) -> PathBuf {
         use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
-        let path = std::env::temp_dir()
-            .join(format!("knixl-fake-nixfmt-{}-{tag}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("knixl-fake-nixfmt-{}-{tag}", std::process::id()));
         let script = format!(
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"nixfmt-rfc-style {version}\"; else cat; fi\n"
         );
@@ -195,15 +203,26 @@ mod tests {
     #[test]
     fn verify_version_accepts_matching() {
         let bin = fake_nixfmt("match", "0.6.0");
-        let f = Formatter { name: "nixfmt-rfc-style".into(), version: "0.6.0".into(), bin };
+        let f = Formatter {
+            name: "nixfmt-rfc-style".into(),
+            version: "0.6.0".into(),
+            bin,
+        };
         assert!(f.verify_version().is_ok());
     }
 
     #[test]
     fn verify_version_rejects_mismatch() {
         let bin = fake_nixfmt("mismatch", "0.5.0");
-        let f = Formatter { name: "nixfmt-rfc-style".into(), version: "0.6.0".into(), bin };
-        assert!(matches!(f.verify_version().unwrap_err(), FormatError::VersionMismatch { .. }));
+        let f = Formatter {
+            name: "nixfmt-rfc-style".into(),
+            version: "0.6.0".into(),
+            bin,
+        };
+        assert!(matches!(
+            f.verify_version().unwrap_err(),
+            FormatError::VersionMismatch { .. }
+        ));
     }
 
     #[test]

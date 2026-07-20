@@ -21,14 +21,22 @@ pub fn hoist(body: &mut [Assignment]) -> Vec<Binding> {
     for a in body.iter() {
         count(&a.value, &mut counts);
     }
-    let candidates: BTreeSet<String> =
-        counts.into_iter().filter(|(_, n)| *n >= 2).map(|(k, _)| k).collect();
+    let candidates: BTreeSet<String> = counts
+        .into_iter()
+        .filter(|(_, n)| *n >= 2)
+        .map(|(k, _)| k)
+        .collect();
     if candidates.is_empty() {
         return Vec::new();
     }
 
     // Phase 2: maximal top-down replacement; names assigned on first encounter.
-    let mut h = Hoister { candidates, names: BTreeMap::new(), bindings: Vec::new(), counter: 0 };
+    let mut h = Hoister {
+        candidates,
+        names: BTreeMap::new(),
+        bindings: Vec::new(),
+        counter: 0,
+    };
     for a in body.iter_mut() {
         let value = std::mem::replace(&mut a.value, NixExpr::Null);
         a.value = h.replace(value);
@@ -72,9 +80,11 @@ fn children(expr: &NixExpr) -> Vec<&NixExpr> {
         NixExpr::Select(base, _) => vec![base],
         NixExpr::Apply(f, args) => std::iter::once(f.as_ref()).chain(args.iter()).collect(),
         NixExpr::Lambda { body, .. } => vec![body],
-        NixExpr::Let { bindings, body } => {
-            bindings.iter().map(|b| &b.value).chain(std::iter::once(body.as_ref())).collect()
-        }
+        NixExpr::Let { bindings, body } => bindings
+            .iter()
+            .map(|b| &b.value)
+            .chain(std::iter::once(body.as_ref()))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -100,7 +110,10 @@ impl Hoister {
                         let n = format!("_knixl{}", self.counter);
                         self.counter += 1;
                         self.names.insert(key, n.clone());
-                        self.bindings.push(Binding { name: n.clone(), value: expr });
+                        self.bindings.push(Binding {
+                            name: n.clone(),
+                            value: expr,
+                        });
                         n
                     }
                 };
@@ -123,13 +136,17 @@ impl Hoister {
                 Box::new(self.replace(*f)),
                 args.into_iter().map(|e| self.replace(e)).collect(),
             ),
-            NixExpr::Lambda { formals, body } => {
-                NixExpr::Lambda { formals, body: Box::new(self.replace(*body)) }
-            }
+            NixExpr::Lambda { formals, body } => NixExpr::Lambda {
+                formals,
+                body: Box::new(self.replace(*body)),
+            },
             NixExpr::Let { bindings, body } => NixExpr::Let {
                 bindings: bindings
                     .into_iter()
-                    .map(|b| Binding { name: b.name, value: self.replace(b.value) })
+                    .map(|b| Binding {
+                        name: b.name,
+                        value: self.replace(b.value),
+                    })
                     .collect(),
                 body: Box::new(self.replace(*body)),
             },
@@ -149,7 +166,13 @@ mod tests {
     }
 
     fn assign(seg: &str, value: NixExpr) -> Assignment {
-        Assignment { path: path(seg), value, priority: None, condition: None, doc: None }
+        Assignment {
+            path: path(seg),
+            value,
+            priority: None,
+            condition: None,
+            doc: None,
+        }
     }
 
     fn attrset(pairs: &[(&str, NixExpr)]) -> NixExpr {
@@ -184,7 +207,10 @@ mod tests {
         ];
         let bindings = hoist(&mut body);
         assert!(bindings.is_empty(), "distinct values are not hoisted");
-        assert!(matches!(&body[0].value, NixExpr::AttrSet(_)), "value untouched");
+        assert!(
+            matches!(&body[0].value, NixExpr::AttrSet(_)),
+            "value untouched"
+        );
     }
 
     #[test]
@@ -197,7 +223,10 @@ mod tests {
             assign("e", NixExpr::List(vec![])), // empty list: not eligible
             assign("f", NixExpr::List(vec![])),
         ];
-        assert!(hoist(&mut body).is_empty(), "repeated scalars/refs/empties are not hoisted");
+        assert!(
+            hoist(&mut body).is_empty(),
+            "repeated scalars/refs/empties are not hoisted"
+        );
     }
 
     #[test]
@@ -215,7 +244,10 @@ mod tests {
         // The binding's interior is literal, not a reference.
         match &bindings[0].value {
             NixExpr::AttrSet(m) => {
-                assert!(matches!(m.get(&AttrKey::Ident("a".into())), Some(NixExpr::AttrSet(_))));
+                assert!(matches!(
+                    m.get(&AttrKey::Ident("a".into())),
+                    Some(NixExpr::AttrSet(_))
+                ));
             }
             other => panic!("expected attrset binding, got {other:?}"),
         }
@@ -226,8 +258,12 @@ mod tests {
         let a = || attrset(&[("a", NixExpr::Int(1))]);
         let b = || attrset(&[("b", NixExpr::Int(2))]);
         // b appears first in body order, so it takes _knixl0.
-        let mut body =
-            vec![assign("p", b()), assign("q", a()), assign("r", b()), assign("s", a())];
+        let mut body = vec![
+            assign("p", b()),
+            assign("q", a()),
+            assign("r", b()),
+            assign("s", a()),
+        ];
 
         let bindings = hoist(&mut body);
 

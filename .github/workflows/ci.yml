@@ -1,0 +1,23 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.87.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Provide nixfmt
+        run: |
+          nix profile install nixpkgs#nixfmt-rfc-style
+          echo "KNIXL_FORMATTER=$(command -v nixfmt)" >> "$GITHUB_ENV"
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo build --workspace --tests
+      - run: cargo test --workspace

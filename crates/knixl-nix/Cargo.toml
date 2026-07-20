@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+homepage.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "nixfmt invocation and content hashing for knixl."
+keywords = ["nix", "nixfmt", "hashing"]
+categories = ["development-tools"]
 
 [dependencies]
 blake3.workspace = true
