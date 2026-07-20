@@ -341,8 +341,10 @@ impl AuthorModel {
                             name: s.name.value().trim().to_string(),
                             ty: s.ty,
                             required: s.required,
+                            origin: None,
                         })
                         .collect(),
+                    origin: None,
                 })
                 .collect(),
             emit: self.emit.value(),
