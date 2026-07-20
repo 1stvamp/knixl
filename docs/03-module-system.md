@@ -48,9 +48,10 @@ State the boundary in contributor docs on day one, or declarative modules will q
 
 - substitute inputs into paths and values,
 - repeat a child into a list (`collect`) or into structure (`for-each`),
-- gate a block on an input flag (`when-flag`, generation-time).
+- gate a block on an input flag (`when-flag`, generation-time),
+- gate a block on a runtime `config.*` condition (`when-config`, emitted as `lib.mkIf`).
 
-It cannot compute priorities from cross-module conflicts, cannot emit a runtime `lib.mkIf` off `config.*` (that needs the Rust-only `condition=` form), and only writes `Bucket::Default`. The moment a module needs any of those, it becomes a built-in.
+It cannot compute priorities from cross-module conflicts and only writes `Bucket::Default`. The moment a module needs either of those, it becomes a built-in. A runtime condition alone no longer forces the boundary (so `backups`, a built-in solely for its `when=` condition, could in principle be declarative; converting it is a separate decision).
 
 ## Registration
 
