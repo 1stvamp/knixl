@@ -783,6 +783,99 @@ fn parse_migrations(
     Ok(steps)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FieldTy { Str, Bool, Int }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EntryKind { Arg, Prop, Child }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SubKind { Arg, Prop }
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SubField { pub kind: SubKind, pub name: String, pub ty: FieldTy, pub required: bool }
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SchemaEntry {
+    pub kind: EntryKind,
+    pub name: String,
+    pub ty: FieldTy,
+    pub required: bool,
+    pub repeated: bool,          // Child only
+    pub subfields: Vec<SubField>, // Child only; non-empty => structured child
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ModuleDraft {
+    pub name: String,
+    pub node: String,
+    pub summary: String,
+    pub entries: Vec<SchemaEntry>,
+    pub emit: String,
+}
+
+/// Render a `ModuleDraft` (the TUI Editor screen's working state) into a full module
+/// manifest as KDL text. Deterministic: builds a `String` in source order, no hashed
+/// collections, so byte-identical output for byte-identical input.
+pub fn render_manifest(draft: &ModuleDraft) -> String {
+    let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
+    let ty = |t: FieldTy| match t { FieldTy::Str => "string", FieldTy::Bool => "bool", FieldTy::Int => "int" };
+    let node = if draft.node.trim().is_empty() { draft.name.trim() } else { draft.node.trim() };
+
+    let mut s = String::new();
+    s.push_str(&format!("module name=\"{}\" version=\"0.1.0\" {{\n", esc(draft.name.trim())));
+    s.push_str(&format!("    summary \"{}\"\n", esc(draft.summary.trim())));
+    s.push_str(&format!("    claims-node \"{}\"\n\n", esc(node)));
+    s.push_str("    schema {\n");
+    for e in &draft.entries {
+        let kw = match e.kind { EntryKind::Arg => "arg", EntryKind::Prop => "prop", EntryKind::Child => "child" };
+        let structured = e.kind == EntryKind::Child && !e.subfields.is_empty();
+        if structured {
+            // A structured child renders the block form. It carries `required=`/`repeated=` on
+            // the line (parse_child reads both there); only `type=` is omitted, since a
+            // child-with-block is Node-typed.
+            s.push_str(&format!(
+                "        child \"{}\" required=#{} repeated=#{} {{\n",
+                esc(e.name.trim()), e.required, e.repeated,
+            ));
+            for sf in &e.subfields {
+                let skw = match sf.kind { SubKind::Arg => "arg", SubKind::Prop => "prop" };
+                s.push_str(&format!(
+                    "            {skw} \"{}\" type=\"{}\" required=#{} doc=\"\"\n",
+                    esc(sf.name.trim()), ty(sf.ty), sf.required,
+                ));
+            }
+            s.push_str("        }\n");
+        } else if e.kind == EntryKind::Child {
+            s.push_str(&format!(
+                "        child \"{}\" type=\"{}\" required=#{} repeated=#{} doc=\"\"\n",
+                esc(e.name.trim()), ty(e.ty), e.required, e.repeated,
+            ));
+        } else {
+            s.push_str(&format!(
+                "        {kw} \"{}\" type=\"{}\" required=#{} doc=\"\"\n",
+                esc(e.name.trim()), ty(e.ty), e.required,
+            ));
+        }
+    }
+    s.push_str("    }\n\n");
+    s.push_str("    emit {\n");
+    for line in draft.emit.lines() {
+        if line.trim().is_empty() { s.push('\n'); } else { s.push_str(&format!("        {line}\n")); }
+    }
+    s.push_str("    }\n}\n");
+    s
+}
+
+/// Load and dry-type-check a candidate manifest, the same load path a real module goes
+/// through. Used by the TUI to give live feedback on a draft before it is written to disk.
+pub fn validate_manifest(text: &str) -> Result<(), String> {
+    let doc = text.parse::<kdl::KdlDocument>().map_err(|e| e.to_string())?;
+    DeclarativeModule::from_kdl(&doc, std::path::Path::new("draft"))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// The inputs for scaffolding a new declarative module manifest (the TUI Author form).
 pub struct ModuleScaffold<'a> {
     pub name: &'a str,
@@ -1090,5 +1183,110 @@ mod tests {
         let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
         let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad")).err().unwrap();
         assert!(format!("{err}").contains("not a scalar"), "got: {err}");
+    }
+
+    #[test]
+    fn render_manifest_is_deterministic() {
+        let draft = ModuleDraft {
+            name: "cache".into(),
+            node: String::new(), // defaults to name
+            summary: "a cache".into(),
+            entries: vec![SchemaEntry {
+                kind: EntryKind::Arg, name: "host".into(), ty: FieldTy::Str,
+                required: true, repeated: false, subfields: vec![],
+            }],
+            emit: "set \"services.cache.enable\" #true".into(),
+        };
+        assert_eq!(render_manifest(&draft), render_manifest(&draft));
+    }
+
+    #[test]
+    fn render_manifest_flat_entries_and_node_default() {
+        let draft = ModuleDraft {
+            name: "svc".into(),
+            node: String::new(),
+            summary: "does things".into(),
+            entries: vec![
+                SchemaEntry { kind: EntryKind::Arg, name: "host".into(), ty: FieldTy::Str, required: true, repeated: false, subfields: vec![] },
+                SchemaEntry { kind: EntryKind::Prop, name: "port".into(), ty: FieldTy::Int, required: false, repeated: false, subfields: vec![] },
+                SchemaEntry { kind: EntryKind::Child, name: "alias".into(), ty: FieldTy::Str, required: false, repeated: true, subfields: vec![] },
+            ],
+            emit: "set \"services.svc.enable\" #true".into(),
+        };
+        let m = render_manifest(&draft);
+        assert!(m.contains("claims-node \"svc\""), "node defaults to name: {m}");
+        assert!(m.contains("arg \"host\" type=\"string\" required=#true"), "{m}");
+        assert!(m.contains("prop \"port\" type=\"int\" required=#false"), "{m}");
+        assert!(m.contains("child \"alias\" type=\"string\" required=#false repeated=#true"), "{m}");
+        assert!(m.contains("set \"services.svc.enable\" #true"), "emit spliced: {m}");
+        // The rendered manifest must load and dry-type-check.
+        validate_manifest(&m).expect("rendered flat draft is valid");
+    }
+
+    #[test]
+    fn render_manifest_structured_child() {
+        let draft = ModuleDraft {
+            name: "web".into(),
+            node: "web".into(),
+            summary: String::new(),
+            entries: vec![
+                SchemaEntry { kind: EntryKind::Arg, name: "host".into(), ty: FieldTy::Str, required: true, repeated: false, subfields: vec![] },
+                SchemaEntry {
+                    kind: EntryKind::Child, name: "acme".into(), ty: FieldTy::Str,
+                    required: true, repeated: false,
+                    subfields: vec![
+                        SubField { kind: SubKind::Prop, name: "email".into(), ty: FieldTy::Str, required: true },
+                    ],
+                },
+            ],
+            emit: "set \"services.web.virtualHosts.{host}.enable\" #true".into(),
+        };
+        let m = render_manifest(&draft);
+        // Structured child: block form carrying required=/repeated=, but no type= (a
+        // child-with-block is Node-typed).
+        assert!(m.contains("child \"acme\" required=#true repeated=#false {"), "structured child block: {m}");
+        assert!(m.contains("prop \"email\" type=\"string\" required=#true"), "{m}");
+        assert!(!m.contains("child \"acme\" type="), "structured child omits type=: {m}");
+        validate_manifest(&m).expect("rendered structured draft is valid");
+    }
+
+    #[test]
+    fn render_manifest_repeated_structured_child_drives_for_each() {
+        // A repeated structured child (the web-service `location` pattern) must render
+        // `repeated=#true` on the block line so a for-each over it dry-type-checks.
+        let draft = ModuleDraft {
+            name: "web".into(),
+            node: "web".into(),
+            summary: String::new(),
+            entries: vec![SchemaEntry {
+                kind: EntryKind::Child, name: "location".into(), ty: FieldTy::Str,
+                required: false, repeated: true,
+                subfields: vec![
+                    SubField { kind: SubKind::Arg, name: "match".into(), ty: FieldTy::Str, required: true },
+                    SubField { kind: SubKind::Prop, name: "upstream".into(), ty: FieldTy::Str, required: true },
+                ],
+            }],
+            emit: "for-each \"loc\" in \"location\" {\n    set \"services.web.locations.{loc.match}.proxyPass\" \"{loc.upstream}\"\n}".into(),
+        };
+        let m = render_manifest(&draft);
+        assert!(m.contains("child \"location\" required=#false repeated=#true {"), "{m}");
+        validate_manifest(&m).expect("repeated structured child + for-each is valid");
+    }
+
+    #[test]
+    fn validate_manifest_rejects_an_undeclared_binding() {
+        // emit references {missing}, which the dry type-pass rejects at load.
+        let draft = ModuleDraft {
+            name: "bad".into(), node: "bad".into(), summary: String::new(),
+            entries: vec![SchemaEntry { kind: EntryKind::Arg, name: "host".into(), ty: FieldTy::Str, required: true, repeated: false, subfields: vec![] }],
+            emit: "set \"services.bad.{missing}\" #true".into(),
+        };
+        let err = validate_manifest(&render_manifest(&draft)).unwrap_err();
+        assert!(err.contains("missing") || err.contains("unknown binding"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_manifest_reports_a_kdl_parse_error() {
+        assert!(validate_manifest("this is { not valid").is_err());
     }
 }
