@@ -154,6 +154,11 @@ pub enum Outcome {
     },
     /// Write a new declarative module manifest (`modules/<name>/knixl-module.kdl`).
     Scaffold { name: String, manifest: String },
+    /// Overwrite an existing module manifest with edited text (Author screen's Edit mode).
+    SaveModule {
+        path: std::path::PathBuf,
+        text: String,
+    },
 }
 
 /// Everything the screens read, injected before the program runs.
@@ -210,6 +215,11 @@ pub enum Nav {
     Scaffold {
         name: String,
         manifest: String,
+    },
+    /// Overwrite an existing module manifest and end the session (Author screen's Edit mode).
+    SaveModule {
+        path: std::path::PathBuf,
+        text: String,
     },
 }
 
@@ -341,6 +351,10 @@ impl App {
             }
             Nav::Scaffold { name, manifest } => {
                 self.outcome = Outcome::Scaffold { name, manifest };
+                Some(command::quit())
+            }
+            Nav::SaveModule { path, text } => {
+                self.outcome = Outcome::SaveModule { path, text };
                 Some(command::quit())
             }
             Nav::Back => match config().entry {

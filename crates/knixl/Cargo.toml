@@ -21,6 +21,7 @@ knixl-lock = { path = "../knixl-lock", version = "0.3.1" }
 knixl-nix = { path = "../knixl-nix", version = "0.3.1" }
 knixl-pipeline = { path = "../knixl-pipeline", version = "0.3.1" }
 clap.workspace = true
+kdl.workspace = true
 miette.workspace = true
 semver.workspace = true
 # TUI for `install` (knixl only; the libraries stay TUI-free). lipgloss renders the

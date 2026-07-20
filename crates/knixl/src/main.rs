@@ -1351,6 +1351,7 @@ fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
             skeleton,
         } => commit_insert(&host, &node, &skeleton),
         tui::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),
+        tui::Outcome::SaveModule { path, text } => commit_save_module(&path, &text),
         tui::Outcome::Cancelled | tui::Outcome::Quit => Code::Clean,
     }
 }
@@ -1379,6 +1380,17 @@ fn commit_scaffold(name: &str, manifest: &str) -> Code {
         "created module `{name}`: edit {} then declare it on a host",
         path.display()
     );
+    Code::Clean
+}
+
+/// Overwrite an existing module manifest with edited text (Edit mode). Unlike commit_scaffold
+/// this expects the file to exist and replaces it.
+fn commit_save_module(path: &std::path::Path, text: &str) -> Code {
+    if let Err(e) = std::fs::write(path, text) {
+        eprintln!("knixl: {}: {e}", path.display());
+        return Code::Internal;
+    }
+    println!("updated {}", path.display());
     Code::Clean
 }
 
@@ -1633,7 +1645,7 @@ fn write_lock(ctx: &Ctx, lock: &knixl_lock::Lock) {
 
 #[cfg(test)]
 mod tests {
-    use super::{choose_formatter_bin, commit_tui_install, make_strategy, Code};
+    use super::{choose_formatter_bin, commit_save_module, commit_tui_install, make_strategy, Code};
     use crate::tui;
 
     /// Serializes tests that mutate `KNIXL_NIX_BUILD` (a process-global env var): cargo runs
@@ -1663,6 +1675,19 @@ mod tests {
     #[test]
     fn defaults_to_nixfmt_when_none_run() {
         assert_eq!(choose_formatter_bin(None, |_| false), "nixfmt");
+    }
+
+    #[test]
+    fn commit_save_module_overwrites_an_existing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "knixl-cli-commit-save-module-{}.kdl",
+            std::process::id()
+        ));
+        std::fs::write(&path, "original").unwrap();
+        let code = commit_save_module(&path, "updated text");
+        assert!(code == Code::Clean, "commit_save_module writes cleanly");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "updated text");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// A shim mimicking `nix-build`: exits 0 when `build_ok`, else 1. Mirrors
