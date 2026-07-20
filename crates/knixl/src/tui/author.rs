@@ -466,7 +466,9 @@ impl AuthorModel {
     /// original in Edit mode) and dry-type-check it, caching both the validation result and the
     /// emit widget's rendered text (see `emit_view`'s doc comment).
     fn recompute_status(&mut self) {
-        self.status = self.current_text().and_then(|text| validate_manifest(&text));
+        self.status = self
+            .current_text()
+            .and_then(|text| validate_manifest(&text));
         self.emit_view = self.emit.view();
     }
 
@@ -1035,7 +1037,10 @@ mod tests {
         match step.nav {
             Nav::SaveModule { path, text } => {
                 assert!(path.ends_with("knixl-module.kdl"));
-                assert!(text.contains("version=\"2.0.0\""), "version preserved: {text}");
+                assert!(
+                    text.contains("version=\"2.0.0\""),
+                    "version preserved: {text}"
+                );
                 assert!(text.contains("doc=\"the host\""), "doc preserved: {text}");
                 knixl_modules::template::validate_manifest(&text).expect("valid");
             }

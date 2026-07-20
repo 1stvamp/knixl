@@ -365,7 +365,10 @@ mod tests {
         m.update(key(KeyCode::Down), (120, 30)); // select the declarative module
         match m.update(key(KeyCode::Char('e')), (120, 30)).nav {
             Nav::EditModule { manifest } => {
-                assert_eq!(manifest, PathBuf::from("modules/web-service/knixl-module.kdl"));
+                assert_eq!(
+                    manifest,
+                    PathBuf::from("modules/web-service/knixl-module.kdl")
+                );
             }
             _ => panic!("expected Nav::EditModule for a declarative selection"),
         }

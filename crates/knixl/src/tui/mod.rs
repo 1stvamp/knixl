@@ -226,7 +226,9 @@ pub enum Nav {
         text: String,
     },
     /// Open a declarative module's manifest in the Author screen's Edit mode.
-    EditModule { manifest: std::path::PathBuf },
+    EditModule {
+        manifest: std::path::PathBuf,
+    },
 }
 
 /// A reducer's result: a navigation intent plus an optional command to run.

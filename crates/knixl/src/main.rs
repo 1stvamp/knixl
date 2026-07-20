@@ -1673,7 +1673,9 @@ fn write_lock(ctx: &Ctx, lock: &knixl_lock::Lock) {
 
 #[cfg(test)]
 mod tests {
-    use super::{choose_formatter_bin, commit_save_module, commit_tui_install, make_strategy, Code};
+    use super::{
+        choose_formatter_bin, commit_save_module, commit_tui_install, make_strategy, Code,
+    };
     use crate::tui;
 
     /// Serializes tests that mutate `KNIXL_NIX_BUILD` (a process-global env var): cargo runs
