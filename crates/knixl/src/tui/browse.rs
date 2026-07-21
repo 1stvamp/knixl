@@ -141,6 +141,14 @@ impl BrowseModel {
             Mode::List => match code {
                 KeyCode::Esc | KeyCode::Char('q') => Step::nav(Nav::Back),
                 KeyCode::Enter | KeyCode::Char('i') => Step::nav(self.activate()),
+                // Only declarative modules carry a manifest to edit; a built-in (manifest
+                // `None`) leaves the selection untouched rather than opening a broken editor.
+                KeyCode::Char('e') => {
+                    match self.selected_module().and_then(|m| m.manifest.clone()) {
+                        Some(manifest) => Step::nav(Nav::EditModule { manifest }),
+                        None => Step::stay(),
+                    }
+                }
                 // PgUp/PgDn scroll the doc; everything else drives the module list.
                 KeyCode::PageUp | KeyCode::PageDown => {
                     let cmd = self.doc.update(msg);
@@ -212,6 +220,7 @@ impl BrowseModel {
             widgets::footer(&[
                 ("\u{2191}/\u{2193}", "select"),
                 ("i", "insert"),
+                ("e", "edit"),
                 ("pgup/pgdn", "scroll"),
                 ("esc", "back"),
             ])
@@ -259,11 +268,16 @@ mod tests {
     }
 
     fn module(node: &str, kind: &str) -> BrowseModule {
+        // Declarative modules carry a manifest path (matching `main.rs::browse_modules`'
+        // layout); built-ins carry `None`, since there is nothing on disk to edit.
+        let manifest = (kind == "declarative")
+            .then(|| PathBuf::from(format!("modules/{node}/knixl-module.kdl")));
         BrowseModule {
             node: node.into(),
             kind: kind.into(),
             doc: format!("# {node}\n\nthe {node} module\n"),
             skeleton: node.into(),
+            manifest,
         }
     }
 
@@ -334,6 +348,29 @@ mod tests {
                 assert_eq!(skeleton, "postgres");
             }
             _ => panic!("expected an insert"),
+        }
+    }
+
+    #[test]
+    fn edit_action_only_for_declarative_modules() {
+        let mut m = model(
+            &[("postgres", "built-in"), ("web-service", "declarative")],
+            1,
+        );
+        // The built-in is selected first; edit has no manifest to open, so it stays put.
+        assert!(matches!(
+            m.update(key(KeyCode::Char('e')), (120, 30)).nav,
+            Nav::Stay
+        ));
+        m.update(key(KeyCode::Down), (120, 30)); // select the declarative module
+        match m.update(key(KeyCode::Char('e')), (120, 30)).nav {
+            Nav::EditModule { manifest } => {
+                assert_eq!(
+                    manifest,
+                    PathBuf::from("modules/web-service/knixl-module.kdl")
+                );
+            }
+            _ => panic!("expected Nav::EditModule for a declarative selection"),
         }
     }
 

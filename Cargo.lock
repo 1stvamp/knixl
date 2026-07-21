@@ -567,6 +567,7 @@ dependencies = [
  "bubbletea-widgets",
  "clap",
  "crossterm",
+ "kdl",
  "knixl-ir",
  "knixl-kdl",
  "knixl-lock",

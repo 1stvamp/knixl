@@ -101,6 +101,10 @@ pub struct BrowseModule {
     pub kind: String,
     pub doc: String,
     pub skeleton: String,
+    /// The manifest path (`modules/<dir>/knixl-module.kdl`) for a declarative module, so Browse
+    /// can open it in the Author screen's Edit mode. `None` for a built-in module, which has no
+    /// manifest to edit.
+    pub manifest: Option<PathBuf>,
 }
 
 /// How the TUI was launched.
@@ -154,6 +158,11 @@ pub enum Outcome {
     },
     /// Write a new declarative module manifest (`modules/<name>/knixl-module.kdl`).
     Scaffold { name: String, manifest: String },
+    /// Overwrite an existing module manifest with edited text (Author screen's Edit mode).
+    SaveModule {
+        path: std::path::PathBuf,
+        text: String,
+    },
 }
 
 /// Everything the screens read, injected before the program runs.
@@ -210,6 +219,15 @@ pub enum Nav {
     Scaffold {
         name: String,
         manifest: String,
+    },
+    /// Overwrite an existing module manifest and end the session (Author screen's Edit mode).
+    SaveModule {
+        path: std::path::PathBuf,
+        text: String,
+    },
+    /// Open a declarative module's manifest in the Author screen's Edit mode.
+    EditModule {
+        manifest: std::path::PathBuf,
     },
 }
 
@@ -342,6 +360,20 @@ impl App {
             Nav::Scaffold { name, manifest } => {
                 self.outcome = Outcome::Scaffold { name, manifest };
                 Some(command::quit())
+            }
+            Nav::SaveModule { path, text } => {
+                self.outcome = Outcome::SaveModule { path, text };
+                Some(command::quit())
+            }
+            Nav::EditModule { manifest } => {
+                // A read or parse failure stays on Browse (a no-op) rather than opening a
+                // broken editor; there is nowhere sensible to show the error from here.
+                if let Ok(text) = std::fs::read_to_string(&manifest) {
+                    if let Ok(m) = AuthorModel::edit(self.size, manifest, &text) {
+                        self.screen = Screen::Author(Box::new(m));
+                    }
+                }
+                None
             }
             Nav::Back => match config().entry {
                 // Launched straight into a screen: backing out ends the session.

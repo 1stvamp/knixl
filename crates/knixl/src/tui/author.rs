@@ -14,11 +14,23 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use lipgloss::{join_vertical, rounded_border, Style, LEFT};
 
 use knixl_modules::template::{
-    render_manifest, validate_manifest, EntryKind, FieldTy, ModuleDraft, SchemaEntry, SubField,
-    SubKind,
+    load_editable, reconcile, render_manifest, validate_manifest, EntryKind, FieldTy, ModuleDraft,
+    SchemaEntry, SubField, SubKind,
 };
 
 use super::{theme, widgets, Nav, Step};
+
+/// Whether the screen is authoring a brand new module or editing one loaded from disk. Edit
+/// mode carries the original parsed document (needed by `reconcile` to preserve trivia the
+/// editor does not model: version, migrations, doc= strings, comments) and the path the saved
+/// manifest is written back to.
+enum Mode {
+    New,
+    Edit {
+        path: std::path::PathBuf,
+        original: kdl::KdlDocument,
+    },
+}
 
 /// A point in the form the user can move focus to. Computed on demand from the current
 /// entries/subfields, never stored as a big vector on the model, so it always matches the
@@ -50,6 +62,10 @@ struct SubFieldState {
     name: textinput::Model,
     ty: FieldTy,
     required: bool,
+    /// The source sub-node this field was loaded from (Edit mode), carried straight through to
+    /// `draft()`'s `SubField::origin` so `reconcile` can match it back up. `None` for a
+    /// sub-field added fresh in the editor, in either mode.
+    origin: Option<usize>,
 }
 
 struct EntryState {
@@ -59,6 +75,8 @@ struct EntryState {
     required: bool,
     repeated: bool,
     subfields: Vec<SubFieldState>,
+    /// The source node this entry was loaded from (Edit mode); see `SubFieldState::origin`.
+    origin: Option<usize>,
 }
 
 pub struct AuthorModel {
@@ -74,6 +92,9 @@ pub struct AuthorModel {
     /// screen's public contract, so the rendered text is captured here every time the emit
     /// widget could have changed (edits, resize, focus changes) and `view` just reads it back.
     emit_view: String,
+    /// New (scaffold a fresh manifest) or Edit (load an existing one and save it back through
+    /// `reconcile`). Drives `current_text` and what the primary control emits on Enter.
+    mode: Mode,
 }
 
 impl AuthorModel {
@@ -94,6 +115,7 @@ impl AuthorModel {
             required: false,
             repeated: false,
             subfields: Vec::new(),
+            origin: None,
         };
 
         let mut emit = textarea::new();
@@ -108,11 +130,88 @@ impl AuthorModel {
             focus: 0,
             status: Ok(()),
             emit_view: String::new(),
+            mode: Mode::New,
         };
         model.size_emit(size);
         model.refocus();
         model.recompute_status();
         model
+    }
+
+    /// Load an existing module manifest for editing. The header fields, schema entries, and
+    /// emit block are seeded from `load_editable`'s flat view; each entry/sub-field carries its
+    /// `origin` through so `current_text`'s `reconcile` call can match it back up to the
+    /// original node and preserve everything the editor does not model (version, migrations,
+    /// doc= strings, comments). Errors from a manifest that fails to load are returned to the
+    /// caller (the Browse-driven entry point stays on Browse rather than opening a broken
+    /// editor) instead of panicking.
+    pub fn edit(
+        size: (u16, u16),
+        path: std::path::PathBuf,
+        text: &str,
+    ) -> Result<AuthorModel, String> {
+        let ed = load_editable(text)?;
+
+        let mut name = textinput::new();
+        name.set_value(&ed.name);
+        let mut node = textinput::new();
+        node.set_value(&ed.node);
+        let mut summary = textinput::new();
+        summary.set_value(&ed.summary);
+
+        let entries = ed
+            .entries
+            .iter()
+            .map(|e| {
+                let mut field_name = textinput::new();
+                field_name.set_value(&e.name);
+                EntryState {
+                    kind: e.kind,
+                    name: field_name,
+                    ty: e.ty,
+                    required: e.required,
+                    repeated: e.repeated,
+                    subfields: e
+                        .subfields
+                        .iter()
+                        .map(|s| {
+                            let mut sub_name = textinput::new();
+                            sub_name.set_value(&s.name);
+                            SubFieldState {
+                                kind: s.kind,
+                                name: sub_name,
+                                ty: s.ty,
+                                required: s.required,
+                                origin: s.origin,
+                            }
+                        })
+                        .collect(),
+                    origin: e.origin,
+                }
+            })
+            .collect();
+
+        let mut emit = textarea::new();
+        emit.set_value(&ed.emit);
+
+        let mut model = AuthorModel {
+            name,
+            node,
+            summary,
+            entries,
+            emit,
+            focus: 0,
+            status: Ok(()),
+            emit_view: String::new(),
+            mode: Mode::Edit {
+                path,
+                original: ed.doc,
+            },
+        };
+        model.size_emit(size);
+        model.refocus();
+        model.recompute_status();
+        Ok(model)
     }
 
     // ---- focus list (computed on demand) ----
@@ -218,6 +317,7 @@ impl AuthorModel {
             required: false,
             repeated: false,
             subfields: Vec::new(),
+            origin: None,
         });
         self.touched();
     }
@@ -240,6 +340,7 @@ impl AuthorModel {
             name,
             ty: FieldTy::Str,
             required: false,
+            origin: None,
         });
         self.touched();
     }
@@ -341,18 +442,33 @@ impl AuthorModel {
                             name: s.name.value().trim().to_string(),
                             ty: s.ty,
                             required: s.required,
+                            origin: s.origin,
                         })
                         .collect(),
+                    origin: e.origin,
                 })
                 .collect(),
             emit: self.emit.value(),
         }
     }
 
-    /// Re-render the draft to KDL and dry-type-check it, caching both the validation result
-    /// and the emit widget's rendered text (see `emit_view`'s doc comment).
+    /// The manifest text the primary control would currently save: a fresh render in New mode,
+    /// or the original document reconciled against the draft in Edit mode (so version,
+    /// migrations, doc= strings, and comments the editor does not model survive).
+    fn current_text(&self) -> Result<String, String> {
+        match &self.mode {
+            Mode::New => Ok(render_manifest(&self.draft())),
+            Mode::Edit { original, .. } => reconcile(original, &self.draft()),
+        }
+    }
+
+    /// Re-render the draft (mode-aware: a fresh render in New mode, a reconcile against the
+    /// original in Edit mode) and dry-type-check it, caching both the validation result and the
+    /// emit widget's rendered text (see `emit_view`'s doc comment).
     fn recompute_status(&mut self) {
-        self.status = validate_manifest(&render_manifest(&self.draft()));
+        self.status = self
+            .current_text()
+            .and_then(|text| validate_manifest(&text));
         self.emit_view = self.emit.view();
     }
 
@@ -481,11 +597,25 @@ impl AuthorModel {
                 Step::stay()
             }
             Focus::Create => match code {
-                KeyCode::Enter if self.can_create() => {
-                    let name = self.name.value().trim().to_string();
-                    let manifest = render_manifest(&self.draft());
-                    Step::nav(Nav::Scaffold { name, manifest })
-                }
+                // `can_create` already dry-type-checked `current_text` (via `recompute_status`),
+                // so `current_text()` here re-renders the same text rather than risking it
+                // silently disagreeing with `self.status`.
+                KeyCode::Enter if self.can_create() => match &self.mode {
+                    Mode::New => {
+                        let name = self.name.value().trim().to_string();
+                        match self.current_text() {
+                            Ok(manifest) => Step::nav(Nav::Scaffold { name, manifest }),
+                            Err(_) => Step::stay(),
+                        }
+                    }
+                    Mode::Edit { path, .. } => {
+                        let path = path.clone();
+                        match self.current_text() {
+                            Ok(text) => Step::nav(Nav::SaveModule { path, text }),
+                            Err(_) => Step::stay(),
+                        }
+                    }
+                },
                 _ => Step::stay(),
             },
             Focus::Cancel => match code {
@@ -592,7 +722,11 @@ impl AuthorModel {
             Err(e) => theme::bad().render(e),
         });
 
-        let create = self.button("create", at == Focus::Create, self.can_create());
+        let create_label = match self.mode {
+            Mode::New => "create",
+            Mode::Edit { .. } => "save",
+        };
+        let create = self.button(create_label, at == Focus::Create, self.can_create());
         let cancel = self.button("cancel", at == Focus::Cancel, true);
 
         let body = join_vertical(LEFT, &lines.iter().map(String::as_str).collect::<Vec<_>>());
@@ -866,5 +1000,69 @@ mod tests {
         assert!(model().view((100, 40)).contains("schema"));
         assert!(model().view((100, 40)).contains("emit"));
         assert!(model().view((20, 8)).contains("resize"));
+    }
+
+    #[test]
+    fn edit_loads_a_manifest_into_the_editor() {
+        let src = "module name=\"demo\" version=\"2.0.0\" {\n    summary \"s\"\n    claims-node \"demo\"\n    schema {\n        arg \"host\" type=\"string\" required=#true doc=\"the host\"\n    }\n    emit {\n        set \"services.demo.enable\" #true\n    }\n}\n";
+        let m = AuthorModel::edit(
+            (100, 40),
+            std::path::PathBuf::from("modules/demo/knixl-module.kdl"),
+            src,
+        )
+        .expect("edit loads");
+        assert_eq!(m.name.value(), "demo");
+        assert_eq!(m.entries.len(), 1);
+        assert_eq!(m.entries[0].name.value(), "host");
+        assert!(m.emit.value().contains("services.demo.enable"));
+    }
+
+    #[test]
+    fn edit_mode_saves_via_savemodule_with_a_reconciled_manifest() {
+        let src = "module name=\"demo\" version=\"2.0.0\" {\n    summary \"s\"\n    claims-node \"demo\"\n    schema {\n        arg \"host\" type=\"string\" required=#true doc=\"the host\"\n    }\n    emit {\n        set \"services.demo.enable\" #true\n    }\n}\n";
+        let mut m = AuthorModel::edit(
+            (100, 40),
+            std::path::PathBuf::from("modules/demo/knixl-module.kdl"),
+            src,
+        )
+        .expect("edit");
+        m.recompute_status();
+        let idx = m
+            .focus_list()
+            .iter()
+            .position(|f| *f == Focus::Create)
+            .unwrap();
+        m.focus = idx;
+        let step = m.update(key(KeyCode::Enter), (100, 40));
+        match step.nav {
+            Nav::SaveModule { path, text } => {
+                assert!(path.ends_with("knixl-module.kdl"));
+                assert!(
+                    text.contains("version=\"2.0.0\""),
+                    "version preserved: {text}"
+                );
+                assert!(text.contains("doc=\"the host\""), "doc preserved: {text}");
+                knixl_modules::template::validate_manifest(&text).expect("valid");
+            }
+            _other => panic!("expected SaveModule, got something else"),
+        }
+    }
+
+    #[test]
+    fn new_mode_still_scaffolds() {
+        let mut m = AuthorModel::enter((100, 40));
+        m.name.set_value("fresh");
+        m.entries[0].name.set_value("host");
+        m.recompute_status();
+        let idx = m
+            .focus_list()
+            .iter()
+            .position(|f| *f == Focus::Create)
+            .unwrap();
+        m.focus = idx;
+        match m.update(key(KeyCode::Enter), (100, 40)).nav {
+            Nav::Scaffold { .. } => {}
+            _ => panic!("New mode must still scaffold"),
+        }
     }
 }

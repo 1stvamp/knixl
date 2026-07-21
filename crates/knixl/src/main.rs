@@ -897,6 +897,7 @@ fn browse_modules(root: &std::path::Path) -> Vec<tui::BrowseModule> {
     let Ok(registry) = knixl_pipeline::gather::registry(root) else {
         return Vec::new();
     };
+    let manifests = declarative_manifests(root);
     registry
         .entries()
         .map(|(node, m)| {
@@ -909,9 +910,36 @@ fn browse_modules(root: &std::path::Path) -> Vec<tui::BrowseModule> {
                 },
                 doc: schema.render_doc(node),
                 skeleton: skeleton_for(node, schema),
+                manifest: manifests.get(node).cloned(),
             }
         })
         .collect()
+}
+
+/// Maps each declarative module's claimed node to its manifest path, for the Browse screen's
+/// edit action. The registry itself does not carry the path (`DeclarativeModule` only keeps it
+/// for error messages), so this walks `root/modules/*/knixl-module.kdl` directly and pairs each
+/// manifest to the node it claims. An unreadable directory, or a manifest that fails to parse,
+/// is skipped rather than failing the whole scan: Browse still shows a usable list, just without
+/// an edit path for that one entry.
+fn declarative_manifests(
+    root: &std::path::Path,
+) -> std::collections::BTreeMap<String, std::path::PathBuf> {
+    let mut out = std::collections::BTreeMap::new();
+    let dir = root.join("modules");
+    let Ok(read_dir) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for entry in read_dir.filter_map(|e| e.ok()) {
+        let manifest = entry.path().join("knixl-module.kdl");
+        let Ok(text) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        if let Ok(editable) = knixl_modules::template::load_editable(&text) {
+            out.insert(editable.node, manifest);
+        }
+    }
+    out
 }
 
 /// A starting skeleton for inserting a module node into a host: the node with placeholders
@@ -1351,6 +1379,7 @@ fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
             skeleton,
         } => commit_insert(&host, &node, &skeleton),
         tui::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),
+        tui::Outcome::SaveModule { path, text } => commit_save_module(&path, &text),
         tui::Outcome::Cancelled | tui::Outcome::Quit => Code::Clean,
     }
 }
@@ -1379,6 +1408,17 @@ fn commit_scaffold(name: &str, manifest: &str) -> Code {
         "created module `{name}`: edit {} then declare it on a host",
         path.display()
     );
+    Code::Clean
+}
+
+/// Overwrite an existing module manifest with edited text (Edit mode). Unlike commit_scaffold
+/// this expects the file to exist and replaces it.
+fn commit_save_module(path: &std::path::Path, text: &str) -> Code {
+    if let Err(e) = std::fs::write(path, text) {
+        eprintln!("knixl: {}: {e}", path.display());
+        return Code::Internal;
+    }
+    println!("updated {}", path.display());
     Code::Clean
 }
 
@@ -1633,7 +1673,9 @@ fn write_lock(ctx: &Ctx, lock: &knixl_lock::Lock) {
 
 #[cfg(test)]
 mod tests {
-    use super::{choose_formatter_bin, commit_tui_install, make_strategy, Code};
+    use super::{
+        choose_formatter_bin, commit_save_module, commit_tui_install, make_strategy, Code,
+    };
     use crate::tui;
 
     /// Serializes tests that mutate `KNIXL_NIX_BUILD` (a process-global env var): cargo runs
@@ -1663,6 +1705,19 @@ mod tests {
     #[test]
     fn defaults_to_nixfmt_when_none_run() {
         assert_eq!(choose_formatter_bin(None, |_| false), "nixfmt");
+    }
+
+    #[test]
+    fn commit_save_module_overwrites_an_existing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "knixl-cli-commit-save-module-{}.kdl",
+            std::process::id()
+        ));
+        std::fs::write(&path, "original").unwrap();
+        let code = commit_save_module(&path, "updated text");
+        assert!(code == Code::Clean, "commit_save_module writes cleanly");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "updated text");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// A shim mimicking `nix-build`: exits 0 when `build_ok`, else 1. Mirrors
