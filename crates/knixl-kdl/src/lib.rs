@@ -16,6 +16,15 @@ pub fn parse(src: &str) -> Result<KdlDocument, ParseError> {
 
 // Small readers used across modules. Kept here so module code stays declarative.
 
+/// A node's own first positional argument as a string (e.g. `module "disko"` -> "disko").
+pub fn first_arg_str(node: &KdlNode) -> Option<String> {
+    node.entries()
+        .iter()
+        .find(|e| e.name().is_none())
+        .and_then(|e| e.value().as_string())
+        .map(str::to_string)
+}
+
 pub fn child_arg_str(node: &KdlNode, child: &str) -> Option<String> {
     children_named(node, child)
         .next()
