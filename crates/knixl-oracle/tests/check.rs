@@ -135,6 +135,45 @@ fn from_rev_cache_loads_options_keyed_by_rev() {
 }
 
 #[test]
+fn empty_modules_keeps_rev_only_cache_path() {
+    let p = knixl_oracle::cache_path_for("deadbeef", &[]).unwrap();
+    assert!(p.ends_with("options-deadbeef.json"));
+}
+
+#[test]
+fn module_set_changes_the_cache_key_and_is_order_sensitive() {
+    use knixl_oracle::effective_hash;
+
+    let a = effective_hash(
+        "r",
+        &[
+            ("u1".into(), "v1".into(), "default".into()),
+            ("u2".into(), "v2".into(), "default".into()),
+        ],
+    );
+    let b = effective_hash(
+        "r",
+        &[
+            ("u2".into(), "v2".into(), "default".into()),
+            ("u1".into(), "v1".into(), "default".into()),
+        ],
+    );
+    let c = effective_hash("r", &[]);
+    assert_ne!(a, b, "order matters");
+    assert_ne!(a, c, "modules change the hash");
+    assert_eq!(
+        a,
+        effective_hash(
+            "r",
+            &[
+                ("u1".into(), "v1".into(), "default".into()),
+                ("u2".into(), "v2".into(), "default".into()),
+            ]
+        )
+    );
+}
+
+#[test]
 fn real_options_json_loads_when_provided() {
     let Ok(path) = std::env::var("KNIXL_OPTIONS_JSON") else {
         eprintln!("skipping: set KNIXL_OPTIONS_JSON to a real nixosOptionsDoc file");

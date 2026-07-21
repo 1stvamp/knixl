@@ -4,6 +4,7 @@
 pub mod baseline;
 pub mod module;
 pub mod nixeval;
+pub mod optionsdoc;
 pub mod pin;
 
 #[derive(Debug, Clone)]
