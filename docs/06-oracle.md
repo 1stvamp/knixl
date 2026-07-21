@@ -25,7 +25,7 @@ nix-build '<nixpkgs>' -A nixosOptionsDoc ...   # or an equivalent flake attr
 cp result/share/doc/nixos/options.json "$HOME/.cache/knixl/options-<rev>.json"
 ```
 
-Fetching by rev is not yet automated inside knixl (it needs a nix evaluation); the lookup is. `knixl_oracle::cache_path(rev)` returns the exact path to write.
+Fetching the BASE (no out-of-tree modules) set by rev is not yet automated inside knixl this way; the lookup is. `knixl_oracle::cache_path(rev)` returns the exact path to write. The AUGMENTED set (rev plus declared modules, below) is automated: `install`/`upgrade` build and cache it themselves.
 
 ## Per-host baselines
 
@@ -34,6 +34,42 @@ A single global oracle rev is not always enough: fleets migrate host by host, no
 Declaring a release does not resolve it on its own. The release string (`"25.05"`) has to become a nixpkgs commit, and that resolution is recorded per host in the lock as a `baseline` line (`release`, `nixpkgs-rev`, `options-hash`; see docs/02). Resolution goes through `KNIXL_BASELINE_RESOLVER` if set (an external `<bin> <release>` command), otherwise a built-in resolver: `git ls-remote` against the `nixos-<release>` branch, falling back to the GitHub commits API if `git` is unavailable or fails. A failure to resolve blocks, it never guesses.
 
 Planning keys the option set per host: `gather` (the read side of `Plan::compute`, in `crates/knixl-pipeline/src/gather.rs`) builds a `BTreeMap<String, Oracle>` from host name to oracle, each host's rev taken from its lock baseline if declared, else the lock's default `oracle nixpkgs-rev`. A host absent from the map (nothing cached for its rev) generates without option checks for that host alone, the same best-effort fallback as the single-oracle case, just scoped to one host instead of the whole project.
+
+## Out-of-tree oracle modules (ADR 0008)
+
+nixpkgs alone does not publish every option a generated host might legitimately set: disko's
+`disko.devices.*`, sops-nix's `sops.*`, and similar out-of-tree NixOS modules are unknown to
+the oracle until their module is declared. `knixl.kdl` at the project root declares the
+project's defaults:
+
+```kdl
+nixpkgs release="25.05"
+oracle-modules {
+    module "disko" flake="github:nix-community/disko"
+    module "sops-nix" flake="github:Mic92/sops-nix" attr="default"
+}
+```
+
+`attr` (the flake's `nixosModules.<attr>`) defaults to `"default"`. A host may replace this
+default outright with its own `oracle-modules` block, but only when it also declares its own
+`nixpkgs release="<rel>"` (ADR 0007): the per-host `baseline` line is the only place in the
+lock able to carry per-host module pins, so a host that declares `oracle-modules` with no
+declared release is refused with a clear error, not silently ignored.
+
+`install`/`upgrade` resolve each declared flake ref to a `{url, rev}` (`git ls-remote` by
+default, `KNIXL_MODULE_RESOLVER` overrides), then BUILD the augmented `options.json`:
+`nixosOptionsDoc` evaluated over the pinned nixpkgs rev plus each resolved module, as a NixOS
+module drawn from that flake. The result is cached keyed by the EFFECTIVE set (the rev and the
+module pins together, order-sensitive: `knixl_oracle::cache_path_for(rev, modules)`), and the
+built content's hash is recorded as an `options-hash` alongside the existing rev, on the
+project's `oracle` or the host's own `baseline`. A missing nix is best-effort (a warning, unless
+`--strict`); nix present but the build failing is always a hard error, since the declared
+module set itself is broken, not merely unverified.
+
+A host without its own override validates against the project's default module set; one with
+an override validates against its own, resolved pins. `gather` looks up whichever applies from
+the lock (never nix, never the network) and loads whatever is cached for that host's effective
+set, the same best-effort fallback as an unresolved rev when nothing is cached.
 
 ## The honest limit, and how to live with it
 

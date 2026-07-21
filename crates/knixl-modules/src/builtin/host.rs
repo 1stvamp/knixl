@@ -44,10 +44,11 @@ impl Module for Host {
                 NixExpr::Str(sys),
             )));
         }
-        // delegate everything except the fields host consumes itself. `nixpkgs` is
-        // metadata (the declared baseline release, read by the pipeline's gather scan);
-        // it contributes no `Unit` and must not be dispatched or linted.
-        for out in ctx.lower_children(node, &["system", "nixpkgs"])? {
+        // delegate everything except the fields host consumes itself. `nixpkgs` and
+        // `oracle-modules` are metadata (the declared baseline release and this host's own
+        // out-of-tree oracle module override, ADR 0008, both read by the pipeline's gather
+        // scan); neither contributes a `Unit` and must not be dispatched or linted.
+        for out in ctx.lower_children(node, &["system", "nixpkgs", "oracle-modules"])? {
             units.extend(out.units);
             raw.extend(out.raw);
         }
@@ -94,8 +95,21 @@ fn schema() -> NodeSchema {
                 required: false,
                 doc: "The declared nixpkgs release, e.g. \"25.05\".".into(),
             }],
+        }, Child {
+            name: "oracle-modules".into(),
+            ty: ValueTy::Node,
+            required: false,
+            repeated: false,
+            delegate: false,
+            doc: "Overrides the project's default out-of-tree oracle modules for this host \
+                  (replace semantics), e.g. `oracle-modules { module \"disko\" flake=\"...\" }`. \
+                  Requires a declared `nixpkgs release=` (ADR 0008). Metadata only: read by the \
+                  pipeline, never emitted.".into(),
+            args: vec![],
+            props: vec![],
         }],
-        // Everything other than `system`/`nixpkgs` is a service, delegated to its own module.
+        // Everything other than `system`/`nixpkgs`/`oracle-modules` is a service, delegated to
+        // its own module.
         open_children: true,
     }
 }

@@ -4,7 +4,7 @@
 
 mod tui;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::IsTerminal;
 use std::sync::Arc;
 
@@ -132,15 +132,45 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             None
         };
 
+    // ADR 0008: a host's own `oracle-modules` override resolves the same way, alongside the
+    // project-wide pass above (in memory only, never written here; see
+    // `resolve_pending_host_modules`). Unlike the project pass this can refuse the whole run
+    // (`Err(Code::Validation)`) rather than just resolving to `None`: a host that declares an
+    // override with no declared `nixpkgs release=` has nowhere in the lock to carry its pins.
+    let pending_host_modules: BTreeMap<String, Vec<OracleModulePin>> =
+        if matches!(cli.cmd, Cmd::Upgrade { .. } | Cmd::Install { .. }) {
+            match resolve_pending_host_modules(ctx) {
+                Ok(p) => p,
+                Err(code) => return code,
+            }
+        } else {
+            BTreeMap::new()
+        };
+
     // Plan off a lock patched with `pending` merged in, so the "not resolved: run knixl
     // upgrade" validation error does not block the very commands that would resolve it, and
     // `lock_next` (built from this patched lock) carries the pending baselines for
     // `Cmd::Upgrade` to write verbatim. `check`/`generate`/`plan` never populate `pending`, so
     // they always plan off the on-disk lock and inputs unchanged.
-    let patched_lock = (!pending.is_empty()).then(|| {
+    let patched_lock = (!pending.is_empty() || !pending_host_modules.is_empty()).then(|| {
         let mut lock = ctx.lock.clone();
         lock.baselines
             .extend(pending.iter().map(|(host, b)| (host.clone(), b.clone())));
+        // Overlay each host's pending module-override resolution onto its baseline (which the
+        // extend above may just have created for a release resolved in this same run): the
+        // baseline carries both fields together, so `plan.lock_next` (built from this patched
+        // lock) writes the release and the module pins as one coherent host block.
+        for (host, pins) in &pending_host_modules {
+            lock.baselines
+                .entry(host.clone())
+                .or_insert_with(|| HostBaseline {
+                    release: String::new(),
+                    nixpkgs_rev: String::new(),
+                    options_hash: String::new(),
+                    modules: Vec::new(),
+                })
+                .modules = pins.clone();
+        }
         lock
     });
     let patched_inputs =
@@ -239,6 +269,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                 && !plan.any(FileState::is_dirty)
                 && pending.is_empty()
                 && pending_modules.is_none()
+                && pending_host_modules.is_empty()
             {
                 println!("already up to date");
                 return Code::Clean;
@@ -257,6 +288,14 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                         "would resolve oracle module \"{}\" ({}) -> {}",
                         m.name, m.url, m.rev,
                     );
+                }
+                for (host, pins) in &pending_host_modules {
+                    for m in pins {
+                        println!(
+                            "would resolve oracle module \"{}\" ({}) for host \"{host}\" -> {}",
+                            m.name, m.url, m.rev,
+                        );
+                    }
                 }
                 eprintln!("re-run with --yes to apply");
                 return Code::NeedsAck;
@@ -278,10 +317,32 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                     m.name, m.url, m.rev,
                 );
             }
+            for (host, pins) in &pending_host_modules {
+                for m in pins {
+                    println!(
+                        "resolved oracle module \"{}\" ({}) for host \"{host}\" -> {}",
+                        m.name, m.url, m.rev,
+                    );
+                }
+            }
             // `plan.lock_next` was built from the lock already patched with `pending`/
-            // `pending_modules` (see `run`'s planning step above), so this one write commits
-            // the baselines and module pins too.
-            write_lock(ctx, &plan.lock_next); // bump tool/module/formatter/oracle/baselines
+            // `pending_modules`/`pending_host_modules` (see `run`'s planning step above), so
+            // this carries the baselines and module pins through; the augmented-set build
+            // below (ADR 0008) may additionally set an `options-hash` on top of that.
+            let mut lock_next = plan.lock_next.clone();
+            let mut changed_hosts: BTreeSet<String> = pending.keys().cloned().collect();
+            changed_hosts.extend(pending_host_modules.keys().cloned());
+            // `upgrade` has no `--strict` flag: a missing nix is always best-effort here.
+            if let Err(code) = build_pending_oracle_sets(
+                &ctx.root,
+                &mut lock_next,
+                pending_modules.is_some(),
+                &changed_hosts,
+                false,
+            ) {
+                return code;
+            }
+            write_lock(ctx, &lock_next); // bump tool/module/formatter/oracle/baselines
             Code::Clean
         }
 
@@ -307,6 +368,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             no_abi_check,
             &pending,
             pending_modules.as_deref(),
+            &pending_host_modules,
         ),
 
         Cmd::Tui => unreachable!("tui is dispatched before Ctx::load"),
@@ -327,6 +389,7 @@ fn install(
     no_abi_check: bool,
     pending: &BTreeMap<String, HostBaseline>,
     pending_modules: Option<&[OracleModulePin]>,
+    pending_host_modules: &BTreeMap<String, Vec<OracleModulePin>>,
 ) -> Code {
     use knixl_nix::pin::{PinError, PinResolver};
     use knixl_pipeline::install::{list_hosts, select_host};
@@ -419,6 +482,8 @@ fn install(
     // (issue #22 review fix): written alongside the pin by `commit_install`, in the same
     // committed/revertable step, rather than up front by a pre-pass.
     let baseline_pending = pending.get(&initial.name).cloned();
+    // As above, for the target host's own `oracle-modules` override (ADR 0008), if it has one.
+    let host_modules_pending = pending_host_modules.get(&initial.name).cloned();
 
     // A version cannot be pinned without a resolved commit and a decided strategy: refuse
     // before anything else. A pin already on record for this exact (host, package, version)
@@ -532,6 +597,7 @@ fn install(
         pin_args,
         baseline_pending.as_ref(),
         pending_modules,
+        host_modules_pending.as_deref(),
         strict,
     );
     if code == Code::Clean {
@@ -547,6 +613,12 @@ fn install(
                 m.name, m.url, m.rev
             );
         }
+        for m in host_modules_pending.iter().flatten() {
+            println!(
+                "resolved oracle module \"{}\" ({}) for host \"{}\" -> {}",
+                m.name, m.url, initial.name, m.rev
+            );
+        }
         if let Some((v, _, strategy, reason)) = &version_pin {
             println!(
                 "pinned {name} {v} via {} ({reason})",
@@ -560,6 +632,8 @@ fn install(
 // `pending_modules` is `None` for the interactive/TUI install paths (#35 phase 3 only wires
 // the plain, non-interactive `install`/`upgrade` paths; the TUI's own commit path does not
 // resolve or write project oracle-module pins yet -- see `commit_tui_install`'s call site).
+// `host_modules_pending` (ADR 0008, the host-override counterpart) is `None` there too, for
+// the same reason.
 #[allow(clippy::too_many_arguments)]
 fn commit_install(
     chosen: &knixl_pipeline::install::HostInfo,
@@ -571,6 +645,7 @@ fn commit_install(
     )>,
     baseline_pending: Option<&HostBaseline>,
     pending_modules: Option<&[OracleModulePin]>,
+    host_modules_pending: Option<&[OracleModulePin]>,
     strict: bool,
 ) -> Code {
     use knixl_pipeline::install::add_package;
@@ -598,6 +673,17 @@ fn commit_install(
     // fresh per-host inserts): capture what it held before this pending resolution, so a
     // revert below can restore it exactly rather than blank it out.
     let prior_modules = pending_modules.map(|_| Ctx::load().lock.oracle.modules.clone());
+    // As above, for the target host's own baseline `.modules` (ADR 0008 host override): a
+    // per-host list, but still something to restore rather than blank on revert, since a host
+    // may already have had a different override in place before this pending resolution.
+    let prior_host_modules = host_modules_pending.map(|_| {
+        Ctx::load()
+            .lock
+            .baselines
+            .get(&chosen.name)
+            .map(|b| b.modules.clone())
+            .unwrap_or_default()
+    });
 
     // Record the pin, any pending baseline resolution, and any pending oracle-module
     // resolution before the versioned KDL hits disk (issue #22 review fix: a baseline
@@ -615,6 +701,11 @@ fn commit_install(
     if let Some(pins) = pending_modules {
         write_oracle_modules(pins);
     }
+    // After `write_baseline` above, so a host whose release resolved in this same run already
+    // has a baseline entry for this to set `.modules` on.
+    if let Some(pins) = host_modules_pending {
+        write_host_oracle_modules(&chosen.name, pins);
+    }
 
     if let Err(e) = std::fs::write(&chosen.path, &draft) {
         eprintln!("knixl: {}: {e}", chosen.path.display());
@@ -628,6 +719,9 @@ fn commit_install(
         }
         if let Some(prior) = &prior_modules {
             restore_oracle_modules(prior);
+        }
+        if let Some(prior) = &prior_host_modules {
+            restore_host_oracle_modules(&chosen.name, prior);
         }
         return Code::Internal;
     }
@@ -644,6 +738,9 @@ fn commit_install(
         }
         if let Some(prior) = &prior_modules {
             restore_oracle_modules(prior);
+        }
+        if let Some(prior) = &prior_host_modules {
+            restore_host_oracle_modules(&chosen.name, prior);
         }
     };
 
@@ -676,7 +773,25 @@ fn commit_install(
         }
     }
     if worst == Code::Clean {
-        write_lock(&drafted, &plan.lock_next);
+        // ADR 0008: build + cache the augmented option set for whatever effective sets this
+        // install just changed, folding each built content's hash into a local copy of
+        // `plan.lock_next` before it is written; a missing nix is best-effort unless `strict`.
+        let mut lock_next = plan.lock_next.clone();
+        let mut changed_hosts = BTreeSet::new();
+        if baseline_pending.is_some() || host_modules_pending.is_some() {
+            changed_hosts.insert(chosen.name.clone());
+        }
+        if let Err(code) = build_pending_oracle_sets(
+            &drafted.root,
+            &mut lock_next,
+            pending_modules.is_some(),
+            &changed_hosts,
+            strict,
+        ) {
+            revert();
+            return code;
+        }
+        write_lock(&drafted, &lock_next);
         println!("installed {pkg} on {}", chosen.name);
     } else {
         revert();
@@ -771,6 +886,34 @@ fn restore_oracle_modules(prior: &[OracleModulePin]) {
     let ctx = Ctx::load();
     let mut lock = ctx.lock.clone();
     lock.oracle.modules = prior.to_vec();
+    write_lock(&ctx, &lock);
+}
+
+/// Set `host`'s baseline `.modules` to `pins`, leaving the rest of its baseline unchanged,
+/// then write the lock back. Mirrors `write_oracle_modules` but per host (ADR 0008 host
+/// override). A no-op if `host` has no baseline yet: the caller
+/// (`resolve_pending_host_modules`) already refuses a host that declares an `oracle-modules`
+/// override with no declared `nixpkgs release=` before this could ever be reached, and
+/// `commit_install` always calls `write_baseline` first when a release also resolved in this
+/// same run, so the baseline this sets `.modules` on already exists by the time it runs.
+fn write_host_oracle_modules(host: &str, pins: &[OracleModulePin]) {
+    let ctx = Ctx::load();
+    let mut lock = ctx.lock.clone();
+    if let Some(b) = lock.baselines.get_mut(host) {
+        b.modules = pins.to_vec();
+    }
+    write_lock(&ctx, &lock);
+}
+
+/// Undo `write_host_oracle_modules`: restore `host`'s baseline `.modules` to `prior` (captured
+/// by `commit_install` before it wrote the pending resolution), then write the lock back.
+/// Mirrors `restore_oracle_modules`, but per host.
+fn restore_host_oracle_modules(host: &str, prior: &[OracleModulePin]) {
+    let ctx = Ctx::load();
+    let mut lock = ctx.lock.clone();
+    if let Some(b) = lock.baselines.get_mut(host) {
+        b.modules = prior.to_vec();
+    }
     write_lock(&ctx, &lock);
 }
 
@@ -930,6 +1073,173 @@ fn resolve_pending_project_modules(ctx: &Ctx) -> Result<Option<Vec<OracleModuleP
     Ok(Some(resolve_oracle_modules(&project.oracle_modules)?))
 }
 
+/// Resolve every host's own declared `oracle-modules` override IN MEMORY ONLY (mirrors
+/// `resolve_pending_project_modules`, but per host and keyed on the host's own `nixpkgs
+/// release=` declaration rather than the project file). ADR 0008's fixed decision: a host may
+/// declare its own `oracle-modules` block only alongside a declared `nixpkgs release=` (that
+/// baseline is the only place in the lock able to carry its pins). `Err(Code::Validation)`
+/// (message already printed) the moment a host declares one with no declared release: this
+/// refuses the whole run rather than silently ignoring the host's override, so `install`/
+/// `upgrade` never resolve or write a pin they have nowhere to record. A host with no
+/// `oracle-modules` block at all resolves to a present, empty entry when the lock still holds
+/// a stale override for it (GC on removal, mirroring `resolve_pending_project_modules`'s
+/// finding-1 fix), else is simply absent from the returned map.
+fn resolve_pending_host_modules(ctx: &Ctx) -> Result<BTreeMap<String, Vec<OracleModulePin>>, Code> {
+    use knixl_pipeline::install::list_hosts;
+    let hosts = list_hosts(&ctx.root).unwrap_or_default();
+    let mut pending = BTreeMap::new();
+    for h in &hosts {
+        let Ok(src) = std::fs::read_to_string(&h.path) else {
+            continue;
+        };
+        let existing = ctx
+            .lock
+            .baselines
+            .get(&h.name)
+            .map(|b| b.modules.clone())
+            .unwrap_or_default();
+        match knixl_pipeline::project::parse_host_oracle_modules(&src) {
+            None => {
+                if !existing.is_empty() {
+                    pending.insert(h.name.clone(), Vec::new());
+                }
+            }
+            Some(declared) => {
+                if declared_release(&h.path).is_none() {
+                    eprintln!(
+                        "knixl: host \"{}\": oracle-modules requires a declared nixpkgs release",
+                        h.name
+                    );
+                    return Err(Code::Validation);
+                }
+                if oracle_modules_up_to_date(&existing, &declared) {
+                    continue;
+                }
+                pending.insert(h.name.clone(), resolve_oracle_modules(&declared)?);
+            }
+        }
+    }
+    Ok(pending)
+}
+
+/// Build the augmented `options.json` for one effective set (a nixpkgs rev plus its module
+/// pins) via `nixosOptionsDoc`, cache it at `cache_path_for`, and return the built content's
+/// blake3 hash to record as an `options-hash` (ADR 0008). `Ok(None)`: nothing to build (`rev`
+/// not yet resolved, or no cache directory determinable), or nix is unavailable and `strict` is
+/// false (best-effort: a warning only, since a missing nix is "not verified", not "wrong").
+/// `strict` (`install --strict` only; `upgrade` has no such flag and is always best-effort here)
+/// turns a missing nix into a hard `Code::Validation`. A genuine build failure (nix present, the
+/// declared module set itself does not evaluate) is always a hard error regardless of `strict`:
+/// that is "the declared set is broken", not merely "unverified".
+fn build_and_cache_options(
+    rev: &str,
+    modules: &[OracleModulePin],
+    strict: bool,
+) -> Result<Option<String>, Code> {
+    // Fetching and building the BASE (no-modules) set stays a manual step (docs/06): only the
+    // AUGMENTED set (ADR 0008) is automated here. Without this guard, resolving a plain
+    // per-host baseline with no module pins (ADR 0007, already working, deliberately manual)
+    // would start trying to build and fetch real nixpkgs for every baseline resolution.
+    if rev.is_empty() || modules.is_empty() {
+        return Ok(None);
+    }
+    let tuples: Vec<(String, String, String)> = modules
+        .iter()
+        .map(|m| (m.url.clone(), m.rev.clone(), m.attr.clone()))
+        .collect();
+    let Some(path) = knixl_oracle::cache_path_for(rev, &tuples) else {
+        return Ok(None);
+    };
+    let eval = knixl_nix::nixeval::NixEval::resolve();
+    let json = match knixl_nix::optionsdoc::build_options_json(&eval, rev, &tuples) {
+        Ok(json) => json,
+        Err(knixl_nix::nixeval::NixError::Unavailable(_)) if strict => {
+            eprintln!("knixl: --strict: nix unavailable, cannot build the oracle option set");
+            return Err(Code::Validation);
+        }
+        Err(knixl_nix::nixeval::NixError::Unavailable(_)) => {
+            eprintln!("warning: nix unavailable, skipping oracle option set build");
+            return Ok(None);
+        }
+        Err(knixl_nix::nixeval::NixError::Failed(m)) => {
+            eprintln!("knixl: building the oracle option set failed: {m}");
+            return Err(Code::Validation);
+        }
+    };
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("knixl: {}: {e}", parent.display());
+            return Ok(None);
+        }
+    }
+    if let Err(e) = std::fs::write(&path, &json) {
+        eprintln!("knixl: {}: {e}", path.display());
+        return Ok(None);
+    }
+    Ok(Some(knixl_nix::hash(json.as_bytes())))
+}
+
+/// Build + cache the augmented option set for every effective set THIS RUN changed, recording
+/// each built content's hash into the matching entry of `lock` (the project's `oracle` for the
+/// project-wide default set, a host's `baseline` for its own effective set) (ADR 0008). Called
+/// only on confirmed apply (`upgrade --yes`, a confirmed `install`), mutating a local, not-yet-
+/// written copy of the lock the caller commits: building shells out to nix and writes the cache
+/// directory, so it must never run from the shared pending pre-pass (which also drives a plain
+/// preview) nor from `plan`/`generate`/`check` (those stay offline).
+///
+/// `project_modules_changed` marks the project-wide set as changed; `changed_hosts` names hosts
+/// whose own release or module override just changed. A host with no override of its own falls
+/// back to the project's default set (mirroring `gather`'s `effective_modules`-equivalent
+/// lookup), so its effective set also changes when the project set does, even though its own
+/// entry in `changed_hosts` did not.
+fn build_pending_oracle_sets(
+    root: &std::path::Path,
+    lock: &mut knixl_lock::Lock,
+    project_modules_changed: bool,
+    changed_hosts: &BTreeSet<String>,
+    strict: bool,
+) -> Result<(), Code> {
+    if project_modules_changed {
+        let rev = lock.oracle.nixpkgs_rev.clone();
+        let modules = lock.oracle.modules.clone();
+        if let Some(hash) = build_and_cache_options(&rev, &modules, strict)? {
+            lock.oracle.options_hash = hash;
+        }
+    }
+
+    use knixl_pipeline::install::list_hosts;
+    let hosts = list_hosts(root).unwrap_or_default();
+    let project_modules = lock.oracle.modules.clone();
+    for host in &hosts {
+        let Some((rev, own_modules)) = lock
+            .baselines
+            .get(&host.name)
+            .map(|b| (b.nixpkgs_rev.clone(), b.modules.clone()))
+        else {
+            continue;
+        };
+        let src = std::fs::read_to_string(&host.path).unwrap_or_default();
+        let has_override = knixl_pipeline::project::parse_host_oracle_modules(&src).is_some();
+        let effective_changed = if has_override {
+            changed_hosts.contains(&host.name)
+        } else {
+            project_modules_changed || changed_hosts.contains(&host.name)
+        };
+        if !effective_changed {
+            continue;
+        }
+        let modules = if has_override {
+            own_modules
+        } else {
+            project_modules.clone()
+        };
+        if let Some(hash) = build_and_cache_options(&rev, &modules, strict)? {
+            lock.baselines.get_mut(&host.name).unwrap().options_hash = hash;
+        }
+    }
+    Ok(())
+}
+
 /// The nixpkgs rev `choose_strategy` should treat as `host`'s baseline: `pending`'s rev if
 /// the caller already has a pending resolution for this host in hand (issue #22 review fix:
 /// no network lookup happens here any more), else the lock's already-recorded baseline for a
@@ -1033,13 +1343,15 @@ fn commit_tui_install(
     let pin_args = version_pin
         .as_ref()
         .map(|(v, resolved, strategy)| (*v, resolved, *strategy));
-    // The TUI/Hub commit path does not resolve project oracle-module pins (#35 phase 3 wires
-    // only the plain `install`/`upgrade` paths; see the note on `commit_install`).
+    // The TUI/Hub commit path does not resolve project or host oracle-module pins (#35 phase 3
+    // / ADR 0008 wire only the plain `install`/`upgrade` paths; see the note on
+    // `commit_install`).
     let code = commit_install(
         &host,
         &pkg,
         pin_args,
         baseline_pending.as_ref(),
+        None,
         None,
         strict,
     );
