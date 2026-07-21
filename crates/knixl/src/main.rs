@@ -647,6 +647,7 @@ fn write_baseline(host: &str, release: &str, rev: &str, options_hash: &str) {
             release: release.to_string(),
             nixpkgs_rev: rev.to_string(),
             options_hash: options_hash.to_string(),
+            modules: Vec::new(),
         },
     );
     write_lock(&ctx, &lock);
@@ -717,6 +718,7 @@ fn resolve_pending_baseline(
         release,
         nixpkgs_rev: rev,
         options_hash,
+        modules: Vec::new(),
     }))
 }
 
@@ -1832,6 +1834,7 @@ mod tests {
                 release: "24.05".into(),
                 nixpkgs_rev: "rev-a".into(),
                 options_hash: String::new(),
+                modules: Vec::new(),
             },
         );
         baselines.insert(
@@ -1840,6 +1843,7 @@ mod tests {
                 release: "24.05".into(),
                 nixpkgs_rev: "rev-b".into(),
                 options_hash: String::new(),
+                modules: Vec::new(),
             },
         );
         let hosts = vec![

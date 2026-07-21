@@ -67,6 +67,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
             oracle: OraclePin {
                 nixpkgs_rev: String::new(),
                 options_hash: String::new(),
+                modules: Vec::new(),
             },
             inputs: BTreeMap::new(),
             modules: registry.module_versions(),

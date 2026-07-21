@@ -80,6 +80,7 @@ fn gather_selects_each_hosts_own_baseline_rev_for_its_oracle() {
             release: "24.11".into(),
             nixpkgs_rev: "rev-a".into(),
             options_hash: String::new(),
+            modules: Vec::new(),
         },
     );
     let lock = Lock {
@@ -92,6 +93,7 @@ fn gather_selects_each_hosts_own_baseline_rev_for_its_oracle() {
         oracle: OraclePin {
             nixpkgs_rev: "rev-b".into(),
             options_hash: String::new(),
+            modules: Vec::new(),
         },
         inputs: BTreeMap::new(),
         modules: BTreeMap::new(),

@@ -29,6 +29,7 @@ pub struct FormatterPin {
 pub struct OraclePin {
     pub nixpkgs_rev: String,
     pub options_hash: Hash,
+    pub modules: Vec<OracleModulePin>,
 }
 
 /// The oracle rev and release a host was last generated against, recorded per host so a
@@ -38,6 +39,17 @@ pub struct HostBaseline {
     pub release: String,
     pub nixpkgs_rev: String,
     pub options_hash: Hash,
+    pub modules: Vec<OracleModulePin>,
+}
+
+/// A pin for an out-of-tree module source the oracle draws options from (e.g. disko,
+/// impermanence): recorded so those sources are reproducible alongside nixpkgs itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OracleModulePin {
+    pub name: String,
+    pub url: String,
+    pub rev: String,
+    pub attr: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +120,7 @@ impl Lock {
                     oracle = Some(OraclePin {
                         nixpkgs_rev: prop_str(node, "nixpkgs-rev")?,
                         options_hash: prop_str(node, "options-hash")?,
+                        modules: parse_oracle_modules(node)?,
                     })
                 }
                 "input" => {
@@ -143,6 +156,7 @@ impl Lock {
                                         release: prop_str(p, "release")?,
                                         nixpkgs_rev: prop_str(p, "nixpkgs-rev")?,
                                         options_hash: prop_str(p, "options-hash")?,
+                                        modules: parse_oracle_modules(p)?,
                                     });
                                 }
                                 other => {
@@ -193,10 +207,11 @@ impl Lock {
             esc(&self.formatter.version),
         ));
         s.push_str(&format!(
-            "    oracle nixpkgs-rev=\"{}\" options-hash=\"{}\"\n",
+            "    oracle nixpkgs-rev=\"{}\" options-hash=\"{}\"",
             esc(&self.oracle.nixpkgs_rev),
             esc(&self.oracle.options_hash),
         ));
+        render_oracle_modules_block(&mut s, "    ", "        ", &self.oracle.modules);
 
         s.push('\n');
         for (path, hash) in &self.inputs {
@@ -228,11 +243,12 @@ impl Lock {
             s.push_str(&format!("    host \"{}\" {{\n", esc(host)));
             if let Some(baseline) = self.baselines.get(host) {
                 s.push_str(&format!(
-                    "        baseline release=\"{}\" nixpkgs-rev=\"{}\" options-hash=\"{}\"\n",
+                    "        baseline release=\"{}\" nixpkgs-rev=\"{}\" options-hash=\"{}\"",
                     esc(&baseline.release),
                     esc(&baseline.nixpkgs_rev),
                     esc(&baseline.options_hash),
                 ));
+                render_oracle_modules_block(&mut s, "        ", "            ", &baseline.modules);
             }
             for p in self.pins.get(host).into_iter().flatten() {
                 s.push_str(&format!(
@@ -273,6 +289,35 @@ impl Lock {
     }
 }
 
+/// Closes the still-open `oracle`/`baseline` line (its trailing `\n` not yet written) with
+/// a `{ .. }` block of `oracle-module` children when `modules` is non-empty, one per pin in
+/// order, each indented by `child_indent`; the block itself closes at `parent_indent`. KDL
+/// nests children only inside braces, so this is the difference between a real child and a
+/// bare sibling line. Empty `modules` just closes the line with `\n` and no braces at all,
+/// so a lock with no module pins renders exactly as before this field existed.
+fn render_oracle_modules_block(
+    s: &mut String,
+    parent_indent: &str,
+    child_indent: &str,
+    modules: &[OracleModulePin],
+) {
+    if modules.is_empty() {
+        s.push('\n');
+        return;
+    }
+    s.push_str(" {\n");
+    for m in modules {
+        s.push_str(&format!(
+            "{child_indent}oracle-module name=\"{}\" url=\"{}\" rev=\"{}\" attr=\"{}\"\n",
+            esc(&m.name),
+            esc(&m.url),
+            esc(&m.rev),
+            esc(&m.attr),
+        ));
+    }
+    s.push_str(&format!("{parent_indent}}}\n"));
+}
+
 fn parse_output(node: &KdlNode) -> Result<OutputEntry, LockError> {
     let path = PathBuf::from(arg_str(node, 0)?);
     let body = node
@@ -301,6 +346,27 @@ fn parse_output(node: &KdlNode) -> Result<OutputEntry, LockError> {
         from: from.ok_or_else(|| LockError::Malformed("output missing `from`".into()))?,
         modules,
     })
+}
+
+/// The `oracle-module` children of an `oracle` or `baseline` node, in source order. Absent
+/// children (no `oracle-module` lines) yields an empty vec.
+fn parse_oracle_modules(node: &KdlNode) -> Result<Vec<OracleModulePin>, LockError> {
+    let Some(body) = node.children() else {
+        return Ok(Vec::new());
+    };
+    body.nodes()
+        .iter()
+        .filter(|child| child.name().value() == "oracle-module")
+        .map(|child| {
+            let name = arg_str(child, 0).or_else(|_| prop_str(child, "name"))?;
+            Ok(OracleModulePin {
+                name,
+                url: prop_str(child, "url")?,
+                rev: prop_str(child, "rev")?,
+                attr: prop_str(child, "attr")?,
+            })
+        })
+        .collect()
 }
 
 fn prop_str(node: &KdlNode, key: &str) -> Result<String, LockError> {
@@ -391,6 +457,7 @@ mod tests {
             oracle: OraclePin {
                 nixpkgs_rev: "a1b2c3d".into(),
                 options_hash: "blake3:77de".into(),
+                modules: vec![],
             },
             inputs,
             modules,
@@ -598,6 +665,46 @@ mod tests {
 }
 "#;
         assert!(Lock::parse(src).is_err());
+    }
+
+    #[test]
+    fn oracle_module_pins_round_trip() {
+        let mut lock = sample();
+        lock.oracle.modules = vec![OracleModulePin {
+            name: "disko".into(),
+            url: "https://github.com/nix-community/disko".into(),
+            rev: "abc".into(),
+            attr: "default".into(),
+        }];
+        lock.baselines.insert(
+            "web".to_string(),
+            HostBaseline {
+                release: "25.05".into(),
+                nixpkgs_rev: "abc123".into(),
+                options_hash: "blake3:opts".into(),
+                modules: vec![OracleModulePin {
+                    name: "impermanence".into(),
+                    url: "https://github.com/nix-community/impermanence".into(),
+                    rev: "def".into(),
+                    attr: "nixosModules.impermanence".into(),
+                }],
+            },
+        );
+        // A rendered host block, whether reached via `baselines` or `pins`, always parses
+        // back with a (possibly empty) `pins` entry for that host.
+        lock.pins.insert("web".to_string(), vec![]);
+
+        let text = lock.render();
+        let back = Lock::parse(&text).expect("parse");
+        assert_eq!(back, lock);
+        assert!(text.contains("oracle-module name=\"disko\""));
+        assert!(text.contains("oracle-module name=\"impermanence\""));
+    }
+
+    #[test]
+    fn a_lock_without_module_pins_renders_unchanged() {
+        let text = sample().render();
+        assert!(!text.contains("oracle-module"));
     }
 
     #[test]
