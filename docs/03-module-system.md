@@ -48,6 +48,7 @@ State the boundary in contributor docs on day one, or declarative modules will q
 
 - substitute inputs into paths and values,
 - repeat a child into a list (`collect`) or into structure (`for-each`),
+- fold a repeated child into a list of attribute sets (`list ... from`),
 - gate a block on an input flag (`when-flag`, generation-time),
 - gate a block on a runtime `config.*` condition (`when-config`, emitted as `lib.mkIf`).
 

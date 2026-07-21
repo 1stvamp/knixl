@@ -2,14 +2,15 @@
 
 The substitution grammar for declarative modules. Parsed once from a module's `emit { ... }` block into a small AST, then interpreted per-node against a bindings tree built from the validated input. Full types in `crates/knixl-modules/src/template.rs`.
 
-## Four statement forms
+## Five statement forms
 
-Matching exactly the boundary in docs/03 (substitute, repeat-into-list, gate-on-flag, gate-at-runtime):
+Matching exactly the boundary in docs/03 (substitute, repeat-into-list, fold-into-list-of-attrsets, gate-on-flag, gate-at-runtime):
 
 - `set <path> <value>` : assign a value into an option path.
 - `when-flag "<flag>" { ... }` : generation-time gate on a bool input. Includes or drops its body.
 - `when-config "<cond>" { ... }` : runtime gate. Always emits its body, wrapping each assignment in `lib.mkIf (<cond>) <value>`. The condition is raw Nix off `config.*` with `{lookup}` interpolation (dry-checked at load like a `set` path); the Nix expression itself is opaque and unvalidated. Nested `when-config` conjoin: `(A) && (B)`.
 - `for-each "<var>" in "<repeated-child>" { ... }` : iterate a repeated child, binding `<var>` per item, in KDL source order.
+- `list "<path>" from "<repeated-child>" { set "<attr>" <value> ... }` : fold a repeated child into a list of attribute sets (`[ { ... } { ... } ]`) at `<path>`, one element per child in KDL source order. The child name is the loop binding (`from "network"` binds `{network.field}`). Each element is built from inner `set` statements (relative attr paths, so nested and quoted keys like `config."ipv4.address"` work), optionally gated by `when-flag` (generation-time) or `when-config` (which wraps that attr's value in `lib.mkIf`). Two inner sets writing the same path is an error.
 
 ## Values
 

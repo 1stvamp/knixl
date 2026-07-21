@@ -1,6 +1,6 @@
 //! EmitTemplate: the substitution grammar for declarative modules. Parsed once from a
 //! module's `emit { }` block, interpreted per-node against a bindings tree built from the
-//! validated input. Four statement forms (set, when-flag, when-config, for-each). SPEC-GRADE SKETCH.
+//! validated input. Five statement forms (set, when-flag, when-config, for-each, list). SPEC-GRADE SKETCH.
 
 use crate::{Bucket, Child, Field, LowerError, LowerOutput, NodeSchema, Unit, ValueTy};
 use knixl_ir::{Assignment, AttrKey, AttrPath, NixExpr, RawNix};
@@ -28,6 +28,11 @@ pub enum Stmt {
         source: String,
         body: Vec<Stmt>,
     }, // binds <var> per item
+    List {
+        path: PathTemplate,
+        source: String,
+        body: Vec<Stmt>,
+    }, // fold a repeated child into a list of attribute sets
 }
 
 pub struct PathTemplate(pub Vec<SegmentTemplate>);
@@ -250,6 +255,34 @@ impl EmitTemplate {
                         loops.pop();
                     }
                 }
+                Stmt::List { path, source, body } => {
+                    let mut elems = Vec::new();
+                    for item in resolve_list(source, b)? {
+                        loops.push(source, item); // the child name is the loop binding
+                        let mut elem_units = Vec::new();
+                        let res = self.run(body, b, loops, None, &mut elem_units);
+                        loops.pop();
+                        res?;
+                        elems.push(fold_units_into_attrset(elem_units)?);
+                    }
+                    let assignment = Assignment {
+                        path: path.interpret(b, loops)?,
+                        value: NixExpr::List(elems),
+                        priority: None,
+                        condition: cond.map(|c| {
+                            NixExpr::Raw(RawNix {
+                                src: c.to_string(),
+                                span: None,
+                            })
+                        }),
+                        doc: None,
+                    };
+                    out.push(Unit {
+                        bucket: Bucket::Default,
+                        assignment,
+                        module: String::new(),
+                    });
+                }
             }
         }
         Ok(())
@@ -311,7 +344,9 @@ fn interp_parts(parts: &[StrPart], b: &Bindings, loops: &LoopScopes) -> Result<S
 }
 
 fn resolve_flag(flag: &str, b: &Bindings, loops: &LoopScopes) -> Result<bool, LowerError> {
-    match Lookup(vec![flag.to_string()]).resolve(b, loops)? {
+    // A flag may be a dotted lookup (e.g. `network.managed` inside a `list` body), so split
+    // it the same way every other lookup is split.
+    match Lookup(flag.split('.').map(str::to_string).collect()).resolve(b, loops)? {
         Scalar::Bool(v) => Ok(*v),
         _ => Err(LowerError::Other(format!("`{flag}` is not a boolean flag"))),
     }
@@ -325,6 +360,85 @@ fn resolve_list<'a>(source: &str, b: &'a Bindings) -> Result<&'a [Binding], Lowe
         ))),
         None => Ok(&[]), // absent repeated child => no items
     }
+}
+
+enum AttrNode {
+    Leaf(NixExpr),
+    Branch(std::collections::BTreeMap<AttrKey, AttrNode>),
+}
+
+fn attr_key_str(k: &AttrKey) -> String {
+    match k {
+        AttrKey::Ident(s) | AttrKey::Quoted(s) => s.clone(),
+    }
+}
+
+fn insert_attr_path(
+    map: &mut std::collections::BTreeMap<AttrKey, AttrNode>,
+    path: &[AttrKey],
+    val: NixExpr,
+) -> Result<(), LowerError> {
+    let (first, rest) = path
+        .split_first()
+        .ok_or_else(|| LowerError::Other("empty attr path in a list element".into()))?;
+    if rest.is_empty() {
+        if map.contains_key(first) {
+            return Err(LowerError::Other(format!(
+                "duplicate attr `{}` in a list element",
+                attr_key_str(first)
+            )));
+        }
+        map.insert(first.clone(), AttrNode::Leaf(val));
+    } else {
+        let entry = map
+            .entry(first.clone())
+            .or_insert_with(|| AttrNode::Branch(std::collections::BTreeMap::new()));
+        match entry {
+            AttrNode::Branch(inner) => insert_attr_path(inner, rest, val)?,
+            AttrNode::Leaf(_) => {
+                return Err(LowerError::Other(format!(
+                    "attr `{}` is both a value and a set in a list element",
+                    attr_key_str(first)
+                )))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn attr_node_to_expr(map: std::collections::BTreeMap<AttrKey, AttrNode>) -> NixExpr {
+    NixExpr::AttrSet(
+        map.into_iter()
+            .map(|(k, n)| {
+                let v = match n {
+                    AttrNode::Leaf(v) => v,
+                    AttrNode::Branch(m) => attr_node_to_expr(m),
+                };
+                (k, v)
+            })
+            .collect(),
+    )
+}
+
+/// Fold one list element's relative-path assignments into a nested attribute set. A conditioned
+/// assignment (from an inner `when-config`) has its value wrapped in `lib.mkIf (<cond>) <value>`.
+fn fold_units_into_attrset(units: Vec<Unit>) -> Result<NixExpr, LowerError> {
+    let mut root = std::collections::BTreeMap::new();
+    for u in units {
+        let a = u.assignment;
+        let val = match a.condition {
+            Some(cond) => NixExpr::Apply(
+                Box::new(NixExpr::Select(
+                    Box::new(NixExpr::Ref("lib".into())),
+                    vec!["mkIf".into()],
+                )),
+                vec![cond, a.value],
+            ),
+            None => a.value,
+        };
+        insert_attr_path(&mut root, &a.path.0, val)?;
+    }
+    Ok(attr_node_to_expr(root))
 }
 
 fn scalar_from(v: &kdl::KdlValue) -> Scalar {
@@ -373,6 +487,11 @@ fn binding_for_child(child: &Child, node: &kdl::KdlNode) -> Binding {
     for f in &child.props {
         if let Some(v) = node.get(f.name.as_str()) {
             map.insert(f.name.clone(), Binding::Scalar(scalar_from(v)));
+        } else if matches!(f.ty, ValueTy::Bool) && !f.required {
+            // An absent *optional* bool prop defaults to false, so a `when-flag` on it
+            // inside a `list`/`for-each` body has something to resolve. A required prop is
+            // left absent so its lookup still errors at generate (no silent fallback).
+            map.insert(f.name.clone(), Binding::Scalar(Scalar::Bool(false)));
         }
     }
     Binding::Scope(map)
@@ -609,6 +728,28 @@ fn parse_stmt(n: &kdl::KdlNode) -> Result<Stmt, LowerError> {
                 body: parse_stmts(n.children())?,
             })
         }
+        "list" => {
+            // `list "<path>" from "<source>"`: the bare `from` is noise; take first + last.
+            let args: Vec<String> = n
+                .entries()
+                .iter()
+                .filter(|e| e.name().is_none())
+                .filter_map(|e| e.value().as_string().map(str::to_string))
+                .collect();
+            let path = args
+                .first()
+                .cloned()
+                .ok_or_else(|| LowerError::Other("`list` missing path".into()))?;
+            let source = args
+                .last()
+                .cloned()
+                .ok_or_else(|| LowerError::Other("`list` missing source".into()))?;
+            Ok(Stmt::List {
+                path: parse_path(&path),
+                source,
+                body: parse_stmts(n.children())?,
+            })
+        }
         other => Err(LowerError::Other(format!(
             "unknown emit statement `{other}`"
         ))),
@@ -816,7 +957,8 @@ fn check_stmts<'a>(
                 }
             }
             Stmt::WhenFlag { flag, body } => {
-                expect_scalar(std::slice::from_ref(flag), shapes, loops, errors);
+                let segs: Vec<String> = flag.split('.').map(str::to_string).collect();
+                expect_scalar(&segs, shapes, loops, errors);
                 check_stmts(body, shapes, loops, errors);
             }
             Stmt::WhenConfig { cond, body } => {
@@ -837,6 +979,26 @@ fn check_stmts<'a>(
                     Ok(_) => errors.push(format!(
                         "for-each source `{source}` is not a repeated child"
                     )),
+                    Err(e) => errors.push(e),
+                }
+            }
+            Stmt::List { path, source, body } => {
+                for seg in &path.0 {
+                    match seg {
+                        SegmentTemplate::Interp(lk) => expect_scalar(&lk.0, shapes, loops, errors),
+                        SegmentTemplate::QuotedLit(t) => {
+                            check_str_lookups(t, shapes, loops, errors)
+                        }
+                        SegmentTemplate::Ident(_) => {}
+                    }
+                }
+                match lookup_shape(std::slice::from_ref(source), shapes, loops) {
+                    Ok(Shape::List(inner)) => {
+                        loops.push((source.as_str(), inner));
+                        check_stmts(body, shapes, loops, errors);
+                        loops.pop();
+                    }
+                    Ok(_) => errors.push(format!("list source `{source}` is not a repeated child")),
                     Err(e) => errors.push(e),
                 }
             }
@@ -2174,5 +2336,179 @@ mod tests {
             "migrations still preserved: {out}"
         );
         validate_manifest(&out).expect("valid");
+    }
+
+    fn networks_module() -> DeclarativeModule {
+        let manifest = "module name=\"net\" version=\"0.1.0\" {\n    claims-node \"net\"\n    schema {\n        child \"network\" repeated=#true {\n            prop \"name\" type=\"string\" required=#true\n            prop \"kind\" type=\"string\" required=#true\n            prop \"ipv4\" type=\"string\" required=#true\n        }\n    }\n    emit {\n        list \"virtualisation.incus.preseed.networks\" from \"network\" {\n            set \"name\" \"{network.name}\"\n            set \"type\" \"{network.kind}\"\n            set \"config.\\\"ipv4.address\\\"\" \"{network.ipv4}\"\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        DeclarativeModule::from_kdl(&doc, std::path::Path::new("net")).expect("loads")
+    }
+
+    #[test]
+    fn list_folds_a_repeated_child_into_a_list_of_attrsets() {
+        let m = networks_module();
+        let n = node("net {\n    network name=\"incusbr0\" kind=\"bridge\" ipv4=\"auto\"\n    network name=\"br1\" kind=\"macvlan\" ipv4=\"none\"\n}");
+        let out = lower(&m, &n);
+        match find(&out, "virtualisation.incus.preseed.networks") {
+            Some(NixExpr::List(items)) => {
+                assert_eq!(items.len(), 2, "one element per network");
+                match &items[0] {
+                    NixExpr::AttrSet(map) => {
+                        assert!(
+                            matches!(map.get(&AttrKey::Ident("name".into())), Some(NixExpr::Str(s)) if s == "incusbr0")
+                        );
+                        assert!(
+                            matches!(map.get(&AttrKey::Ident("type".into())), Some(NixExpr::Str(s)) if s == "bridge")
+                        );
+                        // nested + quoted key: config."ipv4.address" = "auto"
+                        match map.get(&AttrKey::Ident("config".into())) {
+                            Some(NixExpr::AttrSet(cfg)) => assert!(
+                                matches!(cfg.get(&AttrKey::Quoted("ipv4.address".into())), Some(NixExpr::Str(s)) if s == "auto")
+                            ),
+                            other => panic!("config = {other:?}"),
+                        }
+                    }
+                    other => panic!("element 0 = {other:?}"),
+                }
+            }
+            other => panic!("networks = {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_preserves_source_order() {
+        let m = networks_module();
+        let n = node("net {\n    network name=\"a\" kind=\"bridge\" ipv4=\"1\"\n    network name=\"b\" kind=\"bridge\" ipv4=\"2\"\n}");
+        let out = lower(&m, &n);
+        let names: Vec<String> = match find(&out, "virtualisation.incus.preseed.networks") {
+            Some(NixExpr::List(items)) => items
+                .iter()
+                .map(|e| match e {
+                    NixExpr::AttrSet(m) => match m.get(&AttrKey::Ident("name".into())) {
+                        Some(NixExpr::Str(s)) => s.clone(),
+                        _ => String::new(),
+                    },
+                    _ => String::new(),
+                })
+                .collect(),
+            other => panic!("networks = {other:?}"),
+        };
+        assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn list_emits_a_list_of_attrsets_and_is_deterministic() {
+        use knixl_ir::{Emit, Writer};
+        let m = networks_module();
+        let n = node("net {\n    network name=\"x\" kind=\"bridge\" ipv4=\"auto\"\n}");
+        let render = || {
+            let out = lower(&m, &n);
+            let a = out
+                .units
+                .iter()
+                .map(|u| &u.assignment)
+                .find(|a| path_str(a) == "virtualisation.incus.preseed.networks")
+                .unwrap()
+                .clone();
+            let mut w = Writer::new();
+            a.emit(&mut w);
+            w.into_string()
+        };
+        let text = render();
+        assert!(text.contains("= ["), "renders a list: {text}");
+        assert!(
+            text.contains("name = \"x\""),
+            "renders the element attr: {text}"
+        );
+        assert!(
+            text.contains("\"ipv4.address\""),
+            "renders the quoted nested key: {text}"
+        );
+        assert_eq!(text, render(), "byte-identical on a second render");
+    }
+
+    #[test]
+    fn list_with_an_absent_child_is_empty() {
+        let m = networks_module();
+        let out = lower(&m, &node("net"));
+        match find(&out, "virtualisation.incus.preseed.networks") {
+            Some(NixExpr::List(items)) => assert!(items.is_empty()),
+            other => panic!("networks = {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_when_flag_drops_an_inner_attr() {
+        let manifest = "module name=\"net\" version=\"0.1.0\" {\n    claims-node \"net\"\n    schema {\n        child \"network\" repeated=#true {\n            prop \"name\" type=\"string\" required=#true\n            prop \"managed\" type=\"bool\"\n        }\n    }\n    emit {\n        list \"a.networks\" from \"network\" {\n            set \"name\" \"{network.name}\"\n            when-flag \"network.managed\" {\n                set \"managed\" #true\n            }\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let m = DeclarativeModule::from_kdl(&doc, std::path::Path::new("net")).expect("loads");
+        let out = lower(
+            &m,
+            &node("net {\n    network name=\"on\" managed=#true\n    network name=\"off\"\n}"),
+        );
+        match find(&out, "a.networks") {
+            Some(NixExpr::List(items)) => {
+                let has = |i: usize, k: &str| matches!(&items[i], NixExpr::AttrSet(m) if m.contains_key(&AttrKey::Ident(k.into())));
+                assert!(has(0, "managed"), "managed=true keeps the attr");
+                assert!(!has(1, "managed"), "managed absent drops the attr");
+            }
+            other => panic!("networks = {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dry_check_rejects_list_over_a_non_repeated_child() {
+        let manifest = "module name=\"bad\" version=\"0.1.0\" {\n    claims-node \"bad\"\n    schema {\n        child \"net\" type=\"string\"\n    }\n    emit {\n        list \"a.b\" from \"net\" {\n            set \"name\" \"{net}\"\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad"))
+            .err()
+            .unwrap();
+        assert!(
+            format!("{err}").contains("not a repeated child"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn list_rejects_a_duplicate_inner_attr_path() {
+        let manifest = "module name=\"dup\" version=\"0.1.0\" {\n    claims-node \"dup\"\n    schema {\n        child \"x\" repeated=#true {\n            prop \"a\" type=\"string\" required=#true\n        }\n    }\n    emit {\n        list \"p.q\" from \"x\" {\n            set \"name\" \"{x.a}\"\n            set \"name\" \"{x.a}\"\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let m = DeclarativeModule::from_kdl(&doc, std::path::Path::new("dup"))
+            .expect("loads (dup is a generate-time error)");
+        let reg = crate::Registry::new();
+        let mut diags = Vec::new();
+        let mut ctx =
+            crate::LowerCtx::new(crate::Scope { host: "h".into() }, &reg, &mut diags, vec![]);
+        let err = m
+            .lower(&node("dup {\n    x a=\"1\"\n}"), &mut ctx)
+            .err()
+            .unwrap();
+        assert!(
+            format!("{err}").contains("duplicate")
+                || format!("{err}").contains("both a value and a set"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_missing_required_bool_subfield_still_errors() {
+        // An optional bool subfield defaults to false, but a required one left absent must
+        // still error at generate (no silent fallback).
+        let manifest = "module name=\"req\" version=\"0.1.0\" {\n    claims-node \"req\"\n    schema {\n        child \"x\" repeated=#true {\n            prop \"name\" type=\"string\" required=#true\n            prop \"on\" type=\"bool\" required=#true\n        }\n    }\n    emit {\n        list \"p.q\" from \"x\" {\n            set \"name\" \"{x.name}\"\n            when-flag \"x.on\" {\n                set \"on\" #true\n            }\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let m = DeclarativeModule::from_kdl(&doc, std::path::Path::new("req")).expect("loads");
+        let reg = crate::Registry::new();
+        let mut diags = Vec::new();
+        let mut ctx =
+            crate::LowerCtx::new(crate::Scope { host: "h".into() }, &reg, &mut diags, vec![]);
+        // `on` is required but omitted on this instance: its `when-flag` lookup must error.
+        let err = m
+            .lower(&node("req {\n    x name=\"a\"\n}"), &mut ctx)
+            .err()
+            .unwrap();
+        assert!(
+            format!("{err}").contains("on"),
+            "expected a missing-field error for `on`: {err}"
+        );
     }
 }
