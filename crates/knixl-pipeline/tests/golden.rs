@@ -560,6 +560,7 @@ fn generate_prunes_pins_for_packages_no_longer_declared() {
         oracle: OraclePin {
             nixpkgs_rev: String::new(),
             options_hash: String::new(),
+            modules: Vec::new(),
         },
         inputs: std::collections::BTreeMap::new(),
         modules: std::collections::BTreeMap::new(),

@@ -4,6 +4,10 @@ Status: accepted
 
 Refines: ADR 0003 (validate against real NixOS options). Relates to: ADR 0005 (pinning).
 
+Refined by: ADR 0008 (2026-07-21): a host's baseline also carries its own out-of-tree oracle
+module pins when it declares an override, alongside the release/rev/options-hash this ADR
+added.
+
 ## Context
 
 knixl validates every emitted option path against a NixOS option set built from one

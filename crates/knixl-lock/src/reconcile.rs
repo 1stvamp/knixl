@@ -324,6 +324,7 @@ mod tests {
         OraclePin {
             nixpkgs_rev: "rev".into(),
             options_hash: "blake3:opts".into(),
+            modules: vec![],
         }
     }
     fn versions() -> Versions {
@@ -616,6 +617,7 @@ mod tests {
                 release: "25.05".into(),
                 nixpkgs_rev: "abc123".into(),
                 options_hash: "blake3:opts".into(),
+                modules: vec![],
             },
         );
         baselines.insert(
@@ -624,6 +626,7 @@ mod tests {
                 release: "25.05".into(),
                 nixpkgs_rev: "def456".into(),
                 options_hash: "blake3:opts2".into(),
+                modules: vec![],
             },
         ); // host dropped its `nixpkgs` node (or the host itself)
         let lock = Lock {
@@ -643,5 +646,53 @@ mod tests {
             !next.baselines.contains_key("db"),
             "dropped nixpkgs node loses its baseline"
         );
+    }
+
+    #[test]
+    fn build_lock_next_preserves_oracle_module_pins() {
+        use crate::model::OracleModulePin;
+        let mut lock = empty_lock();
+        lock.oracle.modules = vec![OracleModulePin {
+            name: "disko".into(),
+            url: "https://github.com/nix-community/disko".into(),
+            rev: "abc".into(),
+            attr: "default".into(),
+        }];
+        // Mirrors how `gather` seeds `Versions.oracle` from the lock's own oracle entry.
+        let mut running = versions();
+        running.oracle = lock.oracle.clone();
+
+        let next = build_lock_next(&inputs_with(vec![]), &lock, &running);
+        assert_eq!(next.oracle.modules, lock.oracle.modules);
+    }
+
+    #[test]
+    fn build_lock_next_preserves_baseline_module_pins() {
+        use crate::model::{HostBaseline, OracleModulePin};
+        let mut baselines = BTreeMap::new();
+        baselines.insert(
+            "web".to_string(),
+            HostBaseline {
+                release: "25.05".into(),
+                nixpkgs_rev: "abc123".into(),
+                options_hash: "blake3:opts".into(),
+                modules: vec![OracleModulePin {
+                    name: "impermanence".into(),
+                    url: "https://github.com/nix-community/impermanence".into(),
+                    rev: "def".into(),
+                    attr: "nixosModules.impermanence".into(),
+                }],
+            },
+        );
+        let lock = Lock {
+            baselines,
+            ..empty_lock()
+        };
+
+        let mut inputs = inputs_with(vec![]);
+        inputs.declared_baselines = BTreeSet::from(["web".to_string()]);
+
+        let next = build_lock_next(&inputs, &lock, &versions());
+        assert_eq!(next.baselines["web"].modules, lock.baselines["web"].modules);
     }
 }

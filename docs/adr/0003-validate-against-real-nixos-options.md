@@ -4,6 +4,8 @@ Status: accepted
 
 Refined by: ADR 0007 (2026-07-20): the single global oracle rev this ADR pins becomes one
 rev per host, falling back to the global rev for hosts that do not declare a release.
+Refined by: ADR 0008 (2026-07-21): the option set this ADR extracts from nixpkgs alone
+extends to declared, pinned out-of-tree modules (disko, sops-nix, and similar).
 
 ## Context
 

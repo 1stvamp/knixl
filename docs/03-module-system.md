@@ -31,6 +31,16 @@ Four deliberate exclusions from the trait:
 
 They fail at different layers with different spans. Do not merge them.
 
+## A declarative module can target an out-of-tree option, once declared
+
+The oracle's option set is not always nixpkgs alone. Once `knixl.kdl` (or a host's own
+override) declares an out-of-tree module, e.g. disko or sops-nix, its options join the set a
+declarative module's `set` is checked against (ADR 0008, docs/06). A module manifest does not
+need to know or care whether a path it targets, such as `disko.devices.disk.main.device`, comes
+from nixpkgs or a declared flake: the schema/oracle split above still holds, only the oracle's
+own option set has grown. A module that targets a path from a module nobody declared still
+fails `UnknownOption`, exactly as a typo would.
+
 ## Composition lives in the container, not the leaf
 
 `host` consumes its own scalar fields and delegates the rest via `ctx.lower_children(node, &["system"])`, which dispatches each un-consumed child to its registered module and collects the outputs. Leaf modules (`postgres`, `web-service`) read their own subtree directly. Only container modules call `lower_children`.

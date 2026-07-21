@@ -80,6 +80,7 @@ fn declared_release_matching_the_lock_baseline_has_no_validation_error() {
             release: "25.05".into(),
             nixpkgs_rev: "abc123".into(),
             options_hash: String::new(),
+            modules: Vec::new(),
         },
     );
     fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();

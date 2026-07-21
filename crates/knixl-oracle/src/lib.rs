@@ -119,6 +119,15 @@ impl Oracle {
     }
 }
 
+/// `$XDG_CACHE_HOME/knixl` (falling back to `$HOME/.cache/knixl`). Shared by `cache_path`
+/// and `cache_path_for` so both key schemes land in the same directory.
+fn cache_dir() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
+    Some(base.join("knixl"))
+}
+
 /// Where a fetched options.json lives for a given nixpkgs rev:
 /// `$XDG_CACHE_HOME/knixl/options-<rev>.json` (falling back to `$HOME/.cache`). Returns
 /// None for an empty rev or when no cache/home directory can be determined.
@@ -126,10 +135,48 @@ pub fn cache_path(rev: &str) -> Option<std::path::PathBuf> {
     if rev.is_empty() {
         return None;
     }
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
-    Some(base.join("knixl").join(format!("options-{rev}.json")))
+    Some(cache_dir()?.join(format!("options-{rev}.json")))
+}
+
+/// The canonical, order-sensitive string for an effective set (a nixpkgs rev plus module
+/// pins): `rev`, then each module as `url@rev#attr`, one per line, in slice order.
+fn effective_set_key(rev: &str, modules: &[(String, String, String)]) -> String {
+    let mut key = rev.to_string();
+    for (url, module_rev, attr) in modules {
+        key.push('\n');
+        key.push_str(url);
+        key.push('@');
+        key.push_str(module_rev);
+        key.push('#');
+        key.push_str(attr);
+    }
+    key
+}
+
+/// The blake3 hash of an effective set (nixpkgs rev plus module pins). Order-sensitive: two
+/// module lists with the same entries in a different order hash differently, since a
+/// different declaration order can change how later modules override earlier ones.
+pub fn effective_hash(rev: &str, modules: &[(String, String, String)]) -> String {
+    // blake3 directly, so the oracle stays a leaf library (no dep on knixl-nix, per the crate
+    // graph in CLAUDE.md). Same "blake3:<hex>" form knixl-nix produces.
+    let h = blake3::hash(effective_set_key(rev, modules).as_bytes());
+    format!("blake3:{}", h.to_hex())
+}
+
+/// Cache path for an effective set: the rev-only path (base compat, matches `cache_path`)
+/// when `modules` is empty, else `options-<effective-hash>.json` under the same cache
+/// directory. The hash's `blake3:` prefix is stripped before use as a filename, since blake3
+/// hex digits alone are already filesystem-safe.
+pub fn cache_path_for(
+    rev: &str,
+    modules: &[(String, String, String)],
+) -> Option<std::path::PathBuf> {
+    if modules.is_empty() {
+        return cache_path(rev);
+    }
+    let hash = effective_hash(rev, modules);
+    let hex = hash.strip_prefix("blake3:").unwrap_or(&hash);
+    Some(cache_dir()?.join(format!("options-{hex}.json")))
 }
 
 fn value_kind(v: &NixExpr) -> String {

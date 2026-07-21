@@ -11,6 +11,7 @@
 
 pub mod gather;
 pub mod install;
+pub mod project;
 pub mod strategy;
 
 pub use strategy::{commit_mix_test_expr, override_test_expr, select_strategy, SelectError};

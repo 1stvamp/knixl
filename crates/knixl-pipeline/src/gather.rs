@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use knixl_lock::model::{FormatterPin, OraclePin};
+use knixl_lock::model::{FormatterPin, OracleModulePin, OraclePin};
 use knixl_lock::reconcile::{DiskState, ExpectedFile, Inputs, Versions};
 use knixl_lock::Lock;
 use knixl_modules::builtin::register_builtins;
@@ -67,6 +67,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
             oracle: OraclePin {
                 nixpkgs_rev: String::new(),
                 options_hash: String::new(),
+                modules: Vec::new(),
             },
             inputs: BTreeMap::new(),
             modules: registry.module_versions(),
@@ -76,12 +77,20 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         },
     };
 
-    // Resolve each host's oracle option set (issue #22). KNIXL_OPTIONS_JSON wins (explicit
-    // override, and the path tests use): every host maps to that one options file. Otherwise
-    // each host's rev is its lock baseline if declared, else the lock's default nixpkgs rev,
-    // and the set cached for that rev validates it. If nothing is cached for a host's rev, that
-    // host is simply absent from the map: generation proceeds without option checks for it
-    // (best-effort, now per host rather than project-wide).
+    // Which hosts declare their own `oracle-modules` override (ADR 0008): a host with one
+    // replaces the project default rather than falling back to it, but ONLY when it also
+    // carries a baseline to store the resolved pins in (checked below, alongside the
+    // unresolved-release check).
+    let declared_oracle_hosts = declared_oracle_module_hosts(&hosts);
+
+    // Resolve each host's oracle option set (issue #22, extended by #35/ADR 0008 to the
+    // augmented set: nixpkgs plus declared out-of-tree module pins). KNIXL_OPTIONS_JSON wins
+    // (explicit override, and the path tests use): every host maps to that one options file.
+    // Otherwise each host's rev is its lock baseline if declared, else the lock's default
+    // nixpkgs rev; its module pins are its own baseline's if it declares an override, else the
+    // project's `oracle.modules`; the set cached for that effective (rev, pins) key validates
+    // it. If nothing is cached for a host's effective set, that host is simply absent from the
+    // map: generation proceeds without option checks for it (best-effort, per host).
     let names = host_names(&hosts);
     let oracles: BTreeMap<String, knixl_oracle::Oracle> = match std::env::var("KNIXL_OPTIONS_JSON")
     {
@@ -96,14 +105,25 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         Err(_) => names
             .iter()
             .filter_map(|n| {
-                let rev = lock
-                    .baselines
-                    .get(n)
+                let baseline = lock.baselines.get(n);
+                let rev = baseline
                     .map(|b| b.nixpkgs_rev.as_str())
                     .unwrap_or(&lock.oracle.nixpkgs_rev);
-                knixl_oracle::Oracle::from_rev_cache(rev)
+                let modules: &[OracleModulePin] = if declared_oracle_hosts.contains(n) {
+                    baseline.map(|b| b.modules.as_slice()).unwrap_or(&[])
+                } else {
+                    &lock.oracle.modules
+                };
+                let tuples: Vec<(String, String, String)> = modules
+                    .iter()
+                    .map(|m| (m.url.clone(), m.rev.clone(), m.attr.clone()))
+                    .collect();
+                let path = knixl_oracle::cache_path_for(rev, &tuples)?;
+                if !path.is_file() {
+                    return None;
+                }
+                knixl_oracle::Oracle::from_options_json(&path)
                     .ok()
-                    .flatten()
                     .map(|o| (n.clone(), o))
             })
             .collect(),
@@ -150,6 +170,17 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         if !resolved {
             validation_errors.push(format!(
                 "host \"{host}\": nixpkgs release \"{release}\" is not resolved: run knixl upgrade"
+            ));
+        }
+    }
+
+    // ADR 0008: a host may declare its own `oracle-modules` override only alongside a
+    // declared `nixpkgs release=` (that baseline is where the lock carries its resolved
+    // pins); one with no declared release has nowhere to store them.
+    for host in &declared_oracle_hosts {
+        if !declared_baselines.contains_key(host) {
+            validation_errors.push(format!(
+                "host \"{host}\": oracle-modules requires a declared nixpkgs release"
             ));
         }
     }
@@ -270,6 +301,31 @@ pub fn declared_baselines(hosts: &[HostSource]) -> BTreeMap<String, String> {
             };
             if let Some(release) = knixl_kdl::child_prop_str(node, "nixpkgs", "release") {
                 out.insert(name, release);
+            }
+        }
+    }
+    out
+}
+
+/// Hosts that declare their own `oracle-modules` block (ADR 0008), scanned straight from the
+/// gathered KDL, mirroring `declared_baselines`. Present for a host with a block even if it is
+/// explicitly empty (that is still a real override, distinct from declaring no block at all);
+/// a host with no block is simply absent.
+pub fn declared_oracle_module_hosts(hosts: &[HostSource]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for host in hosts {
+        let Ok(doc) = knixl_kdl::parse(&host.src) else {
+            continue;
+        };
+        for node in doc.nodes() {
+            if node.name().value() != "host" {
+                continue;
+            }
+            let Some(name) = crate::first_arg_str(node) else {
+                continue;
+            };
+            if crate::project::parse_host_oracle_modules(&host.src).is_some() {
+                out.insert(name);
             }
         }
     }
