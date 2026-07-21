@@ -867,3 +867,285 @@ fn generate_writes_files_then_check_is_clean() {
     );
     let _ = fs::remove_dir_all(&root);
 }
+
+/// Writes a project-level `knixl.kdl` declaring one `oracle-modules` entry (#35 phase 3).
+fn declare_project_oracle_module(root: &Path, name: &str, flake: &str) {
+    fs::write(
+        root.join("knixl.kdl"),
+        format!("oracle-modules {{\n    module \"{name}\" flake=\"{flake}\"\n}}\n"),
+    )
+    .unwrap();
+}
+
+/// #35 phase 3: `install` resolves a project's declared `oracle-modules` (via
+/// `KNIXL_MODULE_RESOLVER`, mirroring the baseline resolver shim) and records the pin in the
+/// lock, in the same committed step as the package install.
+#[test]
+fn install_with_a_declared_oracle_module_resolves_and_writes_the_pin() {
+    let root = temp_project("install-oracle-module");
+    declare_project_oracle_module(&root, "disko", "github:nix-community/disko");
+
+    let ok_eval = nix_shim("oracle-module-eval", true); // package resolves + parses
+    let module_resolver = resolver_shim("oracle-module-rev", "deadbeef", "", 0);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "ripgrep", "--host", "web", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &ok_eval)
+        .env("KNIXL_MODULE_RESOLVER", &module_resolver)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("disko") && stdout.contains("deadbeef"),
+        "status line: {stdout}"
+    );
+
+    let lock = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert!(
+        lock.contains("oracle-module name=\"disko\""),
+        "module pin recorded: {lock}"
+    );
+    assert!(
+        lock.contains("url=\"https://github.com/nix-community/disko\""),
+        "resolved url recorded: {lock}"
+    );
+    assert!(
+        lock.contains("rev=\"deadbeef\""),
+        "resolved rev recorded: {lock}"
+    );
+    assert!(
+        lock.contains("attr=\"default\""),
+        "default attr recorded: {lock}"
+    );
+
+    let _ = fs::remove_file(&ok_eval);
+    let _ = fs::remove_file(&module_resolver);
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// #35 phase 3: `plan` stays offline. It must never invoke the module resolver (the shim
+/// below fails loudly if it is ever run) nor write a module pin to the lock, even though the
+/// project declares one.
+#[test]
+fn plan_does_not_resolve_or_write_a_declared_oracle_module() {
+    let root = temp_project("plan-oracle-module");
+    declare_project_oracle_module(&root, "disko", "github:nix-community/disko");
+
+    let never_called = resolver_shim("plan-oracle-module-never", "", "should not be called", 1);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["plan"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_MODULE_RESOLVER", &never_called)
+        .output()
+        .expect("run knixl plan");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lock_path = root.join("knixl.lock.kdl");
+    if lock_path.exists() {
+        let lock = fs::read_to_string(&lock_path).unwrap();
+        assert!(
+            !lock.contains("oracle-module"),
+            "plan must not resolve or write module pins: {lock}"
+        );
+    }
+
+    let _ = fs::remove_file(&never_called);
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// #35 phase 3: `upgrade --yes` resolves and commits a project's declared `oracle-modules`,
+/// mirroring `upgrade_with_yes_writes_a_pending_baseline`.
+#[test]
+fn upgrade_with_yes_writes_a_pending_oracle_module() {
+    let root = temp_project("upgrade-oracle-module");
+    assert_eq!(knixl(&root, &["generate"]).status.code(), Some(0));
+    declare_project_oracle_module(&root, "disko", "github:nix-community/disko");
+
+    let module_resolver = resolver_shim("upgrade-oracle-module-rev", "deadbeef", "", 0);
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["upgrade", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_MODULE_RESOLVER", &module_resolver)
+        .output()
+        .expect("run knixl upgrade --yes");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lock = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert!(
+        lock.contains("oracle-module name=\"disko\""),
+        "module pin recorded: {lock}"
+    );
+    assert!(
+        lock.contains("rev=\"deadbeef\""),
+        "resolved rev recorded: {lock}"
+    );
+
+    let _ = fs::remove_file(&module_resolver);
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// #35 phase 3 review fix (finding 1): a project that deletes its declared `oracle-modules`
+/// block must GC the lock's stale pins, not leave them forever. `resolve_pending_project_modules`
+/// used to short-circuit to "nothing pending" whenever the declared set was empty, before ever
+/// comparing it against what the lock already held. Mirrors
+/// `upgrade_with_yes_writes_a_pending_oracle_module`, but removes the declaration on a second
+/// run instead of adding one, and asserts the previously recorded pin is gone.
+#[test]
+fn upgrade_with_yes_clears_oracle_modules_when_the_declaration_is_removed() {
+    let root = temp_project("upgrade-oracle-module-removed");
+    assert_eq!(knixl(&root, &["generate"]).status.code(), Some(0));
+    declare_project_oracle_module(&root, "disko", "github:nix-community/disko");
+
+    let module_resolver = resolver_shim("upgrade-oracle-module-removed-rev", "deadbeef", "", 0);
+    let seed = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["upgrade", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_MODULE_RESOLVER", &module_resolver)
+        .output()
+        .expect("run knixl upgrade --yes (seed)");
+    assert_eq!(
+        seed.status.code(),
+        Some(0),
+        "seed upgrade: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    let lock_before = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert!(
+        lock_before.contains("oracle-module name=\"disko\""),
+        "pin seeded: {lock_before}"
+    );
+
+    // The project no longer declares any oracle modules.
+    fs::remove_file(root.join("knixl.kdl")).unwrap();
+
+    // The resolver must never be called for a removal: clearing the pins needs no network
+    // lookup, only a write of the (now empty) set.
+    let never_called = resolver_shim(
+        "upgrade-oracle-module-removed-never",
+        "",
+        "should not be called",
+        1,
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["upgrade", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_MODULE_RESOLVER", &never_called)
+        .output()
+        .expect("run knixl upgrade --yes");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lock_after = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert!(
+        !lock_after.contains("oracle-module"),
+        "stale pin GC'd after declaration removed: {lock_after}"
+    );
+
+    let _ = fs::remove_file(&module_resolver);
+    let _ = fs::remove_file(&never_called);
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// #35 phase 3 review fix (finding 3): a failed/cancelled install must RESTORE the lock's
+/// prior `oracle.modules` (the restore-prior logic in `write_oracle_modules`/
+/// `restore_oracle_modules`), never blank it and never leave the newly resolved value in its
+/// place. Mirrors `install_reverts_the_baseline_when_commit_fails_after_write_baseline`, but
+/// seeds an existing pin first, then changes the declared module set, so the revert has a
+/// genuine prior value to restore that is distinct from both "cleared" and "the new pin" --
+/// a blank-instead-of-restore bug or a restore-to-new-value bug would both pass a test that
+/// only checked for absence.
+#[test]
+fn install_reverts_the_oracle_modules_to_their_prior_value_when_commit_fails_after_write() {
+    let root = temp_project("install-oracle-module-revert");
+    assert_eq!(knixl(&root, &["generate"]).status.code(), Some(0));
+
+    // Seed a prior pin: "disko" resolved to "priorrev".
+    declare_project_oracle_module(&root, "disko", "github:nix-community/disko");
+    let seed_resolver = resolver_shim("oracle-module-revert-seed", "priorrev", "", 0);
+    let seed = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["upgrade", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_MODULE_RESOLVER", &seed_resolver)
+        .output()
+        .expect("run knixl upgrade --yes (seed)");
+    assert_eq!(
+        seed.status.code(),
+        Some(0),
+        "seed upgrade: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    let lock_before = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert!(
+        lock_before.contains("oracle-module name=\"disko\"")
+            && lock_before.contains("rev=\"priorrev\""),
+        "prior pin seeded: {lock_before}"
+    );
+
+    // Change the declared module so it no longer matches what is pinned: a fresh resolution
+    // is now pending, and it must replace (in memory) the prior pin above.
+    declare_project_oracle_module(&root, "impermanence", "github:nix-community/impermanence");
+    let new_resolver = resolver_shim("oracle-module-revert-new", "newrev", "", 0);
+    let parse_fail_eval = nix_shim_parse_fails("oracle-module-revert");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "ripgrep", "--host", "web", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &parse_fail_eval)
+        .env("KNIXL_MODULE_RESOLVER", &new_resolver)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "parse failure after the module write: {out:?}"
+    );
+
+    let kdl = fs::read_to_string(root.join("hosts/web.kdl")).unwrap();
+    assert!(!kdl.contains("ripgrep"), "kdl reverted: {kdl}");
+
+    let lock_after = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert!(
+        lock_after.contains("oracle-module name=\"disko\"")
+            && lock_after.contains("rev=\"priorrev\""),
+        "prior pin restored (not blanked, not the new value): {lock_after}"
+    );
+    assert!(
+        !lock_after.contains("impermanence") && !lock_after.contains("newrev"),
+        "new pin not left dangling after revert: {lock_after}"
+    );
+
+    let _ = fs::remove_file(&seed_resolver);
+    let _ = fs::remove_file(&new_resolver);
+    let _ = fs::remove_file(&parse_fail_eval);
+    let _ = fs::remove_dir_all(&root);
+}

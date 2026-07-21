@@ -9,7 +9,7 @@ use std::io::IsTerminal;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use knixl_lock::model::HostBaseline;
+use knixl_lock::model::{HostBaseline, OracleModulePin};
 use knixl_lock::{FileState, Plan};
 
 #[derive(Parser)]
@@ -119,9 +119,22 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             BTreeMap::new()
         };
 
-    // Plan off a lock/inputs patched with `pending` merged in, so the "not resolved: run
-    // knixl upgrade" validation error does not block the very commands that would resolve it,
-    // and `lock_next` (built from this patched lock) carries the pending baselines for
+    // #35 phase 3: the project's declared `oracle-modules` (knixl.kdl) resolve the same way,
+    // alongside the baseline pre-pass above (in memory only, never written here; see
+    // `resolve_pending_project_modules`).
+    let pending_modules: Option<Vec<OracleModulePin>> =
+        if matches!(cli.cmd, Cmd::Upgrade { .. } | Cmd::Install { .. }) {
+            match resolve_pending_project_modules(ctx) {
+                Ok(p) => p,
+                Err(code) => return code,
+            }
+        } else {
+            None
+        };
+
+    // Plan off a lock patched with `pending` merged in, so the "not resolved: run knixl
+    // upgrade" validation error does not block the very commands that would resolve it, and
+    // `lock_next` (built from this patched lock) carries the pending baselines for
     // `Cmd::Upgrade` to write verbatim. `check`/`generate`/`plan` never populate `pending`, so
     // they always plan off the on-disk lock and inputs unchanged.
     let patched_lock = (!pending.is_empty()).then(|| {
@@ -135,9 +148,28 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
     let lock_for_plan = patched_lock.as_ref().unwrap_or(&ctx.lock);
     let inputs_for_plan = patched_inputs.as_ref().unwrap_or(&ctx.inputs);
 
+    // `build_lock_next` (knixl-lock) sources the GLOBAL `oracle` pin from `running.oracle`,
+    // not from the `lock` passed to `Plan::compute` (unlike per-host `baselines`, which it
+    // takes from `lock` -- see `build_lock_next`): so `pending_modules` needs to land in a
+    // patched `Versions`, not the patched lock above, for `plan.lock_next` to carry it through
+    // to `Cmd::Upgrade`'s/`commit_install`'s write.
+    let patched_running = pending_modules
+        .as_ref()
+        .map(|pins| knixl_lock::reconcile::Versions {
+            tool: ctx.running.tool.clone(),
+            formatter: ctx.running.formatter.clone(),
+            oracle: knixl_lock::model::OraclePin {
+                nixpkgs_rev: ctx.running.oracle.nixpkgs_rev.clone(),
+                options_hash: ctx.running.oracle.options_hash.clone(),
+                modules: pins.clone(),
+            },
+            modules: ctx.running.modules.clone(),
+        });
+    let running_for_plan = patched_running.as_ref().unwrap_or(&ctx.running);
+
     // Plan::compute is pure; validation errors ride on the plan (verdict maps them to
     // the Validation exit code), so there is no fallible generation step here.
-    let plan = Plan::compute(inputs_for_plan, &ctx.disk, lock_for_plan, &ctx.running);
+    let plan = Plan::compute(inputs_for_plan, &ctx.disk, lock_for_plan, running_for_plan);
     if plan.has_validation_errors() {
         report_validation(&plan.validation_errors, cli.json);
         return Code::Validation;
@@ -200,10 +232,14 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
         }
 
         Cmd::Upgrade { yes } => {
-            // A pending baseline resolution is work to do even when every file is Clean and
-            // nothing needs ack: skip the "up to date" short-circuit so it gets previewed
-            // (and, on --yes, written) below instead of silently vanishing.
-            if !plan.requires_ack() && !plan.any(FileState::is_dirty) && pending.is_empty() {
+            // A pending baseline/module resolution is work to do even when every file is
+            // Clean and nothing needs ack: skip the "up to date" short-circuit so it gets
+            // previewed (and, on --yes, written) below instead of silently vanishing.
+            if !plan.requires_ack()
+                && !plan.any(FileState::is_dirty)
+                && pending.is_empty()
+                && pending_modules.is_none()
+            {
                 println!("already up to date");
                 return Code::Clean;
             }
@@ -214,6 +250,12 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                     println!(
                         "would resolve nixpkgs release \"{}\" for host \"{host}\" -> {}",
                         b.release, b.nixpkgs_rev,
+                    );
+                }
+                for m in pending_modules.iter().flatten() {
+                    println!(
+                        "would resolve oracle module \"{}\" ({}) -> {}",
+                        m.name, m.url, m.rev,
                     );
                 }
                 eprintln!("re-run with --yes to apply");
@@ -230,8 +272,15 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                     b.release, b.nixpkgs_rev,
                 );
             }
-            // `plan.lock_next` was built from the lock already patched with `pending` (see
-            // `run`'s planning step above), so this one write commits the baselines too.
+            for m in pending_modules.iter().flatten() {
+                println!(
+                    "resolved oracle module \"{}\" ({}) -> {}",
+                    m.name, m.url, m.rev,
+                );
+            }
+            // `plan.lock_next` was built from the lock already patched with `pending`/
+            // `pending_modules` (see `run`'s planning step above), so this one write commits
+            // the baselines and module pins too.
             write_lock(ctx, &plan.lock_next); // bump tool/module/formatter/oracle/baselines
             Code::Clean
         }
@@ -257,14 +306,16 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             build,
             no_abi_check,
             &pending,
+            pending_modules.as_deref(),
         ),
 
         Cmd::Tui => unreachable!("tui is dispatched before Ctx::load"),
     }
 }
 
-// One argument per `Cmd::Install` field, plus `ctx` and the pending-baseline map threaded
-// from `run`'s pre-pass: splitting these into a struct would obscure more than it saves here.
+// One argument per `Cmd::Install` field, plus `ctx` and the pending-baseline map/pending-module
+// list threaded from `run`'s pre-pass: splitting these into a struct would obscure more than
+// it saves here.
 #[allow(clippy::too_many_arguments)]
 fn install(
     ctx: &Ctx,
@@ -275,6 +326,7 @@ fn install(
     build: bool,
     no_abi_check: bool,
     pending: &BTreeMap<String, HostBaseline>,
+    pending_modules: Option<&[OracleModulePin]>,
 ) -> Code {
     use knixl_nix::pin::{PinError, PinResolver};
     use knixl_pipeline::install::{list_hosts, select_host};
@@ -474,12 +526,25 @@ fn install(
     let pin_args = version_pin
         .as_ref()
         .map(|(v, resolved, strategy, _)| (*v, resolved, *strategy));
-    let code = commit_install(&initial, name, pin_args, baseline_pending.as_ref(), strict);
+    let code = commit_install(
+        &initial,
+        name,
+        pin_args,
+        baseline_pending.as_ref(),
+        pending_modules,
+        strict,
+    );
     if code == Code::Clean {
         if let Some(b) = &baseline_pending {
             println!(
                 "resolved nixpkgs release \"{}\" for host \"{}\" -> {}",
                 b.release, initial.name, b.nixpkgs_rev,
+            );
+        }
+        for m in pending_modules.into_iter().flatten() {
+            println!(
+                "resolved oracle module \"{}\" ({}) -> {}",
+                m.name, m.url, m.rev
             );
         }
         if let Some((v, _, strategy, reason)) = &version_pin {
@@ -492,6 +557,10 @@ fn install(
     code
 }
 
+// `pending_modules` is `None` for the interactive/TUI install paths (#35 phase 3 only wires
+// the plain, non-interactive `install`/`upgrade` paths; the TUI's own commit path does not
+// resolve or write project oracle-module pins yet -- see `commit_tui_install`'s call site).
+#[allow(clippy::too_many_arguments)]
 fn commit_install(
     chosen: &knixl_pipeline::install::HostInfo,
     pkg: &str,
@@ -501,6 +570,7 @@ fn commit_install(
         knixl_lock::model::PinStrategy,
     )>,
     baseline_pending: Option<&HostBaseline>,
+    pending_modules: Option<&[OracleModulePin]>,
     strict: bool,
 ) -> Code {
     use knixl_pipeline::install::add_package;
@@ -524,34 +594,46 @@ fn commit_install(
         }
     };
 
-    // Record the pin and any pending baseline resolution before the versioned KDL hits disk
-    // (issue #22 review fix: a baseline resolved for this install used to be written by a
-    // pre-pass before confirmation; it is now written here, in the same committed/revertable
-    // step as the pin): `generate` treats a `package` node with a `version` prop and no
-    // matching lock pin as an error, so writing the KDL first would (briefly, but for real,
-    // since the next line's gather sees it) make the project fail to generate even on the
-    // success path.
+    // `oracle.modules` is a single project-wide list (unlike the pin/baseline, which are
+    // fresh per-host inserts): capture what it held before this pending resolution, so a
+    // revert below can restore it exactly rather than blank it out.
+    let prior_modules = pending_modules.map(|_| Ctx::load().lock.oracle.modules.clone());
+
+    // Record the pin, any pending baseline resolution, and any pending oracle-module
+    // resolution before the versioned KDL hits disk (issue #22 review fix: a baseline
+    // resolved for this install used to be written by a pre-pass before confirmation; it is
+    // now written here, in the same committed/revertable step as the pin): `generate` treats
+    // a `package` node with a `version` prop and no matching lock pin as an error, so writing
+    // the KDL first would (briefly, but for real, since the next line's gather sees it) make
+    // the project fail to generate even on the success path.
     if let Some((v, resolved, strategy)) = version_pin {
         write_pin(&chosen.name, pkg, v, resolved, strategy);
     }
     if let Some(b) = baseline_pending {
         write_baseline(&chosen.name, &b.release, &b.nixpkgs_rev, &b.options_hash);
     }
+    if let Some(pins) = pending_modules {
+        write_oracle_modules(pins);
+    }
 
     if let Err(e) = std::fs::write(&chosen.path, &draft) {
         eprintln!("knixl: {}: {e}", chosen.path.display());
-        // The pin/baseline above may already be on disk even though the KDL write failed:
-        // undo them so a failed install never leaves either dangling.
+        // The pin/baseline/modules above may already be on disk even though the KDL write
+        // failed: undo them so a failed install never leaves any of them dangling.
         if version_pin.is_some() {
             remove_pin(&chosen.name, pkg);
         }
         if baseline_pending.is_some() {
             remove_baseline(&chosen.name);
         }
+        if let Some(prior) = &prior_modules {
+            restore_oracle_modules(prior);
+        }
         return Code::Internal;
     }
-    // Undo the pin and baseline along with the KDL: both may have been written above, before
-    // the KDL hit disk, so an abort past this point must not leave either dangling in the lock.
+    // Undo the pin, baseline, and modules along with the KDL: all three may have been
+    // written above, before the KDL hit disk, so an abort past this point must not leave any
+    // of them dangling in the lock.
     let revert = || {
         let _ = std::fs::write(&chosen.path, &original);
         if version_pin.is_some() {
@@ -559,6 +641,9 @@ fn commit_install(
         }
         if baseline_pending.is_some() {
             remove_baseline(&chosen.name);
+        }
+        if let Some(prior) = &prior_modules {
+            restore_oracle_modules(prior);
         }
     };
 
@@ -665,6 +750,30 @@ fn remove_baseline(host: &str) {
     write_lock(&ctx, &lock);
 }
 
+/// Replace the lock's project-wide `oracle.modules` pins with `pins`, then write it back to
+/// disk. Unlike `write_pin`/`write_baseline` (keyed per host) this is a single, project-wide
+/// list resolved from `knixl.kdl`'s `oracle-modules` block.
+fn write_oracle_modules(pins: &[OracleModulePin]) {
+    let ctx = Ctx::load();
+    let mut lock = ctx.lock.clone();
+    lock.oracle.modules = pins.to_vec();
+    write_lock(&ctx, &lock);
+}
+
+/// Undo `write_oracle_modules`: restore the lock's `oracle.modules` to `prior` (captured by
+/// `commit_install` before it wrote the pending resolution), then write the lock back. Called
+/// on `commit_install`'s revert path, so a cancelled/failed install never leaves a module-pin
+/// change dangling. Unlike `remove_baseline` (a plain removal: a resolved baseline for a host
+/// is always a fresh insert), this restores the PRIOR value rather than clearing it, since
+/// `oracle.modules` may already have held a different (still-valid) set before this pending
+/// resolution replaced it.
+fn restore_oracle_modules(prior: &[OracleModulePin]) {
+    let ctx = Ctx::load();
+    let mut lock = ctx.lock.clone();
+    lock.oracle.modules = prior.to_vec();
+    write_lock(&ctx, &lock);
+}
+
 /// The `nixpkgs release=".."` a host's own KDL declares, if any (issue #22). Scanned
 /// straight from the file rather than the gathered project, since a target host is often
 /// resolved before (or independently of) a full `gather`.
@@ -741,6 +850,84 @@ fn resolve_pending_baselines(ctx: &Ctx) -> Result<BTreeMap<String, HostBaseline>
         }
     }
     Ok(pending)
+}
+
+/// Resolve one declared `module "<name>" flake="<ref>" [attr="<attr>"]` (project `knixl.kdl`
+/// or a host's own `oracle-modules` override) to a lock pin (#35 phase 3). `Err(Code::Validation)`
+/// on a resolver failure (including an unsupported/empty flake ref -- `ModuleResolver::lookup`
+/// refuses that before any resolver runs, so this never pins an empty rev); the message is
+/// already printed, so the caller only needs to return the code.
+fn resolve_oracle_module(
+    m: &knixl_pipeline::project::OracleModule,
+) -> Result<OracleModulePin, Code> {
+    knixl_nix::module::ModuleResolver::resolve()
+        .lookup(&m.flake)
+        .map(|r| OracleModulePin {
+            name: m.name.clone(),
+            url: r.url,
+            rev: r.rev,
+            attr: m.attr.clone(),
+        })
+        .map_err(|e| {
+            eprintln!(
+                "knixl: cannot resolve oracle module \"{}\" ({}): {e}",
+                m.name, m.flake
+            );
+            Code::Validation
+        })
+}
+
+/// Resolve a whole declared module set (project default, or a host's override), in source
+/// order. `Err` short-circuits on the first failing module (message already printed by
+/// `resolve_oracle_module`).
+fn resolve_oracle_modules(
+    modules: &[knixl_pipeline::project::OracleModule],
+) -> Result<Vec<OracleModulePin>, Code> {
+    modules.iter().map(resolve_oracle_module).collect()
+}
+
+/// Whether `existing` (the lock's currently recorded pins) already matches `declared` (a
+/// `knixl.kdl`/host `oracle-modules` block) by identity -- name, flake-derived url, and attr,
+/// in the same order -- ignoring the pinned `rev`. Mirrors `resolve_pending_baseline`'s
+/// release-string idempotency check: a declared module set that has not itself changed should
+/// not be re-resolved (and re-hit the network) on every `install`/`upgrade`, even though the
+/// upstream commit it is pinned to may have moved on since.
+fn oracle_modules_up_to_date(
+    existing: &[OracleModulePin],
+    declared: &[knixl_pipeline::project::OracleModule],
+) -> bool {
+    existing.len() == declared.len()
+        && existing.iter().zip(declared.iter()).all(|(pin, m)| {
+            pin.name == m.name
+                && pin.attr == m.attr
+                && knixl_nix::module::url_from_flake_ref(&m.flake).as_deref()
+                    == Some(pin.url.as_str())
+        })
+}
+
+/// Resolve the project's default `oracle-modules` set (`knixl.kdl`) IN MEMORY ONLY: no write
+/// (mirrors `resolve_pending_baseline`; #35 phase 3). `Ok(None)` when the project declares no
+/// `oracle-modules` block AND the lock already has none pinned, or its declared set already
+/// matches what is pinned (the idempotent skip, see `oracle_modules_up_to_date`); otherwise
+/// `Ok(Some(pins))` for the caller to plan around and decide whether to keep. A project that
+/// removes its `oracle-modules` block entirely resolves to `Ok(Some(Vec::new()))` rather than
+/// `Ok(None)` when the lock still holds pins from a prior declaration: an empty declared set is
+/// a real change (removal), and short-circuiting it to "nothing pending" would leave the stale
+/// pins in the lock forever, un-GC'd (review finding on #35 phase 3). A malformed/unreadable
+/// `knixl.kdl` is treated the same as an absent one (best-effort, matching `declared_release`'s
+/// existing tolerance for a host's own KDL) rather than surfaced as an error here: the
+/// project-config parser itself is not yet wired into `gather`'s validation (that is phase 5 of
+/// #35), so there is no other path today that would report a genuinely malformed `knixl.kdl` to
+/// the user.
+fn resolve_pending_project_modules(ctx: &Ctx) -> Result<Option<Vec<OracleModulePin>>, Code> {
+    let project = knixl_pipeline::project::parse_project(&ctx.root).unwrap_or_default();
+    if project.oracle_modules.is_empty() {
+        return Ok((!ctx.lock.oracle.modules.is_empty()).then(Vec::new));
+    }
+    if oracle_modules_up_to_date(&ctx.lock.oracle.modules, &project.oracle_modules) {
+        return Ok(None);
+    }
+    Ok(Some(resolve_oracle_modules(&project.oracle_modules)?))
 }
 
 /// The nixpkgs rev `choose_strategy` should treat as `host`'s baseline: `pending`'s rev if
@@ -846,7 +1033,16 @@ fn commit_tui_install(
     let pin_args = version_pin
         .as_ref()
         .map(|(v, resolved, strategy)| (*v, resolved, *strategy));
-    let code = commit_install(&host, &pkg, pin_args, baseline_pending.as_ref(), strict);
+    // The TUI/Hub commit path does not resolve project oracle-module pins (#35 phase 3 wires
+    // only the plain `install`/`upgrade` paths; see the note on `commit_install`).
+    let code = commit_install(
+        &host,
+        &pkg,
+        pin_args,
+        baseline_pending.as_ref(),
+        None,
+        strict,
+    );
     if code == Code::Clean {
         if let Some(b) = &baseline_pending {
             println!(

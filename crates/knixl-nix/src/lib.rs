@@ -2,6 +2,7 @@
 //! reproducibility boundary. SPEC-GRADE SKETCH.
 
 pub mod baseline;
+pub mod module;
 pub mod nixeval;
 pub mod pin;
 
