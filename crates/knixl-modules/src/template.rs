@@ -75,10 +75,13 @@ pub enum Scalar {
     Str(String),
 }
 impl Scalar {
+    /// Render this scalar as text for interpolation into a string or a dynamic attr
+    /// segment (e.g. `{cap.bytes}` where `bytes` is an int arg).
     pub fn as_str(&self) -> Result<String, LowerError> {
         match self {
             Scalar::Str(s) => Ok(s.clone()),
-            _ => Err(LowerError::Other("expected string".into())),
+            Scalar::Int(i) => Ok(i.to_string()),
+            Scalar::Bool(b) => Ok(b.to_string()),
         }
     }
 }
