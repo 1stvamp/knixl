@@ -1,0 +1,28 @@
+// A declarative knixl module: a normal login user with an optional description,
+// supplementary groups and authorised SSH keys. All stock NixOS options.
+
+module name="user" version="1.0.0" {
+    summary "A normal login user with groups and SSH authorised keys."
+    claims-node "user"
+
+    schema {
+        arg "name" type="string" required=#true doc="Login name."
+        child "description" repeated=#true \
+            doc="Full name / GECOS field. At most one." {
+            arg "text" type="string" required=#true
+        }
+        child "group" type="string" repeated=#true \
+            doc="Supplementary group, e.g. wheel."
+        child "ssh-key" type="string" repeated=#true \
+            doc="Authorised SSH public key."
+    }
+
+    emit {
+        set "users.users.{name}.isNormalUser" #true
+        set "users.users.{name}.extraGroups" (collect-opt)"group"
+        set "users.users.{name}.openssh.authorizedKeys.keys" (collect-opt)"ssh-key"
+        for-each "d" in "description" {
+            set "users.users.{name}.description" "{d.text}"
+        }
+    }
+}

@@ -269,6 +269,47 @@ fn web_file_attributes_every_contributing_module() {
 }
 
 #[test]
+fn nas_pipeline_produces_expected_structure() {
+    let files = generate_host("nas.kdl");
+    assert_eq!(files.len(), 1, "nas has no side-files");
+    let text = &files[0].text;
+    for needle in [
+        "networking.hostId = \"8425e349\"",
+        "boot.supportedFilesystems.zfs = true",
+        "boot.zfs.extraPools",
+        "services.zfs.autoScrub.enable = true",
+        "options zfs zfs_arc_max=8589934592",
+        "users.users.\"wes\".isNormalUser = true",
+        "users.users.\"wes\".description = \"Wes Mason\"",
+        "users.users.\"wes\".openssh.authorizedKeys.keys",
+        "services.openssh.settings.PasswordAuthentication = false",
+        "services.openssh.settings.KbdInteractiveAuthentication = false",
+        "services.openssh.ports",
+        "services.openssh.settings.PermitRootLogin = \"prohibit-password\"",
+    ] {
+        assert!(
+            text.contains(needle),
+            "nas.nix missing `{needle}`\n---\n{text}"
+        );
+    }
+    // openssh has no port omitted here, but the empty-collect-opt promise is unit-tested
+    // in knixl-modules; here we assert the ports line IS present because ports were given.
+}
+
+#[test]
+fn nas_file_attributes_every_contributing_module() {
+    let files = generate_host("nas.kdl");
+    let nas = &files[0];
+    for m in ["host", "zfs", "user", "openssh"] {
+        assert!(
+            nas.modules.contains(&m.to_string()),
+            "nas.nix should list {m}, got {:?}",
+            nas.modules
+        );
+    }
+}
+
+#[test]
 fn repeated_block_is_hoisted_into_a_let() {
     // shared.kdl applies the same security-headers block to two vhosts, so the block
     // is bound once and referenced twice (structure visible pre-nixfmt).

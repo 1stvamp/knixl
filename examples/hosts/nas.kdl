@@ -1,0 +1,21 @@
+host "nas" {
+    system "x86_64-linux"
+
+    zfs "8425e349" {
+        auto-scrub #true
+        extra-pool "tank"
+        arc-max-bytes 8589934592
+    }
+
+    user "wes" {
+        description "Wes Mason"
+        group "wheel"
+        ssh-key "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAExampleKeyForGoldenTest wes@nas"
+    }
+
+    openssh {
+        port 22
+        port 2222
+        permit-root "prohibit-password"
+    }
+}
