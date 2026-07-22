@@ -49,6 +49,7 @@ pub enum ValueTemplate {
     Str(Vec<StrPart>),       // "{upstream}"
     IndentStr(Vec<StrPart>), // (indent-str #""" ... """#)
     Collect(String),         // (collect "alias") -> List of that child's first arg
+    CollectOpt(String),      // (collect-opt "x") -> like Collect, but the set is dropped when empty
 }
 
 pub enum StrPart {
@@ -215,9 +216,17 @@ impl EmitTemplate {
         for st in stmts {
             match st {
                 Stmt::Set { path, value } => {
+                    let v = value.interpret(b, loops)?;
+                    // An optional collect over an absent/empty child emits nothing, so it does not
+                    // clobber a NixOS default (e.g. services.openssh.ports defaults to [ 22 ]).
+                    if matches!(value, ValueTemplate::CollectOpt(_))
+                        && matches!(&v, NixExpr::List(items) if items.is_empty())
+                    {
+                        continue;
+                    }
                     let a = Assignment {
                         path: path.interpret(b, loops)?,
-                        value: value.interpret(b, loops)?, // Collect => NixExpr::List
+                        value: v,
                         priority: None,
                         condition: cond.map(|c| {
                             NixExpr::Raw(RawNix {
@@ -310,7 +319,7 @@ impl ValueTemplate {
             ValueTemplate::Int(v) => NixExpr::Int(*v),
             ValueTemplate::Str(parts) => NixExpr::Str(interp_parts(parts, b, loops)?),
             ValueTemplate::IndentStr(parts) => NixExpr::IndentStr(interp_parts(parts, b, loops)?),
-            ValueTemplate::Collect(child) => {
+            ValueTemplate::Collect(child) | ValueTemplate::CollectOpt(child) => {
                 let mut items = Vec::new();
                 for item in resolve_list(child, b)? {
                     match item {
@@ -774,6 +783,13 @@ fn parse_value(entry: &kdl::KdlEntry) -> Result<ValueTemplate, LowerError> {
                 .ok_or_else(|| LowerError::Other("collect needs a child name".into()))?;
             Ok(ValueTemplate::Collect(child.to_string()))
         }
+        Some("collect-opt") => {
+            let child = entry
+                .value()
+                .as_string()
+                .ok_or_else(|| LowerError::Other("collect-opt needs a child name".into()))?;
+            Ok(ValueTemplate::CollectOpt(child.to_string()))
+        }
         Some("indent-str") => {
             let s = entry
                 .value()
@@ -944,7 +960,7 @@ fn check_stmts<'a>(
                             }
                         }
                     }
-                    ValueTemplate::Collect(child) => {
+                    ValueTemplate::Collect(child) | ValueTemplate::CollectOpt(child) => {
                         match lookup_shape(std::slice::from_ref(child), shapes, loops) {
                             Ok(Shape::List(_)) => {}
                             Ok(_) => {
@@ -2435,6 +2451,56 @@ mod tests {
             Some(NixExpr::List(items)) => assert!(items.is_empty()),
             other => panic!("networks = {other:?}"),
         }
+    }
+
+    #[test]
+    fn collect_opt_emits_the_list_when_present() {
+        let manifest = "module name=\"co\" version=\"0.1.0\" {\n    claims-node \"co\"\n    schema {\n        child \"item\" type=\"string\" repeated=#true\n    }\n    emit {\n        set \"a.b\" (collect-opt)\"item\"\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let m = DeclarativeModule::from_kdl(&doc, std::path::Path::new("co")).expect("loads");
+        let out = lower(&m, &node("co {\n    item \"x\"\n    item \"y\"\n}"));
+        match find(&out, "a.b") {
+            Some(NixExpr::List(items)) => assert_eq!(items.len(), 2),
+            other => panic!("a.b = {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collect_opt_emits_nothing_when_empty() {
+        let manifest = "module name=\"co\" version=\"0.1.0\" {\n    claims-node \"co\"\n    schema {\n        child \"item\" type=\"string\" repeated=#true\n    }\n    emit {\n        set \"a.b\" (collect-opt)\"item\"\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let m = DeclarativeModule::from_kdl(&doc, std::path::Path::new("co")).expect("loads");
+        let out = lower(&m, &node("co"));
+        assert!(
+            find(&out, "a.b").is_none(),
+            "empty collect-opt emits no assignment"
+        );
+    }
+
+    #[test]
+    fn collect_still_emits_empty_list_when_empty() {
+        // Guard the non-breaking promise: plain (collect) is unchanged.
+        let manifest = "module name=\"c\" version=\"0.1.0\" {\n    claims-node \"c\"\n    schema {\n        child \"item\" type=\"string\" repeated=#true\n    }\n    emit {\n        set \"a.b\" (collect)\"item\"\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let m = DeclarativeModule::from_kdl(&doc, std::path::Path::new("c")).expect("loads");
+        let out = lower(&m, &node("c"));
+        match find(&out, "a.b") {
+            Some(NixExpr::List(items)) => assert!(items.is_empty()),
+            other => panic!("a.b = {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dry_check_rejects_collect_opt_over_a_non_repeated_child() {
+        let manifest = "module name=\"bad\" version=\"0.1.0\" {\n    claims-node \"bad\"\n    schema {\n        child \"item\" type=\"string\"\n    }\n    emit {\n        set \"a.b\" (collect-opt)\"item\"\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let err = DeclarativeModule::from_kdl(&doc, std::path::Path::new("bad"))
+            .err()
+            .unwrap();
+        assert!(
+            format!("{err}").contains("not a repeated child"),
+            "got: {err}"
+        );
     }
 
     #[test]

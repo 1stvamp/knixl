@@ -18,6 +18,10 @@ Matching exactly the boundary in docs/03 (substitute, repeat-into-list, fold-int
 - interpolated string: `"{upstream}"`, parts are literal or `{lookup}`
 - indent string: `(indent-str)#""" ... """#`, interpolated, emits a `'' ... ''` block
 - `(collect)"child"` : fold a repeated child's first arg into a `List`. The only value form that reads a repeated child directly into a flat list. Use `for-each` when each item must produce distinct structure (a path per item) rather than a flat list. (Both are KDL type annotations: `(type)value`.)
+- `(collect-opt)"child"` : like `(collect)`, but the whole `set` is omitted when the
+  child is empty, rather than emitting `[ ]`. Use it for an optional list-valued option
+  whose absence should leave the NixOS default in place (e.g. `services.openssh.ports`,
+  which defaults to `[ 22 ]`). `(collect)` still emits `[ ]` when empty.
 
 ## Paths
 
