@@ -389,6 +389,15 @@ fn db_matches_golden() {
 }
 
 #[test]
+fn nas_matches_golden() {
+    if !formatter_available() {
+        eprintln!("skipping nas_matches_golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
+    assert_host_matches("nas.kdl");
+}
+
+#[test]
 fn shared_matches_golden() {
     // Exercises let-hoisting through the full pipeline and the pinned nixfmt: the shared
     // security-headers block is bound once and referenced at both vhosts.
