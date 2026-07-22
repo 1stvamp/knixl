@@ -9,6 +9,7 @@
 //! golden tests additionally need `nixfmt` on PATH and regenerated `examples/expected/`,
 //! so they stay `#[ignore]`d; the interpreter and reconcile logic are covered by unit tests.
 
+pub mod flake;
 pub mod gather;
 pub mod install;
 pub mod project;

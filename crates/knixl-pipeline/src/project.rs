@@ -17,12 +17,26 @@ pub struct OracleModule {
     pub attr: String,
 }
 
-/// Parsed contents of `knixl.kdl`: the default nixpkgs release (if pinned) and the
-/// project's default `oracle-modules` set, in source order.
+/// Parsed contents of `knixl.kdl`: the default nixpkgs release (if pinned), the
+/// project's default `oracle-modules` set, in source order, and the optional `system {}`
+/// opt-in for emitting a bootable system flake.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct ProjectConfig {
     pub default_release: Option<String>,
     pub oracle_modules: Vec<OracleModule>,
+    pub system: Option<SystemConfig>,
+}
+
+/// The default nixpkgs flake reference used when a `system {}` block omits `nixpkgs-url`.
+pub const DEFAULT_NIXPKGS_URL: &str = "https://github.com/NixOS/nixpkgs";
+
+/// Parsed `system {}` block: opts a project into emitting a bootable system flake.
+/// `state_version` is mandatory (NixOS requires it and refuses to guess it for you);
+/// `nixpkgs_url` defaults to `DEFAULT_NIXPKGS_URL` when the block omits it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SystemConfig {
+    pub state_version: String,
+    pub nixpkgs_url: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -31,6 +45,8 @@ pub enum ProjectError {
     Io(std::path::PathBuf, #[source] std::io::Error),
     #[error(transparent)]
     Kdl(#[from] kdl::KdlError),
+    #[error("knixl.kdl: system {{}} block requires a state-version")]
+    MissingStateVersion,
 }
 
 /// Parse `root/knixl.kdl`. An absent file is not an error: it yields `ProjectConfig::default()`
@@ -59,9 +75,24 @@ pub fn parse_project(root: &Path) -> Result<ProjectConfig, ProjectError> {
         .map(oracle_modules_from_node)
         .unwrap_or_default();
 
+    let system = match doc.nodes().iter().find(|n| n.name().value() == "system") {
+        None => None,
+        Some(node) => {
+            let state_version = knixl_kdl::child_arg_str(node, "state-version")
+                .ok_or(ProjectError::MissingStateVersion)?;
+            let nixpkgs_url = knixl_kdl::child_arg_str(node, "nixpkgs-url")
+                .unwrap_or_else(|| DEFAULT_NIXPKGS_URL.to_string());
+            Some(SystemConfig {
+                state_version,
+                nixpkgs_url,
+            })
+        }
+    };
+
     Ok(ProjectConfig {
         default_release,
         oracle_modules,
+        system,
     })
 }
 
@@ -153,5 +184,43 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].name, "disko");
         assert!(parse_host_oracle_modules("host \"web\" { }").is_none());
+    }
+
+    #[test]
+    fn parses_system_block() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("knixl.kdl"),
+            "system {\n    state-version \"25.05\"\n}\n",
+        )
+        .unwrap();
+        let p = parse_project(dir.path()).unwrap();
+        let s = p.system.expect("system present");
+        assert_eq!(s.state_version, "25.05");
+        assert_eq!(s.nixpkgs_url, DEFAULT_NIXPKGS_URL);
+    }
+
+    #[test]
+    fn system_block_reads_custom_nixpkgs_url() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("knixl.kdl"),
+            "system {\n    state-version \"24.11\"\n    nixpkgs-url \"https://example.com/nixpkgs\"\n}\n").unwrap();
+        let s = parse_project(dir.path()).unwrap().system.unwrap();
+        assert_eq!(s.nixpkgs_url, "https://example.com/nixpkgs");
+    }
+
+    #[test]
+    fn system_block_without_state_version_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("knixl.kdl"), "system {\n}\n").unwrap();
+        let err = parse_project(dir.path()).unwrap_err();
+        assert!(format!("{err}").contains("state-version"), "got: {err}");
+    }
+
+    #[test]
+    fn no_system_block_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("knixl.kdl"), "nixpkgs release=\"25.05\"\n").unwrap();
+        assert!(parse_project(dir.path()).unwrap().system.is_none());
     }
 }
