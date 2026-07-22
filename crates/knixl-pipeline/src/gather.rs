@@ -15,6 +15,8 @@ use knixl_modules::Registry;
 use knixl_nix::{hash, Formatter};
 use semver::Version;
 
+use crate::flake::{render_system_flake, FlakeHost};
+use crate::project::parse_project;
 use crate::{generate, GenerateError, HostSource};
 
 /// Everything `Plan::compute` needs to reconcile a project, plus the registry (for `doc`),
@@ -49,6 +51,7 @@ pub enum GatherError {
 }
 
 pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Project, GatherError> {
+    let project = parse_project(root).map_err(|e| GatherError::Module(e.to_string()))?;
     let hosts = read_hosts(root)?;
     let registry = build_registry(root)?;
 
@@ -131,7 +134,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
 
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
-    let (expected, mut validation_errors) =
+    let (mut expected, mut validation_errors) =
         match generate(&hosts, &registry, formatter, &tool, &oracles, &lock.pins) {
             Ok(files) => {
                 let expected = files
@@ -182,6 +185,48 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
             validation_errors.push(format!(
                 "host \"{host}\": oracle-modules requires a declared nixpkgs release"
             ));
+        }
+    }
+
+    // Opt-in system-assembly flake (ADR 0009): every host needs a resolved baseline rev to
+    // pin nixpkgs, since a partial flake would lie about the fleet.
+    if let Some(system) = &project.system {
+        let mut flake_hosts = Vec::new();
+        let mut missing = false;
+        for name in host_names(&hosts) {
+            match lock.baselines.get(&name) {
+                Some(b) if !b.nixpkgs_rev.is_empty() => flake_hosts.push(FlakeHost {
+                    name: name.clone(),
+                    baseline_rev: b.nixpkgs_rev.clone(),
+                    module_path: format!("./hosts/{name}.nix"),
+                }),
+                _ => {
+                    missing = true;
+                    // A declared-but-unresolved release is already reported by the baseline
+                    // loop above; only add the flake-specific error for a host that declares
+                    // no release at all, so a single root cause is not reported twice.
+                    if !declared_baselines.contains_key(&name) {
+                        validation_errors.push(format!(
+                            "host \"{name}\": system {{}} requires each host to declare a resolved nixpkgs baseline: run knixl install or upgrade"
+                        ));
+                    }
+                }
+            }
+        }
+        // Only emit when every host resolved; a partial flake would lie about the fleet.
+        if !missing {
+            let raw = render_system_flake(&flake_hosts, &system.state_version, &system.nixpkgs_url);
+            let text = formatter
+                .format(&raw)
+                .map_err(|e| GatherError::Module(e.to_string()))?;
+            let path = PathBuf::from("generated/flake.nix");
+            generated.insert(path.clone(), text.clone());
+            expected.push(ExpectedFile {
+                path,
+                hash: hash(text.as_bytes()),
+                from: PathBuf::from("knixl.kdl"),
+                modules: Vec::new(),
+            });
         }
     }
 
