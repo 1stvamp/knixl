@@ -1,0 +1,31 @@
+// A declarative knixl module: hardened OpenSSH (password auth off, key auth on)
+// with optional listen ports and login knobs. All stock NixOS options.
+
+module name="openssh" version="1.0.0" {
+    summary "Hardened OpenSSH (password auth off) with port and login knobs."
+    claims-node "openssh"
+
+    schema {
+        child "port" type="int" repeated=#true \
+            doc="Listen port(s) (services.openssh.ports). NixOS default [ 22 ] if omitted."
+        child "permit-root" repeated=#true \
+            doc="PermitRootLogin value, e.g. \"no\" or \"prohibit-password\". At most one." {
+            arg "value" type="string" required=#true
+        }
+        child "x11-forwarding" type="bool" \
+            doc="Enable X11 forwarding (off by default)."
+    }
+
+    emit {
+        set "services.openssh.enable" #true
+        set "services.openssh.settings.PasswordAuthentication" #false
+        set "services.openssh.settings.KbdInteractiveAuthentication" #false
+        set "services.openssh.ports" (collect-opt)"port"
+        when-flag "x11-forwarding" {
+            set "services.openssh.settings.X11Forwarding" #true
+        }
+        for-each "r" in "permit-root" {
+            set "services.openssh.settings.PermitRootLogin" "{r.value}"
+        }
+    }
+}

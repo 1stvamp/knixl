@@ -1,0 +1,32 @@
+// A declarative knixl module: enable ZFS with its mandatory hostId, plus optional
+// scrubbing, extra pools and an ARC size cap. All stock NixOS options.
+
+module name="zfs" version="1.0.0" {
+    summary "Enable ZFS with the mandatory hostId, optional ARC cap and scrubbing."
+    claims-node "zfs"
+
+    schema {
+        arg "host-id" type="string" required=#true \
+            doc="8 hex-digit machine ID, mandatory for ZFS. Generate with: head -c4 /dev/urandom | od -A none -t x4"
+        child "auto-scrub" type="bool" \
+            doc="Enable periodic pool scrubbing (services.zfs.autoScrub.enable)."
+        child "extra-pool" type="string" repeated=#true \
+            doc="Pool name to import at boot (boot.zfs.extraPools)."
+        child "arc-max-bytes" repeated=#true \
+            doc="Cap the ARC at N bytes via boot.extraModprobeConfig. At most one." {
+            arg "bytes" type="int" required=#true
+        }
+    }
+
+    emit {
+        set "networking.hostId" "{host-id}"
+        set "boot.supportedFilesystems.zfs" #true
+        set "boot.zfs.extraPools" (collect-opt)"extra-pool"
+        when-flag "auto-scrub" {
+            set "services.zfs.autoScrub.enable" #true
+        }
+        for-each "cap" in "arc-max-bytes" {
+            set "boot.extraModprobeConfig" "options zfs zfs_arc_max={cap.bytes}"
+        }
+    }
+}
