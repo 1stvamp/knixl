@@ -16,6 +16,8 @@ KDL inputs
   -> write generated/*.nix + knixl.lock.kdl
 ```
 
+When the project declares `system {}`, the pipeline additionally generates `generated/flake.nix`, an optional locked artefact defining per-host NixOS configurations, each pinned to that host's baseline nixpkgs rev. It is reconciled and hashed like the host modules.
+
 The whole thing is a pure function from (KDL, tool version, module versions, formatter version, oracle rev) to output bytes. `Plan::compute` runs everything up to "write" and produces a diff; the commands decide whether to write.
 
 The "hoist lets" step is `knixl-ir::hoist`: within a file, a compound value (attrset, list, or indented string) that appears two or more times is bound once at the top as `let _knixl0 = ...; in { ... }` and referenced at each use. It is a pure IR-to-IR pass, deterministic, and a no-op on files with no repetition, so it never changes output unless there is genuine duplication. The `_knixlN` names seen in generated files come from here. The rule is defined in `docs/superpowers/specs/2026-07-14-let-hoisting-design.md`. `examples/hosts/shared.kdl`, together with the declarative module `modules/security-headers/knixl-module.kdl`, demonstrates it end to end: one `security-headers` block emitted at two vhosts produces identical assignments that hoist into a single shared binding.
