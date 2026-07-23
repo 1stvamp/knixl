@@ -805,6 +805,7 @@ fn generate_prunes_pins_for_packages_no_longer_declared() {
             options_hash: String::new(),
             modules: Vec::new(),
         },
+        module_sources: Vec::new(),
         inputs: std::collections::BTreeMap::new(),
         modules: std::collections::BTreeMap::new(),
         outputs: Vec::new(),

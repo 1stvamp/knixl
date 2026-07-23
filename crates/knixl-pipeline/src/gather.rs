@@ -72,6 +72,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
                 options_hash: String::new(),
                 modules: Vec::new(),
             },
+            module_sources: Vec::new(),
             inputs: BTreeMap::new(),
             modules: registry.module_versions(),
             outputs: Vec::new(),

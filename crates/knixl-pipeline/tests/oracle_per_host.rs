@@ -95,6 +95,7 @@ fn gather_selects_each_hosts_own_baseline_rev_for_its_oracle() {
             options_hash: String::new(),
             modules: Vec::new(),
         },
+        module_sources: Vec::new(),
         inputs: BTreeMap::new(),
         modules: BTreeMap::new(),
         outputs: Vec::new(),
