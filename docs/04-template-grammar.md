@@ -22,6 +22,7 @@ Matching exactly the boundary in docs/03 (substitute, repeat-into-list, fold-int
   child is empty, rather than emitting `[ ]`. Use it for an optional list-valued option
   whose absence should leave the NixOS default in place (e.g. `services.openssh.ports`,
   which defaults to `[ 22 ]`). `(collect)` still emits `[ ]` when empty.
+- `(secret)"name"` : a reference to a decrypted secret path, emitting `config.<backend>.secrets."name".path`. The name may interpolate bindings (e.g. `(secret)"{k.secret}"`). The backend is the project's `secrets backend=` setting (default sops-nix; the other value is agenix). knixl never sees the secret material: reference-only, no declaration and no name validation.
 
 ## Paths
 
@@ -130,3 +131,13 @@ Node shape: `disk "<label>" device="<path>"` holds `partition "<name>" size="<si
 The `preset="boot-root-zfs" pool="<name>" root-size="<size>" [boot-size="<size>"]` shorthand is pure sugar for the common three-partition layout: an ESP (`512M` by default, or `boot-size` if set), an ext4 root (sized by `root-size`), and a ZFS vdev at 100% of the remaining space handed to `pool`. It suits single-disk systems that keep the OS on ext4 and the data on ZFS.
 
 Validation of `disko.*` paths (e.g. `disko.devices.disk.main.device`) runs only when the project declares disko as an out-of-tree oracle module via `oracle-modules { module "disko" ... }` in `knixl.kdl`. Without that declaration, disko paths remain unchecked (docs/06, ADR 0008).
+
+## Declarative modules shipped with knixl
+
+These are authored in the grammar above and live under `modules/<name>/knixl-module.kdl`, not in Rust.
+
+### tailscale
+
+`tailscale` claims the `tailscale` node and generates NixOS tailscale configuration. Node shape: optional `up-flag` children hold flags passed to `tailscale up` (e.g. `up-flag "--ssh"`, `up-flag "--operator=alice"`), and an `auth-key secret="name"` child wires `services.tailscale.authKeyFile` to a named secret via `(secret)`.
+
+The module sets `services.tailscale.enable = true`, collects `up-flag` children into `services.tailscale.extraUpFlags` as a list, and wires the `auth-key` secret reference to `services.tailscale.authKeyFile`. If no `auth-key` is declared, `authKeyFile` is not set, leaving interactive login as the fallback.

@@ -92,6 +92,10 @@ That is still most of the value. Do not over-invest in parsing every type descri
   - `Ok` if the path is not itself a leaf option but is a strict prefix of a real one: an intermediate attrset such as a dynamic-key submodule root (e.g. `services.restic.backups.<name>`), detected via `is_option_prefix`. The interior stays unchecked; a genuine typo has no known children and is still rejected.
 - `NixType::parse_description(s)` is best-effort: `"boolean"` -> `Bool`, `"list of string"` -> `List(Str)`, `"null or (attribute set of package)"` -> `NullOr(AttrsOf(Package))`, `"one of ..."` -> `Enum`, anything else -> `Unknown(s)`.
 
+## Secret references
+
+A `(secret)` value form emits a `config.<backend>.secrets.*` reference, not an option path, so it is not oracle-validated. The oracle validates the option paths a module assigns (e.g. `services.tailscale.authKeyFile`), not the values those paths hold. The secret reference itself (the `config.sops.secrets.* ` or `config.age.secrets.*` path) is handled by sops-nix or agenix at runtime, and knixl treats it as transparent. The backend (sops-nix or agenix) is set by the project's `secrets backend=` node in `knixl.kdl` (default sops-nix).
+
 ## What it cannot catch
 
 Value conflicts between two modules assigning the same path (both `mkForce`, say) are not type errors and the oracle cannot see them. That is the plan-time cross-module lint's job (docs/02, docs/03). Keep the two concerns separate.
