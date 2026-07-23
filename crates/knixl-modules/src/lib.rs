@@ -327,11 +327,22 @@ pub enum PinStrategy {
     Override,
 }
 
+/// Which secret manager a `(secret)` reference resolves against. sops-nix emits
+/// `config.sops.secrets.<name>.path`; agenix emits `config.age.secrets.<name>.path`.
+/// Set once per project (knixl.kdl `secrets backend="..."`); defaults to sops-nix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SecretsBackend {
+    #[default]
+    SopsNix,
+    Agenix,
+}
+
 pub struct LowerCtx<'a> {
     scope: Scope,
     registry: &'a Registry,
     diags: &'a mut Vec<Diagnostic>,
     pins: Vec<ResolvedPin>,
+    secrets_backend: SecretsBackend,
 }
 
 pub struct Scope {
@@ -350,7 +361,19 @@ impl<'a> LowerCtx<'a> {
             registry,
             diags,
             pins,
+            secrets_backend: SecretsBackend::SopsNix,
         }
+    }
+
+    /// Override the secrets backend (the pipeline sets this from the project config).
+    pub fn with_secrets_backend(mut self, backend: SecretsBackend) -> Self {
+        self.secrets_backend = backend;
+        self
+    }
+
+    /// The secrets backend a `(secret)` reference resolves against.
+    pub fn secrets_backend(&self) -> SecretsBackend {
+        self.secrets_backend
     }
 
     pub fn scope(&self) -> &Scope {
