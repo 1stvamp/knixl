@@ -80,6 +80,7 @@ fn generate_host(host_file: &str) -> Vec<knixl_pipeline::GeneratedFile> {
         &tool,
         &no_oracles,
         &no_pins,
+        knixl_modules::SecretsBackend::default(),
     )
     .expect("generate")
 }
@@ -158,6 +159,7 @@ fn unknown_child_node_surfaces_as_a_warning_not_an_error() {
         &tool,
         &no_oracles,
         &no_pins,
+        knixl_modules::SecretsBackend::default(),
     )
     .expect("generate");
 
@@ -394,6 +396,7 @@ fn assert_host_matches(host_file: &str) {
         &tool,
         &no_oracles,
         &no_pins,
+        knixl_modules::SecretsBackend::default(),
     )
     .expect("generate");
 
@@ -486,6 +489,7 @@ fn generate_is_byte_identical_across_runs() {
             &tool,
             &no_oracles,
             &no_pins,
+            knixl_modules::SecretsBackend::default(),
         )
         .expect("generate")
         .into_iter()
@@ -534,6 +538,7 @@ fn pinned_matches_golden() {
         &tool,
         &no_oracles,
         &pins,
+        knixl_modules::SecretsBackend::default(),
     )
     .expect("generate");
 
@@ -567,6 +572,7 @@ fn pinned_generate_is_byte_identical_across_runs() {
             &tool,
             &no_oracles,
             &pins,
+            knixl_modules::SecretsBackend::default(),
         )
         .expect("generate")
         .into_iter()
@@ -604,6 +610,7 @@ fn pinned_override_matches_golden() {
         &tool,
         &no_oracles,
         &pins,
+        knixl_modules::SecretsBackend::default(),
     )
     .expect("generate");
 
