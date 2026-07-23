@@ -452,6 +452,45 @@ fn tailscale_without_auth_key_emits_no_auth_key_file() {
 }
 
 #[test]
+fn vmhost_pipeline_produces_expected_structure() {
+    let files = generate_host("vmhost.kdl");
+    assert_eq!(files.len(), 1, "vmhost has no side-files");
+    let text = &files[0].text;
+    for needle in [
+        "virtualisation.incus.enable = true",
+        "virtualisation.incus.ui.enable = true",
+        "virtualisation.incus.preseed.storage_pools",
+        "driver = \"zfs\"",
+        "source = \"rpool/incus\"",
+        "virtualisation.incus.preseed.networks",
+        "\"ipv4.address\" = \"auto\"",
+        "\"ipv4.nat\" = \"true\"",
+        "virtualisation.incus.preseed.profiles",
+        "type = \"disk\"",
+        "type = \"nic\"",
+        "network = \"incusbr0\"",
+    ] {
+        assert!(
+            text.contains(needle),
+            "vmhost.nix missing `{needle}`\n---\n{text}"
+        );
+    }
+}
+
+#[test]
+fn vmhost_file_attributes_incus() {
+    let files = generate_host("vmhost.kdl");
+    let vm = &files[0];
+    for m in ["host", "incus"] {
+        assert!(
+            vm.modules.contains(&m.to_string()),
+            "vmhost.nix should list {m}, got {:?}",
+            vm.modules
+        );
+    }
+}
+
+#[test]
 fn repeated_block_is_hoisted_into_a_let() {
     // shared.kdl applies the same security-headers block to two vhosts, so the block
     // is bound once and referenced twice (structure visible pre-nixfmt).
@@ -567,6 +606,15 @@ fn gateway_matches_golden() {
         return;
     }
     assert_host_matches("gateway.kdl");
+}
+
+#[test]
+fn vmhost_matches_golden() {
+    if !formatter_available() {
+        eprintln!("skipping vmhost_matches_golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
+    assert_host_matches("vmhost.kdl");
 }
 
 #[test]

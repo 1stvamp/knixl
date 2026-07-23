@@ -1,0 +1,10 @@
+host "vmhost" {
+    system "x86_64-linux"
+
+    incus {
+        ui
+        storage-pool "default" driver="zfs" source="rpool/incus"
+        network "incusbr0" type="bridge" ipv4="auto" nat="true"
+        profile "default" pool="default" network="incusbr0"
+    }
+}
