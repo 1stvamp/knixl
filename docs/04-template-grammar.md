@@ -141,3 +141,9 @@ These are authored in the grammar above and live under `modules/<name>/knixl-mod
 `tailscale` claims the `tailscale` node and generates NixOS tailscale configuration. Node shape: optional `up-flag` children hold flags passed to `tailscale up` (e.g. `up-flag "--ssh"`, `up-flag "--operator=alice"`), and an `auth-key secret="name"` child wires `services.tailscale.authKeyFile` to a named secret via `(secret)`.
 
 The module sets `services.tailscale.enable = true`, collects `up-flag` children into `services.tailscale.extraUpFlags` as a list, and wires the `auth-key` secret reference to `services.tailscale.authKeyFile`. If no `auth-key` is declared, `authKeyFile` is not set, leaving interactive login as the fallback.
+
+### incus
+
+`incus` claims the `incus` node and generates an Incus host. Node shape: repeated `storage-pool "<name>" driver= source=`, `network "<name>" type= ipv4= nat=`, and `profile "<name>" pool= network=` children. A profile emits the default shape: a root disk on `pool` and an `eth0` nic on `network`.
+
+The module sets `virtualisation.incus.enable = true`, enables the web UI via `virtualisation.incus.ui.enable` (gated by a `ui` flag), and configures the daemon preseed from pools, networks, and profiles. Virtual machine support (via `package "qemu"`) and administrative access (via the `user` module with `group "incus-admin"`) are configured separately, which the incus module does not emit.
