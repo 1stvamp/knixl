@@ -17,15 +17,25 @@ pub struct OracleModule {
     pub attr: String,
 }
 
+/// A declared external declarative-module source (issue #13): a flake ref plus the directory
+/// within it holding `knixl-module.kdl` (empty = repo root). `name` is the local handle.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ModuleSource {
+    pub name: String,
+    pub flake: String,
+    pub path: String,
+}
+
 /// Parsed contents of `knixl.kdl`: the default nixpkgs release (if pinned), the
-/// project's default `oracle-modules` set, in source order, and the optional `system {}`
-/// opt-in for emitting a bootable system flake.
+/// project's default `oracle-modules` set, in source order, the optional `system {}`
+/// opt-in for emitting a bootable system flake, and the declared `modules {}` sources.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct ProjectConfig {
     pub default_release: Option<String>,
     pub oracle_modules: Vec<OracleModule>,
     pub system: Option<SystemConfig>,
     pub secrets_backend: knixl_modules::SecretsBackend,
+    pub module_sources: Vec<ModuleSource>,
 }
 
 /// The default nixpkgs flake reference used when a `system {}` block omits `nixpkgs-url`.
@@ -50,6 +60,8 @@ pub enum ProjectError {
     MissingStateVersion,
     #[error("knixl.kdl: unknown secrets backend `{0}` (expected `sops-nix` or `agenix`)")]
     UnknownSecretsBackend(String),
+    #[error("knixl.kdl: modules {{}} block: module `{0}` requires a flake")]
+    MissingModuleFlake(String),
 }
 
 /// Parse `root/knixl.kdl`. An absent file is not an error: it yields `ProjectConfig::default()`
@@ -109,11 +121,17 @@ pub fn parse_project(root: &Path) -> Result<ProjectConfig, ProjectError> {
         },
     };
 
+    let module_sources = match doc.nodes().iter().find(|n| n.name().value() == "modules") {
+        None => Vec::new(),
+        Some(node) => module_sources_from_node(node)?,
+    };
+
     Ok(ProjectConfig {
         default_release,
         oracle_modules,
         system,
         secrets_backend,
+        module_sources,
     })
 }
 
@@ -153,6 +171,28 @@ fn oracle_modules_from_node(node: &KdlNode) -> Vec<OracleModule> {
                 .and_then(|v| v.as_string())
                 .unwrap_or("default")
                 .to_string(),
+        })
+        .collect()
+}
+
+/// The `module` children of a `modules` block: `name` is the first positional argument,
+/// `flake` is a required prop (a `module` with none is a `ProjectError`), `path` is an
+/// optional prop defaulting to `""` (repo root).
+fn module_sources_from_node(node: &KdlNode) -> Result<Vec<ModuleSource>, ProjectError> {
+    children_named(node, "module")
+        .map(|m| {
+            let name = knixl_kdl::first_arg_str(m).unwrap_or_default();
+            let flake = m
+                .get("flake")
+                .and_then(|v| v.as_string())
+                .ok_or_else(|| ProjectError::MissingModuleFlake(name.clone()))?
+                .to_string();
+            let path = m
+                .get("path")
+                .and_then(|v| v.as_string())
+                .unwrap_or_default()
+                .to_string();
+            Ok(ModuleSource { name, flake, path })
         })
         .collect()
 }
@@ -274,6 +314,39 @@ mod tests {
         // to sops-nix.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("knixl.kdl"), "secrets backend=5\n").unwrap();
+        assert!(parse_project(dir.path()).is_err());
+    }
+
+    #[test]
+    fn parses_module_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("knixl.kdl"),
+            "modules {\n    module \"nginx\" flake=\"github:org/knixl-nginx\"\n    module \"graf\" flake=\"github:org/g\" path=\"modules/graf\"\n}\n").unwrap();
+        let p = parse_project(dir.path()).unwrap();
+        assert_eq!(p.module_sources.len(), 2);
+        assert_eq!(p.module_sources[0].name, "nginx");
+        assert_eq!(p.module_sources[0].flake, "github:org/knixl-nginx");
+        assert_eq!(p.module_sources[0].path, ""); // defaulted
+        assert_eq!(p.module_sources[1].name, "graf");
+        assert_eq!(p.module_sources[1].flake, "github:org/g");
+        assert_eq!(p.module_sources[1].path, "modules/graf");
+    }
+
+    #[test]
+    fn absent_modules_block_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("knixl.kdl"), "nixpkgs release=\"25.05\"\n").unwrap();
+        assert!(parse_project(dir.path()).unwrap().module_sources.is_empty());
+    }
+
+    #[test]
+    fn module_source_without_flake_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("knixl.kdl"),
+            "modules {\n    module \"nginx\"\n}\n",
+        )
+        .unwrap();
         assert!(parse_project(dir.path()).is_err());
     }
 }
