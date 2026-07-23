@@ -3,6 +3,7 @@
 
 pub mod baseline;
 pub mod module;
+pub mod module_fetch;
 pub mod nixeval;
 pub mod optionsdoc;
 pub mod pin;
