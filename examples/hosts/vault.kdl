@@ -1,0 +1,26 @@
+host "vault" {
+    system "x86_64-linux"
+
+    disko {
+        disk "main" device="/dev/nvme0n1" {
+            partition "ESP" size="512M" type="EF00" {
+                filesystem format="vfat" mountpoint="/boot"
+            }
+            partition "swap" size="8G" {
+                swap
+            }
+            partition "crypt" size="100G" {
+                luks name="cryptroot" {
+                    filesystem format="ext4" mountpoint="/"
+                }
+            }
+            partition "data" size="100%" {
+                zfs pool="tank"
+            }
+        }
+        zpool "tank" {
+            mountpoint "/tank"
+            dataset "media" mountpoint="/tank/media"
+        }
+    }
+}

@@ -310,6 +310,51 @@ fn nas_file_attributes_every_contributing_module() {
 }
 
 #[test]
+fn vault_pipeline_produces_expected_structure() {
+    let files = generate_host("vault.kdl");
+    assert_eq!(files.len(), 1, "vault has no side-files");
+    let text = &files[0].text;
+    // Distinguishing leaf fragments; the byte-exact form is nailed by vault_matches_golden.
+    for needle in [
+        "/dev/nvme0n1",
+        "\"disk\"",
+        "\"gpt\"",
+        "\"ESP\"",
+        "\"crypt\"",
+        "\"data\"",
+        "\"swap\"",
+        "\"EF00\"",
+        "\"filesystem\"",
+        "\"vfat\"",
+        "\"luks\"",
+        "\"cryptroot\"",
+        "\"zfs\"",
+        "pool = \"tank\"",
+        "\"zpool\"",
+        "datasets",
+        "\"zfs_fs\"",
+    ] {
+        assert!(
+            text.contains(needle),
+            "vault.nix missing `{needle}`\n---\n{text}"
+        );
+    }
+}
+
+#[test]
+fn vault_file_attributes_disko() {
+    let files = generate_host("vault.kdl");
+    let vault = &files[0];
+    for m in ["host", "disko"] {
+        assert!(
+            vault.modules.contains(&m.to_string()),
+            "vault.nix should list {m}, got {:?}",
+            vault.modules
+        );
+    }
+}
+
+#[test]
 fn repeated_block_is_hoisted_into_a_let() {
     // shared.kdl applies the same security-headers block to two vhosts, so the block
     // is bound once and referenced twice (structure visible pre-nixfmt).
@@ -395,6 +440,15 @@ fn nas_matches_golden() {
         return;
     }
     assert_host_matches("nas.kdl");
+}
+
+#[test]
+fn vault_matches_golden() {
+    if !formatter_available() {
+        eprintln!("skipping vault_matches_golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
+    assert_host_matches("vault.kdl");
 }
 
 #[test]
