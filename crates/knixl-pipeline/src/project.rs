@@ -25,6 +25,7 @@ pub struct ProjectConfig {
     pub default_release: Option<String>,
     pub oracle_modules: Vec<OracleModule>,
     pub system: Option<SystemConfig>,
+    pub secrets_backend: knixl_modules::SecretsBackend,
 }
 
 /// The default nixpkgs flake reference used when a `system {}` block omits `nixpkgs-url`.
@@ -47,6 +48,8 @@ pub enum ProjectError {
     Kdl(#[from] kdl::KdlError),
     #[error("knixl.kdl: system {{}} block requires a state-version")]
     MissingStateVersion,
+    #[error("knixl.kdl: unknown secrets backend `{0}` (expected `sops-nix` or `agenix`)")]
+    UnknownSecretsBackend(String),
 }
 
 /// Parse `root/knixl.kdl`. An absent file is not an error: it yields `ProjectConfig::default()`
@@ -89,10 +92,28 @@ pub fn parse_project(root: &Path) -> Result<ProjectConfig, ProjectError> {
         }
     };
 
+    let secrets_backend = match doc
+        .nodes()
+        .iter()
+        .find(|n| n.name().value() == "secrets")
+        .and_then(|n| n.get("backend"))
+    {
+        None => knixl_modules::SecretsBackend::SopsNix,
+        Some(v) => match v.as_string() {
+            Some("sops-nix") => knixl_modules::SecretsBackend::SopsNix,
+            Some("agenix") => knixl_modules::SecretsBackend::Agenix,
+            Some(other) => return Err(ProjectError::UnknownSecretsBackend(other.to_string())),
+            // A non-string `backend=` (e.g. `backend=5`) is malformed, not "no backend given",
+            // so it must error rather than silently default to sops-nix.
+            None => return Err(ProjectError::UnknownSecretsBackend(format!("{v:?}"))),
+        },
+    };
+
     Ok(ProjectConfig {
         default_release,
         oracle_modules,
         system,
+        secrets_backend,
     })
 }
 
@@ -222,5 +243,37 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("knixl.kdl"), "nixpkgs release=\"25.05\"\n").unwrap();
         assert!(parse_project(dir.path()).unwrap().system.is_none());
+    }
+
+    #[test]
+    fn secrets_backend_defaults_to_sops() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("knixl.kdl"), "nixpkgs release=\"25.05\"\n").unwrap();
+        let cfg = parse_project(dir.path()).unwrap();
+        assert_eq!(cfg.secrets_backend, knixl_modules::SecretsBackend::SopsNix);
+    }
+
+    #[test]
+    fn secrets_backend_agenix_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("knixl.kdl"), "secrets backend=\"agenix\"\n").unwrap();
+        let cfg = parse_project(dir.path()).unwrap();
+        assert_eq!(cfg.secrets_backend, knixl_modules::SecretsBackend::Agenix);
+    }
+
+    #[test]
+    fn secrets_backend_unknown_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("knixl.kdl"), "secrets backend=\"vault\"\n").unwrap();
+        assert!(parse_project(dir.path()).is_err());
+    }
+
+    #[test]
+    fn secrets_backend_non_string_errors() {
+        // A malformed `backend=` (not a string) must be a hard error, not a silent fallback
+        // to sops-nix.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("knixl.kdl"), "secrets backend=5\n").unwrap();
+        assert!(parse_project(dir.path()).is_err());
     }
 }

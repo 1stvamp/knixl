@@ -69,11 +69,18 @@ pub fn generate(
     tool: &Version,
     oracles: &BTreeMap<String, knixl_oracle::Oracle>,
     pins: &BTreeMap<String, Vec<knixl_lock::model::Pin>>,
+    secrets_backend: knixl_modules::SecretsBackend,
 ) -> Result<Vec<GeneratedFile>, GenerateError> {
     let mut out = Vec::new();
     for host in hosts {
         out.extend(generate_one(
-            host, registry, formatter, tool, oracles, pins,
+            host,
+            registry,
+            formatter,
+            tool,
+            oracles,
+            pins,
+            secrets_backend,
         )?);
     }
     Ok(out)
@@ -86,6 +93,7 @@ fn generate_one(
     tool: &Version,
     oracles: &BTreeMap<String, knixl_oracle::Oracle>,
     pins: &BTreeMap<String, Vec<knixl_lock::model::Pin>>,
+    secrets_backend: knixl_modules::SecretsBackend,
 ) -> Result<Vec<GeneratedFile>, GenerateError> {
     let doc: KdlDocument = parse(&host.src)?;
     let host_name = first_arg_str(doc.nodes().first().ok_or_else(|| {
@@ -146,7 +154,8 @@ fn generate_one(
             registry,
             &mut diags,
             resolved_pins.clone(),
-        );
+        )
+        .with_secrets_backend(secrets_backend);
         let mut output = module.lower(node, &mut ctx)?;
         // The top-level module claims any unit its delegates did not already attribute.
         output.attribute(&module_name);

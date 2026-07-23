@@ -80,6 +80,7 @@ fn generate_host(host_file: &str) -> Vec<knixl_pipeline::GeneratedFile> {
         &tool,
         &no_oracles,
         &no_pins,
+        knixl_modules::SecretsBackend::default(),
     )
     .expect("generate")
 }
@@ -158,6 +159,7 @@ fn unknown_child_node_surfaces_as_a_warning_not_an_error() {
         &tool,
         &no_oracles,
         &no_pins,
+        knixl_modules::SecretsBackend::default(),
     )
     .expect("generate");
 
@@ -355,6 +357,101 @@ fn vault_file_attributes_disko() {
 }
 
 #[test]
+fn gateway_pipeline_produces_expected_structure() {
+    let files = generate_host("gateway.kdl");
+    assert_eq!(files.len(), 1, "gateway has no side-files");
+    let text = &files[0].text;
+    for needle in [
+        "services.tailscale.enable = true",
+        "services.tailscale.extraUpFlags",
+        "\"--ssh\"",
+        "services.tailscale.authKeyFile = config.sops.secrets.\"tailscale-authkey\".path",
+    ] {
+        assert!(
+            text.contains(needle),
+            "gateway.nix missing `{needle}`\n---\n{text}"
+        );
+    }
+}
+
+#[test]
+fn gateway_file_attributes_tailscale() {
+    let files = generate_host("gateway.kdl");
+    let gw = &files[0];
+    for m in ["host", "tailscale"] {
+        assert!(
+            gw.modules.contains(&m.to_string()),
+            "gateway.nix should list {m}, got {:?}",
+            gw.modules
+        );
+    }
+}
+
+#[test]
+fn gateway_agenix_backend_emits_age_path() {
+    // The project-level backend flows generate -> LowerCtx -> the (secret) form.
+    let examples = examples_dir();
+    let path = PathBuf::from("hosts").join("gateway.kdl");
+    let src = fs::read_to_string(examples.join(&path)).expect("read host kdl");
+    let tool = "0.3.1".parse().unwrap();
+    let no_pins = std::collections::BTreeMap::new();
+    let no_oracles = std::collections::BTreeMap::new();
+    let files = generate(
+        &[HostSource { path, src }],
+        &build_registry(),
+        &identity_formatter(),
+        &tool,
+        &no_oracles,
+        &no_pins,
+        knixl_modules::SecretsBackend::Agenix,
+    )
+    .expect("generate");
+    assert!(
+        files[0].text.contains(
+            "services.tailscale.authKeyFile = config.age.secrets.\"tailscale-authkey\".path"
+        ),
+        "agenix backend should emit an age path\n---\n{}",
+        files[0].text
+    );
+}
+
+#[test]
+fn tailscale_without_auth_key_emits_no_auth_key_file() {
+    // No `auth-key` child at all => the for-each has nothing to iterate, so
+    // authKeyFile must not appear (as opposed to being emitted empty).
+    let path = PathBuf::from("hosts").join("gateway-no-authkey.kdl");
+    let src = "host \"gateway\" {\n\
+        \x20   system \"x86_64-linux\"\n\
+        \x20   tailscale {\n\
+        \x20       up-flag \"--ssh\"\n\
+        \x20   }\n\
+        }"
+    .to_string();
+    let tool = "0.3.1".parse().unwrap();
+    let no_pins = std::collections::BTreeMap::new();
+    let no_oracles = std::collections::BTreeMap::new();
+    let files = generate(
+        &[HostSource { path, src }],
+        &build_registry(),
+        &identity_formatter(),
+        &tool,
+        &no_oracles,
+        &no_pins,
+        knixl_modules::SecretsBackend::default(),
+    )
+    .expect("generate");
+    let text = &files[0].text;
+    assert!(
+        !text.contains("authKeyFile"),
+        "no auth-key means no authKeyFile:\n---\n{text}"
+    );
+    assert!(
+        text.contains("services.tailscale.enable = true"),
+        "tailscale is still enabled:\n---\n{text}"
+    );
+}
+
+#[test]
 fn repeated_block_is_hoisted_into_a_let() {
     // shared.kdl applies the same security-headers block to two vhosts, so the block
     // is bound once and referenced twice (structure visible pre-nixfmt).
@@ -394,6 +491,7 @@ fn assert_host_matches(host_file: &str) {
         &tool,
         &no_oracles,
         &no_pins,
+        knixl_modules::SecretsBackend::default(),
     )
     .expect("generate");
 
@@ -463,6 +561,15 @@ fn shared_matches_golden() {
 }
 
 #[test]
+fn gateway_matches_golden() {
+    if !formatter_available() {
+        eprintln!("skipping gateway_matches_golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
+    assert_host_matches("gateway.kdl");
+}
+
+#[test]
 fn generate_is_byte_identical_across_runs() {
     if !formatter_available() {
         eprintln!("skipping determinism golden: no formatter (set KNIXL_FORMATTER)");
@@ -486,6 +593,7 @@ fn generate_is_byte_identical_across_runs() {
             &tool,
             &no_oracles,
             &no_pins,
+            knixl_modules::SecretsBackend::default(),
         )
         .expect("generate")
         .into_iter()
@@ -534,6 +642,7 @@ fn pinned_matches_golden() {
         &tool,
         &no_oracles,
         &pins,
+        knixl_modules::SecretsBackend::default(),
     )
     .expect("generate");
 
@@ -567,6 +676,7 @@ fn pinned_generate_is_byte_identical_across_runs() {
             &tool,
             &no_oracles,
             &pins,
+            knixl_modules::SecretsBackend::default(),
         )
         .expect("generate")
         .into_iter()
@@ -604,6 +714,7 @@ fn pinned_override_matches_golden() {
         &tool,
         &no_oracles,
         &pins,
+        knixl_modules::SecretsBackend::default(),
     )
     .expect("generate");
 

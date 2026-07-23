@@ -1,0 +1,8 @@
+host "gateway" {
+    system "x86_64-linux"
+
+    tailscale {
+        up-flag "--ssh"
+        auth-key secret="tailscale-authkey"
+    }
+}

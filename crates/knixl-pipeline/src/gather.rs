@@ -134,31 +134,38 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
 
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut warnings: Vec<String> = Vec::new();
-    let (mut expected, mut validation_errors) =
-        match generate(&hosts, &registry, formatter, &tool, &oracles, &lock.pins) {
-            Ok(files) => {
-                let expected = files
-                    .into_iter()
-                    .map(|f| {
-                        generated.insert(f.path.clone(), f.text.clone());
-                        warnings.extend(
-                            f.warnings
-                                .iter()
-                                .map(|w| format!("{}: {w}", f.from.display())),
-                        );
-                        ExpectedFile {
-                            path: f.path,
-                            hash: hash(f.text.as_bytes()),
-                            from: f.from,
-                            modules: f.modules,
-                        }
-                    })
-                    .collect();
-                (expected, Vec::new())
-            }
-            Err(GenerateError::Validation(errs)) => (Vec::new(), errs),
-            Err(other) => return Err(other.into()),
-        };
+    let (mut expected, mut validation_errors) = match generate(
+        &hosts,
+        &registry,
+        formatter,
+        &tool,
+        &oracles,
+        &lock.pins,
+        project.secrets_backend,
+    ) {
+        Ok(files) => {
+            let expected = files
+                .into_iter()
+                .map(|f| {
+                    generated.insert(f.path.clone(), f.text.clone());
+                    warnings.extend(
+                        f.warnings
+                            .iter()
+                            .map(|w| format!("{}: {w}", f.from.display())),
+                    );
+                    ExpectedFile {
+                        path: f.path,
+                        hash: hash(f.text.as_bytes()),
+                        from: f.from,
+                        modules: f.modules,
+                    }
+                })
+                .collect();
+            (expected, Vec::new())
+        }
+        Err(GenerateError::Validation(errs)) => (Vec::new(), errs),
+        Err(other) => return Err(other.into()),
+    };
 
     // A declared baseline that is not yet resolved (no lock entry) or that has moved to a
     // different release than what is now declared, is a validation error naming the fix

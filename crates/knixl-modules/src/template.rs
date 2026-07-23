@@ -50,6 +50,7 @@ pub enum ValueTemplate {
     IndentStr(Vec<StrPart>), // (indent-str #""" ... """#)
     Collect(String),         // (collect "alias") -> List of that child's first arg
     CollectOpt(String),      // (collect-opt "x") -> like Collect, but the set is dropped when empty
+    Secret(Vec<StrPart>),    // (secret)"name" -> config.<backend>.secrets."name".path
 }
 
 pub enum StrPart {
@@ -198,10 +199,14 @@ impl EmitTemplate {
         Bindings(map)
     }
 
-    pub fn interpret(&self, b: &Bindings) -> Result<LowerOutput, LowerError> {
+    pub fn interpret(
+        &self,
+        b: &Bindings,
+        backend: crate::SecretsBackend,
+    ) -> Result<LowerOutput, LowerError> {
         let mut units = Vec::new();
         let mut loops = LoopScopes::new();
-        self.run(&self.stmts, b, &mut loops, None, &mut units)?;
+        self.run(&self.stmts, b, &mut loops, None, &mut units, backend)?;
         Ok(LowerOutput::units(units))
     }
 
@@ -215,11 +220,12 @@ impl EmitTemplate {
         loops: &mut LoopScopes,
         cond: Option<&str>,
         out: &mut Vec<Unit>,
+        backend: crate::SecretsBackend,
     ) -> Result<(), LowerError> {
         for st in stmts {
             match st {
                 Stmt::Set { path, value } => {
-                    let v = value.interpret(b, loops)?;
+                    let v = value.interpret(b, loops, backend)?;
                     // An optional collect over an absent/empty child emits nothing, so it does not
                     // clobber a NixOS default (e.g. services.openssh.ports defaults to [ 22 ]).
                     if matches!(value, ValueTemplate::CollectOpt(_))
@@ -247,7 +253,7 @@ impl EmitTemplate {
                 }
                 Stmt::WhenFlag { flag, body } => {
                     if resolve_flag(flag, b, loops)? {
-                        self.run(body, b, loops, cond, out)?;
+                        self.run(body, b, loops, cond, out, backend)?;
                     }
                 }
                 Stmt::WhenConfig { cond: parts, body } => {
@@ -257,13 +263,13 @@ impl EmitTemplate {
                         Some(outer) => format!("({outer}) && ({inner})"),
                         None => inner,
                     };
-                    self.run(body, b, loops, Some(&combined), out)?;
+                    self.run(body, b, loops, Some(&combined), out, backend)?;
                 }
                 Stmt::ForEach { var, source, body } => {
                     for item in resolve_list(source, b)? {
                         // source order => stable
                         loops.push(var, item);
-                        self.run(body, b, loops, cond, out)?;
+                        self.run(body, b, loops, cond, out, backend)?;
                         loops.pop();
                     }
                 }
@@ -272,7 +278,7 @@ impl EmitTemplate {
                     for item in resolve_list(source, b)? {
                         loops.push(source, item); // the child name is the loop binding
                         let mut elem_units = Vec::new();
-                        let res = self.run(body, b, loops, None, &mut elem_units);
+                        let res = self.run(body, b, loops, None, &mut elem_units, backend);
                         loops.pop();
                         res?;
                         elems.push(fold_units_into_attrset(elem_units)?);
@@ -316,7 +322,12 @@ impl PathTemplate {
 }
 
 impl ValueTemplate {
-    fn interpret(&self, b: &Bindings, loops: &LoopScopes) -> Result<NixExpr, LowerError> {
+    fn interpret(
+        &self,
+        b: &Bindings,
+        loops: &LoopScopes,
+        backend: crate::SecretsBackend,
+    ) -> Result<NixExpr, LowerError> {
         Ok(match self {
             ValueTemplate::Bool(v) => NixExpr::Bool(*v),
             ValueTemplate::Int(v) => NixExpr::Int(*v),
@@ -335,6 +346,21 @@ impl ValueTemplate {
                     }
                 }
                 NixExpr::List(items)
+            }
+            ValueTemplate::Secret(parts) => {
+                let name = interp_parts(parts, b, loops)?;
+                let prefix = match backend {
+                    crate::SecretsBackend::SopsNix => "sops.secrets",
+                    crate::SecretsBackend::Agenix => "age.secrets",
+                };
+                let esc = name
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace("${", "\\${");
+                NixExpr::Raw(RawNix {
+                    src: format!("config.{prefix}.\"{esc}\".path"),
+                    span: None,
+                })
             }
         })
     }
@@ -800,6 +826,13 @@ fn parse_value(entry: &kdl::KdlEntry) -> Result<ValueTemplate, LowerError> {
                 .ok_or_else(|| LowerError::Other("indent-str needs a string".into()))?;
             Ok(ValueTemplate::IndentStr(parse_str_parts(s)))
         }
+        Some("secret") => {
+            let s = entry
+                .value()
+                .as_string()
+                .ok_or_else(|| LowerError::Other("secret needs a name string".into()))?;
+            Ok(ValueTemplate::Secret(parse_str_parts(s)))
+        }
         Some(other) => Err(LowerError::Other(format!(
             "unknown value annotation `{other}`"
         ))),
@@ -956,7 +989,9 @@ fn check_stmts<'a>(
                     }
                 }
                 match value {
-                    ValueTemplate::Str(parts) | ValueTemplate::IndentStr(parts) => {
+                    ValueTemplate::Str(parts)
+                    | ValueTemplate::IndentStr(parts)
+                    | ValueTemplate::Secret(parts) => {
                         for part in parts {
                             if let StrPart::Interp(lk) = part {
                                 expect_scalar(&lk.0, shapes, loops, errors);
@@ -1673,10 +1708,10 @@ impl Module for DeclarativeModule {
     fn lower(
         &self,
         node: &kdl::KdlNode,
-        _ctx: &mut crate::LowerCtx,
+        ctx: &mut crate::LowerCtx,
     ) -> Result<LowerOutput, LowerError> {
         let bindings = EmitTemplate::build_bindings(&self.schema, node);
-        self.template.interpret(&bindings)
+        self.template.interpret(&bindings, ctx.secrets_backend())
     }
     fn migration_notes(&self, from: &semver::Version, to: &semver::Version) -> Vec<String> {
         crate::notes_in_range(&self.migrations, from, to)
@@ -2579,5 +2614,111 @@ mod tests {
             format!("{err}").contains("on"),
             "expected a missing-field error for `on`: {err}"
         );
+    }
+
+    fn lower_with_backend(
+        src: &str,
+        node_src: &str,
+        backend: crate::SecretsBackend,
+    ) -> LowerOutput {
+        let doc = src.parse::<kdl::KdlDocument>().expect("parse module");
+        let module =
+            DeclarativeModule::from_kdl(&doc, std::path::Path::new("t")).expect("from_kdl");
+        let n = node_src
+            .parse::<kdl::KdlDocument>()
+            .unwrap()
+            .nodes()
+            .first()
+            .unwrap()
+            .clone();
+        let reg = crate::Registry::new();
+        let mut diags = Vec::new();
+        let mut ctx =
+            crate::LowerCtx::new(crate::Scope { host: "h".into() }, &reg, &mut diags, vec![])
+                .with_secrets_backend(backend);
+        module.lower(&n, &mut ctx).expect("lower")
+    }
+
+    const SECRET_MODULE: &str = "module name=\"t\" version=\"1.0.0\" {\n\
+        \x20   claims-node \"t\"\n\
+        \x20   schema {\n\
+        \x20       child \"key\" repeated=#true {\n\
+        \x20           prop \"secret\" type=\"string\" required=#true\n\
+        \x20       }\n\
+        \x20   }\n\
+        \x20   emit {\n\
+        \x20       for-each \"k\" in \"key\" {\n\
+        \x20           set \"services.x.file\" (secret)\"{k.secret}\"\n\
+        \x20       }\n\
+        \x20   }\n\
+        }";
+
+    fn raw_src(out: &LowerOutput) -> String {
+        match &out.units[0].assignment.value {
+            NixExpr::Raw(r) => r.src.clone(),
+            other => panic!("expected Raw, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn secret_sops_backend_emits_sops_path() {
+        let out = lower_with_backend(
+            SECRET_MODULE,
+            "t {\n    key secret=\"tailscale-authkey\"\n}",
+            crate::SecretsBackend::SopsNix,
+        );
+        assert_eq!(
+            raw_src(&out),
+            "config.sops.secrets.\"tailscale-authkey\".path"
+        );
+    }
+
+    #[test]
+    fn secret_agenix_backend_emits_age_path() {
+        let out = lower_with_backend(
+            SECRET_MODULE,
+            "t {\n    key secret=\"tailscale-authkey\"\n}",
+            crate::SecretsBackend::Agenix,
+        );
+        assert_eq!(
+            raw_src(&out),
+            "config.age.secrets.\"tailscale-authkey\".path"
+        );
+    }
+
+    #[test]
+    fn secret_name_is_escaped() {
+        let out = lower_with_backend(
+            SECRET_MODULE,
+            "t {\n    key secret=\"a\\\"b\"\n}",
+            crate::SecretsBackend::SopsNix,
+        );
+        // The embedded quote must be backslash-escaped so it cannot break out of the literal.
+        assert_eq!(raw_src(&out), "config.sops.secrets.\"a\\\"b\".path");
+    }
+
+    #[test]
+    fn secret_name_dollar_brace_is_escaped() {
+        let out = lower_with_backend(
+            SECRET_MODULE,
+            "t {\n    key secret=\"a${x}b\"\n}",
+            crate::SecretsBackend::SopsNix,
+        );
+        // `${` is Nix antiquotation even inside a quoted attr name, so it must be
+        // backslash-escaped, not passed through live.
+        assert_eq!(raw_src(&out), "config.sops.secrets.\"a\\${x}b\".path");
+    }
+
+    #[test]
+    fn secret_non_scalar_name_fails_dry_check() {
+        // `{key}` (the whole repeated child, a list/scope) is not a scalar, so the module must
+        // fail to load.
+        let src = "module name=\"t\" version=\"1.0.0\" {\n\
+            \x20   claims-node \"t\"\n\
+            \x20   schema { child \"key\" repeated=#true { prop \"secret\" type=\"string\" required=#true } }\n\
+            \x20   emit { set \"services.x.file\" (secret)\"{key}\" }\n\
+            }";
+        let doc = src.parse::<kdl::KdlDocument>().unwrap();
+        assert!(DeclarativeModule::from_kdl(&doc, std::path::Path::new("t")).is_err());
     }
 }

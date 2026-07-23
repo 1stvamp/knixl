@@ -1707,6 +1707,7 @@ fn preview_host(
         tool,
         oracles,
         &no_pins,
+        knixl_modules::SecretsBackend::default(),
     )
     .ok()
     .and_then(|files| {
