@@ -1,5 +1,6 @@
 //! Built-in Rust modules: used when the logic cannot be straight-line substitution.
 pub mod backups;
+pub mod disko;
 pub mod host;
 pub mod package;
 pub mod postgres;
@@ -14,5 +15,6 @@ pub fn register_builtins(reg: &mut Registry) {
     let _ = reg.register(Box::new(backups::Backups::new()));
     let _ = reg.register(Box::new(raw_nix::RawNixModule::new()));
     let _ = reg.register(Box::new(package::PackageModule::new()));
+    let _ = reg.register(Box::new(disko::Disko::new()));
     // ... more as they land.
 }
