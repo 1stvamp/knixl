@@ -109,3 +109,24 @@ migrations {
 ```
 
 A step applies when its `to` version lands in the half-open range `(recorded, running]`, so an upgrade from 1.0.0 to 1.2.0 shows both notes (ascending), while 1.1.0 to 1.2.0 shows only the last. The block is metadata: it does not affect emitted Nix or the output hash. Built-in modules provide the same notes through `Module::migration_notes`.
+
+## Built-in modules
+
+Some modules are written in Rust because their logic exceeds what the declarative template grammar can express. Each claims a KDL node and owns its own output structure.
+
+### disko
+
+`disko` claims the `disko` node and generates NixOS disko configuration. It is built-in because disko's config is name-keyed attribute sets nested several levels deep with heterogeneous per-partition content, which the single-level declarative template grammar cannot express.
+
+Node shape: `disk "<label>" device="<path>"` holds `partition "<name>" size="<size>" [type="<code>"]` children. Each partition holds exactly one content child, which is one of:
+
+- `filesystem format="<fmt>" mountpoint="<path>"` : a mounted filesystem.
+- `zfs pool="<name>"` : a ZFS member of the pool `<name>`. The pool itself must be declared as `zpool "<name>"` in the same node.
+- `swap [resume=#true]` : a swap partition, optionally resuming to it.
+- `luks name="<name>"` wrapping one inner content : LUKS encryption around a filesystem, zfs, or swap.
+
+`zpool "<label>"` holds an optional `mountpoint` and zero or more `dataset "<name>" [type="<type>"] [mountpoint="<path>"]` children. Dataset type defaults to `zfs_fs`.
+
+The `preset="boot-root-zfs" pool="<name>" root-size="<size>" [boot-size="<size>"]` shorthand is pure sugar for the common three-partition layout: an ESP (`512M` by default, or `boot-size` if set), an ext4 root (sized by `root-size`), and a ZFS vdev at 100% of the remaining space handed to `pool`. It suits single-disk systems that keep the OS on ext4 and the data on ZFS.
+
+Validation of `disko.*` paths (e.g. `disko.devices.disk.main.device`) runs only when the project declares disko as an out-of-tree oracle module via `oracle-modules { module "disko" ... }` in `knixl.kdl`. Without that declaration, disko paths remain unchecked (docs/06, ADR 0008).
