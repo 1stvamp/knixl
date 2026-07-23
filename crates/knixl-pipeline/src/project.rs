@@ -97,12 +97,16 @@ pub fn parse_project(root: &Path) -> Result<ProjectConfig, ProjectError> {
         .iter()
         .find(|n| n.name().value() == "secrets")
         .and_then(|n| n.get("backend"))
-        .and_then(|v| v.as_string())
     {
         None => knixl_modules::SecretsBackend::SopsNix,
-        Some("sops-nix") => knixl_modules::SecretsBackend::SopsNix,
-        Some("agenix") => knixl_modules::SecretsBackend::Agenix,
-        Some(other) => return Err(ProjectError::UnknownSecretsBackend(other.to_string())),
+        Some(v) => match v.as_string() {
+            Some("sops-nix") => knixl_modules::SecretsBackend::SopsNix,
+            Some("agenix") => knixl_modules::SecretsBackend::Agenix,
+            Some(other) => return Err(ProjectError::UnknownSecretsBackend(other.to_string())),
+            // A non-string `backend=` (e.g. `backend=5`) is malformed, not "no backend given",
+            // so it must error rather than silently default to sops-nix.
+            None => return Err(ProjectError::UnknownSecretsBackend(format!("{v:?}"))),
+        },
     };
 
     Ok(ProjectConfig {
@@ -261,6 +265,15 @@ mod tests {
     fn secrets_backend_unknown_errors() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("knixl.kdl"), "secrets backend=\"vault\"\n").unwrap();
+        assert!(parse_project(dir.path()).is_err());
+    }
+
+    #[test]
+    fn secrets_backend_non_string_errors() {
+        // A malformed `backend=` (not a string) must be a hard error, not a silent fallback
+        // to sops-nix.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("knixl.kdl"), "secrets backend=5\n").unwrap();
         assert!(parse_project(dir.path()).is_err());
     }
 }

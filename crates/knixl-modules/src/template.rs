@@ -353,7 +353,10 @@ impl ValueTemplate {
                     crate::SecretsBackend::SopsNix => "sops.secrets",
                     crate::SecretsBackend::Agenix => "age.secrets",
                 };
-                let esc = name.replace('\\', "\\\\").replace('"', "\\\"");
+                let esc = name
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace("${", "\\${");
                 NixExpr::Raw(RawNix {
                     src: format!("config.{prefix}.\"{esc}\".path"),
                     span: None,
@@ -2692,6 +2695,18 @@ mod tests {
         );
         // The embedded quote must be backslash-escaped so it cannot break out of the literal.
         assert_eq!(raw_src(&out), "config.sops.secrets.\"a\\\"b\".path");
+    }
+
+    #[test]
+    fn secret_name_dollar_brace_is_escaped() {
+        let out = lower_with_backend(
+            SECRET_MODULE,
+            "t {\n    key secret=\"a${x}b\"\n}",
+            crate::SecretsBackend::SopsNix,
+        );
+        // `${` is Nix antiquotation even inside a quoted attr name, so it must be
+        // backslash-escaped, not passed through live.
+        assert_eq!(raw_src(&out), "config.sops.secrets.\"a\\${x}b\".path");
     }
 
     #[test]

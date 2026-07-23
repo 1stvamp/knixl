@@ -416,6 +416,42 @@ fn gateway_agenix_backend_emits_age_path() {
 }
 
 #[test]
+fn tailscale_without_auth_key_emits_no_auth_key_file() {
+    // No `auth-key` child at all => the for-each has nothing to iterate, so
+    // authKeyFile must not appear (as opposed to being emitted empty).
+    let path = PathBuf::from("hosts").join("gateway-no-authkey.kdl");
+    let src = "host \"gateway\" {\n\
+        \x20   system \"x86_64-linux\"\n\
+        \x20   tailscale {\n\
+        \x20       up-flag \"--ssh\"\n\
+        \x20   }\n\
+        }"
+    .to_string();
+    let tool = "0.3.1".parse().unwrap();
+    let no_pins = std::collections::BTreeMap::new();
+    let no_oracles = std::collections::BTreeMap::new();
+    let files = generate(
+        &[HostSource { path, src }],
+        &build_registry(),
+        &identity_formatter(),
+        &tool,
+        &no_oracles,
+        &no_pins,
+        knixl_modules::SecretsBackend::default(),
+    )
+    .expect("generate");
+    let text = &files[0].text;
+    assert!(
+        !text.contains("authKeyFile"),
+        "no auth-key means no authKeyFile:\n---\n{text}"
+    );
+    assert!(
+        text.contains("services.tailscale.enable = true"),
+        "tailscale is still enabled:\n---\n{text}"
+    );
+}
+
+#[test]
 fn repeated_block_is_hoisted_into_a_let() {
     // shared.kdl applies the same security-headers block to two vhosts, so the block
     // is bound once and referenced twice (structure visible pre-nixfmt).

@@ -94,7 +94,7 @@ That is still most of the value. Do not over-invest in parsing every type descri
 
 ## Secret references
 
-A `(secret)` value form emits a `config.<backend>.secrets.*` reference, not an option path, so it is not oracle-validated. The oracle validates the option paths a module assigns (e.g. `services.tailscale.authKeyFile`), not the values those paths hold. The secret reference itself (the `config.sops.secrets.* ` or `config.age.secrets.*` path) is handled by sops-nix or agenix at runtime, and knixl treats it as transparent. The backend (sops-nix or agenix) is set by the project's `secrets backend=` node in `knixl.kdl` (default sops-nix).
+A `(secret)` value form emits a `config.<backend>.secrets.*` reference, not an option path, so it is not oracle-validated. The oracle validates the option paths a module assigns (e.g. `services.tailscale.authKeyFile`), not the values those paths hold. The secret reference itself (the `config.sops.secrets.*` or `config.age.secrets.*` path) is handled by sops-nix or agenix at runtime, and knixl treats it as transparent. The backend (sops-nix or agenix) is set by the project's `secrets backend=` node in `knixl.kdl` (default sops-nix).
 
 ## What it cannot catch
 
