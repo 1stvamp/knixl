@@ -138,18 +138,89 @@ fn parse_disk(n: &KdlNode) -> Result<Disk, LowerError> {
         .and_then(|v| v.as_string())
         .ok_or_else(|| LowerError::missing(&format!("disk `{label}`.device")))?
         .to_string();
-    if n.get("preset").is_some() {
-        // The `preset` shorthand lands in a later task. Until then reject it explicitly rather
-        // than silently emitting a disk with no partitions.
-        return Err(LowerError::Other(
-            "`preset` shorthand is not supported yet".into(),
-        ));
+    if let Some(preset) = n.get("preset").and_then(|v| v.as_string()) {
+        return expand_preset(n, label, device, preset);
     }
     let mut partitions = Vec::new();
     for pn in children_named(n, "partition") {
         partitions.push(parse_partition(pn)?);
     }
     ensure_unique(partitions.iter().map(|p| p.name.as_str()), "partition")?;
+    Ok(Disk {
+        label,
+        device,
+        partitions,
+    })
+}
+
+/// Desugar `preset="boot-root-zfs"` into the standard OS-plus-data layout: a sized ESP, a sized
+/// ext4 root, and a ZFS vdev taking the remainder. Pure sugar: it returns the same `Disk` a
+/// verbose block would, so both go through one emit path.
+fn expand_preset(
+    n: &KdlNode,
+    label: String,
+    device: String,
+    preset: &str,
+) -> Result<Disk, LowerError> {
+    if children_named(n, "partition").next().is_some() {
+        return Err(LowerError::Other(format!(
+            "disk `{label}`: `preset` and explicit `partition` children are mutually exclusive"
+        )));
+    }
+    if preset != "boot-root-zfs" {
+        return Err(LowerError::Other(format!(
+            "disk `{label}`: unknown preset `{preset}` (only `boot-root-zfs`)"
+        )));
+    }
+    let pool = n
+        .get("pool")
+        .and_then(|v| v.as_string())
+        .ok_or_else(|| {
+            LowerError::Other(format!(
+                "disk `{label}`: preset `boot-root-zfs` requires `pool`"
+            ))
+        })?
+        .to_string();
+    let root_size = n
+        .get("root-size")
+        .and_then(|v| v.as_string())
+        .ok_or_else(|| {
+            LowerError::Other(format!(
+                "disk `{label}`: preset `boot-root-zfs` requires `root-size`"
+            ))
+        })?
+        .to_string();
+    let boot_size = n
+        .get("boot-size")
+        .and_then(|v| v.as_string())
+        .unwrap_or("512M")
+        .to_string();
+    let partitions = vec![
+        Partition {
+            name: "ESP".into(),
+            size: boot_size,
+            type_code: Some("EF00".into()),
+            content: Content::Filesystem {
+                format: "vfat".into(),
+                mountpoint: Some("/boot".into()),
+            },
+        },
+        Partition {
+            name: "root".into(),
+            size: root_size,
+            type_code: None,
+            content: Content::Filesystem {
+                format: "ext4".into(),
+                mountpoint: Some("/".into()),
+            },
+        },
+        Partition {
+            name: "data".into(),
+            size: "100%".into(),
+            type_code: None,
+            content: Content::Zfs { pool },
+        },
+    ];
     Ok(Disk {
         label,
         device,
@@ -634,5 +705,67 @@ mod tests {
             "disko { disk \"m\" device=\"/dev/sda\" { partition \"c\" size=\"1G\" { luks name=\"x\" { } } } }",
         );
         assert!(zero.contains("exactly one content"));
+    }
+
+    #[test]
+    fn preset_expands_to_boot_root_zfs() {
+        // The preset disk and its hand-written verbose equivalent must parse to the same Disk,
+        // so the sugar can never drift from the desugared form.
+        let preset = node(
+            "disk \"main\" device=\"/dev/nvme0n1\" preset=\"boot-root-zfs\" pool=\"tank\" root-size=\"100G\"",
+        );
+        let verbose = node(
+            "disk \"main\" device=\"/dev/nvme0n1\" {\n\
+             \x20   partition \"ESP\" size=\"512M\" type=\"EF00\" { filesystem format=\"vfat\" mountpoint=\"/boot\" }\n\
+             \x20   partition \"root\" size=\"100G\" { filesystem format=\"ext4\" mountpoint=\"/\" }\n\
+             \x20   partition \"data\" size=\"100%\" { zfs pool=\"tank\" }\n\
+             }",
+        );
+        assert_eq!(
+            super::parse_disk(&preset).unwrap(),
+            super::parse_disk(&verbose).unwrap()
+        );
+    }
+
+    #[test]
+    fn preset_boot_size_override() {
+        let disk = super::parse_disk(&node(
+            "disk \"m\" device=\"/dev/sda\" preset=\"boot-root-zfs\" pool=\"tank\" root-size=\"50G\" boot-size=\"1G\"",
+        ))
+        .unwrap();
+        assert_eq!(disk.partitions[0].name, "ESP");
+        assert_eq!(disk.partitions[0].size, "1G");
+    }
+
+    #[test]
+    fn preset_with_explicit_partition_errors() {
+        // KDL requires a separator between sibling nodes even when the preceding sibling's own
+        // children block just closed; `disk { ... } zpool` alone does not parse, so join with a
+        // `;` (must sit directly against the closing brace: a space either side of `;` fails to
+        // parse under this crate's KDL grammar).
+        let e = lower_err(
+            "disko { disk \"m\" device=\"/dev/sda\" preset=\"boot-root-zfs\" pool=\"tank\" root-size=\"10G\" { partition \"x\" size=\"1G\" { swap } };zpool \"tank\" { } }",
+        );
+        assert!(e.contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn preset_unknown_value_errors() {
+        let e = lower_err(
+            "disko { disk \"m\" device=\"/dev/sda\" preset=\"raid\" pool=\"tank\" root-size=\"10G\" zpool \"tank\" { } }",
+        );
+        assert!(e.contains("unknown preset"));
+    }
+
+    #[test]
+    fn preset_requires_pool_and_root_size() {
+        assert!(lower_err(
+            "disko { disk \"m\" device=\"/dev/sda\" preset=\"boot-root-zfs\" root-size=\"10G\" }"
+        )
+        .contains("pool"));
+        assert!(lower_err(
+            "disko { disk \"m\" device=\"/dev/sda\" preset=\"boot-root-zfs\" pool=\"tank\" zpool \"tank\" { } }"
+        )
+        .contains("root-size"));
     }
 }
