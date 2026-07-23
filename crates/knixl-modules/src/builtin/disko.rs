@@ -250,16 +250,30 @@ fn parse_partition(n: &KdlNode) -> Result<Partition, LowerError> {
 }
 
 /// The single content child of a partition or luks wrapper. Exactly one of
-/// filesystem/zfs/swap/luks; zero or more than one is an error.
+/// filesystem/zfs/swap/luks; zero or more than one is an error. A partition or luks node has no
+/// other legitimate children, so any child not in `CONTENT_NAMES` is a typo, not something to
+/// silently drop.
 fn parse_content(parent: &KdlNode, label: &str) -> Result<Content, LowerError> {
-    let contents: Vec<&KdlNode> = parent
+    let children: Vec<&KdlNode> = parent
         .children()
         .into_iter()
         .flat_map(|d| d.nodes().iter())
+        .collect();
+    if let Some(unknown) = children
+        .iter()
+        .find(|n| !CONTENT_NAMES.contains(&n.name().value()))
+    {
+        return Err(LowerError::Other(format!(
+            "`{label}` has unknown content child `{}`; expected one of filesystem, zfs, swap, luks",
+            unknown.name().value()
+        )));
+    }
+    let contents: Vec<&KdlNode> = children
+        .into_iter()
         .filter(|n| CONTENT_NAMES.contains(&n.name().value()))
         .collect();
     match contents.as_slice() {
-        [c] => content_from(c),
+        [c] => content_from(c, label),
         [] => Err(LowerError::Other(format!(
             "`{label}` needs exactly one content child (filesystem, zfs, swap, or luks)"
         ))),
@@ -269,13 +283,13 @@ fn parse_content(parent: &KdlNode, label: &str) -> Result<Content, LowerError> {
     }
 }
 
-fn content_from(n: &KdlNode) -> Result<Content, LowerError> {
+fn content_from(n: &KdlNode, label: &str) -> Result<Content, LowerError> {
     match n.name().value() {
         "filesystem" => {
             let format = n
                 .get("format")
                 .and_then(|v| v.as_string())
-                .ok_or_else(|| LowerError::missing("filesystem.format"))?
+                .ok_or_else(|| LowerError::missing(&format!("`{label}`.filesystem.format")))?
                 .to_string();
             let mountpoint = n
                 .get("mountpoint")
@@ -287,7 +301,7 @@ fn content_from(n: &KdlNode) -> Result<Content, LowerError> {
             let pool = n
                 .get("pool")
                 .and_then(|v| v.as_string())
-                .ok_or_else(|| LowerError::missing("zfs.pool"))?
+                .ok_or_else(|| LowerError::missing(&format!("`{label}`.zfs.pool")))?
                 .to_string();
             Ok(Content::Zfs { pool })
         }
@@ -299,7 +313,7 @@ fn content_from(n: &KdlNode) -> Result<Content, LowerError> {
             let name = n
                 .get("name")
                 .and_then(|v| v.as_string())
-                .ok_or_else(|| LowerError::missing("luks.name"))?
+                .ok_or_else(|| LowerError::missing(&format!("`{label}`.luks.name")))?
                 .to_string();
             let inner = parse_content(n, "luks")?;
             if matches!(inner, Content::Luks { .. }) {
@@ -692,11 +706,54 @@ mod tests {
     }
 
     #[test]
+    fn luks_wrapped_dangling_pool_errors() {
+        // check_pool_refs must recurse through Content::Luks to find the zfs ref it wraps.
+        let e = lower_err(
+            "disko { disk \"m\" device=\"/dev/sda\" { partition \"c\" size=\"1G\" { luks name=\"a\" { zfs pool=\"nope\" } } } }",
+        );
+        assert!(e.contains("nope"));
+    }
+
+    #[test]
+    fn luks_in_luks_rejected() {
+        let e = lower_err(
+            "disko { disk \"m\" device=\"/dev/sda\" { partition \"c\" size=\"1G\" { luks name=\"a\" { luks name=\"b\" { filesystem format=\"ext4\" mountpoint=\"/\" } } } } }",
+        );
+        assert!(e.contains("luks may not nest inside luks"));
+    }
+
+    #[test]
     fn duplicate_partition_label_errors() {
         let e = lower_err(
             "disko { disk \"m\" device=\"/dev/sda\" { partition \"p\" size=\"1G\" { swap }\n partition \"p\" size=\"2G\" { swap } } }",
         );
         assert!(e.contains("duplicate partition"));
+    }
+
+    #[test]
+    fn duplicate_disk_label_errors() {
+        let e = lower_err(
+            "disko { disk \"m\" device=\"/dev/sda\" { partition \"p\" size=\"1G\" { swap } };disk \"m\" device=\"/dev/sdb\" { partition \"q\" size=\"1G\" { swap } } }",
+        );
+        assert!(e.contains("duplicate disk"));
+    }
+
+    #[test]
+    fn duplicate_dataset_label_errors() {
+        let e = lower_err(
+            "disko { zpool \"tank\" { dataset \"d\" mountpoint=\"/tank/d\"; dataset \"d\" mountpoint=\"/tank/d2\" } }",
+        );
+        assert!(e.contains("duplicate dataset"));
+    }
+
+    #[test]
+    fn unknown_content_child_errors() {
+        // A valid `filesystem` content sibling must not mask an unknown node under the same
+        // partition: both are hard errors, not a silently-dropped extra child.
+        let e = lower_err(
+            "disko { disk \"m\" device=\"/dev/sda\" { partition \"p\" size=\"1G\" { filesystem format=\"ext4\" mountpoint=\"/\"\n btrfs } } }",
+        );
+        assert!(e.contains("btrfs"));
     }
 
     #[test]
