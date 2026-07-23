@@ -4,6 +4,7 @@
 
 pub mod builtin;
 pub mod registry;
+pub mod stdlib;
 pub mod template;
 
 use kdl::KdlNode;
@@ -12,6 +13,46 @@ use miette::SourceSpan;
 use semver::Version;
 
 pub use registry::{Registry, RegistryError};
+
+/// Which precedence layer a module came from. Higher variants win.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleLayer {
+    Stdlib,
+    Fetched,
+    Local,
+    Builtin,
+}
+
+impl ModuleLayer {
+    pub fn label(self) -> &'static str {
+        match self {
+            ModuleLayer::Stdlib => "stdlib",
+            ModuleLayer::Fetched => "fetched",
+            ModuleLayer::Local => "local",
+            ModuleLayer::Builtin => "built-in",
+        }
+    }
+}
+
+/// A node claimed by more than one layer: `kept` won, `shadowed` was skipped. Surfaced as a
+/// warning so shadowing is never silent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShadowNotice {
+    pub node: String,
+    pub kept: ModuleLayer,
+    pub shadowed: ModuleLayer,
+}
+
+impl ShadowNotice {
+    pub fn message(&self) -> String {
+        format!(
+            "module node `{}`: {} module shadows the {} one",
+            self.node,
+            self.kept.label(),
+            self.shadowed.label()
+        )
+    }
+}
 
 #[derive(Clone)]
 pub struct ModuleId {

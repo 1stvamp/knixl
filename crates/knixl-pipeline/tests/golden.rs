@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 
 use knixl_lock::Lock;
 use knixl_modules::builtin::register_builtins;
-use knixl_modules::template::DeclarativeModule;
 use knixl_modules::Registry;
 use knixl_nix::Formatter;
 use knixl_pipeline::{generate, HostSource};
@@ -21,31 +20,12 @@ fn examples_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
 
-fn modules_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../modules")
-}
-
-/// Registry as the CLI would build it: built-ins first, then every declarative module
-/// found under `modules/<name>/knixl-module.kdl`.
+/// Registry as the CLI would build it for a project with no local `modules/`: built-ins,
+/// then the embedded stdlib. The golden hosts' declarative modules come from the embed.
 fn build_registry() -> Registry {
     let mut reg = Registry::new();
     register_builtins(&mut reg);
-
-    let modules = modules_dir();
-    if let Ok(entries) = fs::read_dir(&modules) {
-        for entry in entries.flatten() {
-            let manifest = entry.path().join("knixl-module.kdl");
-            if !manifest.exists() {
-                continue;
-            }
-            let src = fs::read_to_string(&manifest).expect("read module manifest");
-            let doc = knixl_kdl::parse(&src).expect("parse module manifest");
-            let module =
-                DeclarativeModule::from_kdl(&doc, &manifest).expect("load declarative module");
-            reg.register(Box::new(module))
-                .expect("register declarative module");
-        }
-    }
+    let _ = knixl_modules::stdlib::register_stdlib(&mut reg);
     reg
 }
 

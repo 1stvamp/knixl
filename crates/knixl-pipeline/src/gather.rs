@@ -53,7 +53,7 @@ pub enum GatherError {
 pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Project, GatherError> {
     let project = parse_project(root).map_err(|e| GatherError::Module(e.to_string()))?;
     let hosts = read_hosts(root)?;
-    let registry = build_registry(root)?;
+    let (registry, module_notices) = build_registry(root)?;
 
     let formatter_pin = FormatterPin {
         name: formatter.name.clone(),
@@ -133,7 +133,9 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     };
 
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
-    let mut warnings: Vec<String> = Vec::new();
+    // Shadowed stdlib modules are non-fatal: fold into the same warnings channel as the
+    // generate-path lints, so shadowing is reported but never gates.
+    let mut warnings: Vec<String> = module_notices.iter().map(|n| n.message()).collect();
     let (mut expected, mut validation_errors) = match generate(
         &hosts,
         &registry,
@@ -384,17 +386,24 @@ pub fn declared_oracle_module_hosts(hosts: &[HostSource]) -> BTreeSet<String> {
     out
 }
 
-/// Build just the module registry for `root` (built-ins plus declarative modules under
-/// `modules/`). Unlike `gather` this needs no formatter or oracle, so listing modules works
-/// even where nix/nixfmt are absent.
+/// Build just the module registry for `root` (built-ins, local, then the embedded stdlib).
+/// Unlike `gather` this needs no formatter or oracle, so listing modules works even where
+/// nix/nixfmt are absent. Shadow notices are dropped; callers that need them use
+/// `build_registry` directly.
 pub fn registry(root: &Path) -> Result<Registry, GatherError> {
-    build_registry(root)
+    Ok(build_registry(root)?.0)
 }
 
-fn build_registry(root: &Path) -> Result<Registry, GatherError> {
+/// Layer the registry in precedence order: built-in, then local (`<root>/modules/*`, a hard
+/// error on a duplicate within this layer), then the embedded stdlib filling whatever node is
+/// still unclaimed. Returns a shadow notice for every stdlib module a higher layer pre-empted.
+fn build_registry(
+    root: &Path,
+) -> Result<(Registry, Vec<knixl_modules::ShadowNotice>), GatherError> {
     let mut registry = Registry::new();
     register_builtins(&mut registry);
 
+    // Local project modules (highest after built-ins). Duplicate-within-layer stays a hard error.
     let dir = root.join("modules");
     if dir.is_dir() {
         let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)?
@@ -415,7 +424,10 @@ fn build_registry(root: &Path) -> Result<Registry, GatherError> {
                 .map_err(|e| GatherError::Module(e.to_string()))?;
         }
     }
-    Ok(registry)
+
+    // Embedded stdlib fills any node not already claimed.
+    let notices = knixl_modules::stdlib::register_stdlib(&mut registry);
+    Ok((registry, notices))
 }
 
 fn read_disk(root: &Path) -> Result<DiskState, GatherError> {
