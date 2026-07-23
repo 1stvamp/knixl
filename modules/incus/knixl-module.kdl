@@ -1,0 +1,58 @@
+// A declarative knixl module: Incus (enable, the web UI, and the daemon preseed for
+// storage pools, networks and a default profile). All stock NixOS options.
+
+module name="incus" version="1.0.0" {
+    summary "An Incus host: enable, the web UI, and the daemon preseed (storage pools, networks, a default profile)."
+    claims-node "incus"
+
+    schema {
+        child "ui" type="bool" \
+            doc="Enable the Incus web UI (virtualisation.incus.ui.enable)."
+        child "storage-pool" repeated=#true \
+            doc="A preseed storage pool. The label is the pool name." {
+            arg "name" type="string" required=#true
+            prop "driver" type="string" required=#true
+            prop "source" type="string" required=#true
+        }
+        child "network" repeated=#true \
+            doc="A preseed network. The label is the network name." {
+            arg "name" type="string" required=#true
+            prop "type" type="string" required=#true
+            prop "ipv4" type="string" required=#true
+            prop "nat" type="string" required=#true
+        }
+        child "profile" repeated=#true \
+            doc="A preseed profile with a root disk on `pool` and an eth0 nic on `network`." {
+            arg "name" type="string" required=#true
+            prop "pool" type="string" required=#true
+            prop "network" type="string" required=#true
+        }
+    }
+
+    emit {
+        set "virtualisation.incus.enable" #true
+        when-flag "ui" {
+            set "virtualisation.incus.ui.enable" #true
+        }
+        list "virtualisation.incus.preseed.storage_pools" from "storage-pool" {
+            set "name" "{storage-pool.name}"
+            set "driver" "{storage-pool.driver}"
+            set "config.source" "{storage-pool.source}"
+        }
+        list "virtualisation.incus.preseed.networks" from "network" {
+            set "name" "{network.name}"
+            set "type" "{network.type}"
+            set "config.\"ipv4.address\"" "{network.ipv4}"
+            set "config.\"ipv4.nat\"" "{network.nat}"
+        }
+        list "virtualisation.incus.preseed.profiles" from "profile" {
+            set "name" "{profile.name}"
+            set "devices.root.path" "/"
+            set "devices.root.pool" "{profile.pool}"
+            set "devices.root.type" "disk"
+            set "devices.eth0.name" "eth0"
+            set "devices.eth0.network" "{profile.network}"
+            set "devices.eth0.type" "nic"
+        }
+    }
+}
