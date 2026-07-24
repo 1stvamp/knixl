@@ -435,7 +435,14 @@ fn build_registry(
     register_builtins(&mut registry);
     let builtin_nodes: BTreeSet<String> = registry.entries().map(|(k, _)| k.to_string()).collect();
 
-    // Local project modules (highest after built-ins). Duplicate-within-layer stays a hard error.
+    let mut notices = Vec::new();
+    let mut validation_errors = Vec::new();
+
+    // Local project modules (highest after built-ins). A local module claiming a node a
+    // built-in already claims is a shadow notice, not a hard error (ADR 0010: every
+    // across-layer collision is "higher wins + a shadow notice, never silent"), mirroring
+    // the fetched loop below. A duplicate WITHIN this layer (two local modules claiming the
+    // same node) is still a hard error: nothing outranks it to resolve the collision.
     let dir = root.join("modules");
     if dir.is_dir() {
         let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)?
@@ -451,6 +458,15 @@ fn build_registry(
             let doc = knixl_kdl::parse(&src).map_err(|e| GatherError::Module(e.to_string()))?;
             let module = DeclarativeModule::from_kdl(&doc, &manifest)
                 .map_err(|e| GatherError::Module(e.to_string()))?;
+            let node = module.node_name().to_string();
+            if builtin_nodes.contains(&node) {
+                notices.push(knixl_modules::ShadowNotice {
+                    node,
+                    kept: knixl_modules::ModuleLayer::Builtin,
+                    shadowed: knixl_modules::ModuleLayer::Local,
+                });
+                continue;
+            }
             registry
                 .register(Box::new(module))
                 .map_err(|e| GatherError::Module(e.to_string()))?;
@@ -466,8 +482,6 @@ fn build_registry(
     // or local (the same set either way, since this snapshot sits right between the local
     // layer above and the fetched layer below) so the nodes this layer itself adds can be
     // told apart afterwards, for `register_stdlib`'s shadow attribution.
-    let mut notices = Vec::new();
-    let mut validation_errors = Vec::new();
     let pre_fetch_nodes: BTreeSet<String> =
         registry.entries().map(|(k, _)| k.to_string()).collect();
     for source in sources {

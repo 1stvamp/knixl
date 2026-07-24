@@ -1250,6 +1250,12 @@ struct PendingModuleSource {
 /// cache location on `path` too, so a path edit that this check ignored would leave `gather`
 /// looking in the wrong place forever, and `install`/`upgrade` re-running the naive check would
 /// never notice or fix it (see task 5b brief and the task 5 report's "Half 2" analysis).
+///
+/// Limit: this checks `path` and the cached content hash only, never the declared `flake=`
+/// ref itself. Changing `flake=` while `path=` and the cache entry it resolves to stay the
+/// same is not detected here, since re-checking a flake ref means a network lookup, and this
+/// check exists precisely so `install`/`upgrade` can skip that lookup when nothing changed.
+/// Bump the source's rev, or drop its lock pin, to force re-resolution.
 fn module_source_up_to_date(
     pin: &ModuleSourcePin,
     source: &knixl_pipeline::project::ModuleSource,
@@ -1315,8 +1321,15 @@ fn resolve_module_source(
 /// `resolve_pending_project_modules`'s all-or-nothing GC-on-removal note: a project that drops
 /// its `modules {}` block entirely resolves to `Ok(Some(Vec::new()))` when the lock still holds
 /// stale pins, not `Ok(None)`, so those pins actually get GC'd rather than lingering forever.
+/// A malformed `knixl.kdl` is `Err(Code::Validation)` (message already printed), never folded
+/// into an empty config: unlike `resolve_pending_project_modules`, this pre-pass drives what
+/// gets fetched and written, so silently treating a parse failure as "nothing declared" would
+/// resolve and pin nothing while looking successful.
 fn resolve_pending_module_sources(ctx: &Ctx) -> Result<Option<Vec<PendingModuleSource>>, Code> {
-    let project = knixl_pipeline::project::parse_project(&ctx.root).unwrap_or_default();
+    let project = knixl_pipeline::project::parse_project(&ctx.root).map_err(|e| {
+        eprintln!("knixl: {e}");
+        Code::Validation
+    })?;
     let mut next = Vec::new();
     for source in &project.module_sources {
         let existing = ctx

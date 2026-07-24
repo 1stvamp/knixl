@@ -242,6 +242,58 @@ fn a_cached_manifest_whose_hash_no_longer_matches_its_pin_is_a_hard_error() {
     let _ = fs::remove_dir_all(&cache_home);
 }
 
+/// A local module claiming a node a built-in already claims (ADR 0010): the collision must
+/// surface as a shadow notice (built-in kept, local shadowed), never abort `gather` with the
+/// generic duplicate-within-registry error the local loop used to raise unconditionally.
+#[test]
+fn a_local_module_claiming_a_builtin_node_is_a_shadow_notice_not_a_hard_error() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let root = temp_root("builtin-shadow");
+
+    // A local module claiming "postgres", already claimed by the built-in Postgres module.
+    fs::create_dir_all(root.join("modules/postgres")).unwrap();
+    fs::write(
+        root.join("modules/postgres/knixl-module.kdl"),
+        "module name=\"postgres\" version=\"1.0.0\" {\n    summary \"Test local module shadowed by a built-in.\"\n    claims-node \"postgres\"\n\n    schema {\n    }\n\n    emit {\n    }\n}\n",
+    )
+    .unwrap();
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap())
+        .expect("gather must not abort on a local-vs-builtin collision");
+
+    assert!(
+        project.inputs.validation_errors.is_empty(),
+        "got: {:?}",
+        project.inputs.validation_errors
+    );
+
+    let module = project
+        .registry
+        .get("postgres")
+        .expect("the built-in module must still be registered under \"postgres\"");
+    assert_eq!(
+        module.kind(),
+        knixl_modules::ModuleKind::Builtin,
+        "the built-in must win the node, not the local module"
+    );
+
+    let shadow_notices: Vec<&String> = project
+        .warnings
+        .iter()
+        .filter(|w| {
+            w.contains("postgres") && w.contains("built-in") && w.contains("shadows the local one")
+        })
+        .collect();
+    assert_eq!(
+        shadow_notices.len(),
+        1,
+        "exactly one shadow notice for the local module: got {:?}",
+        project.warnings
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn a_local_module_shadows_a_fetched_module_claiming_the_same_node() {
     let _guard = ENV_LOCK.lock().unwrap();

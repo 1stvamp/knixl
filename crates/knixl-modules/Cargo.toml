@@ -19,4 +19,4 @@ kdl.workspace = true
 miette.workspace = true
 semver.workspace = true
 thiserror.workspace = true
-include_dir = "0.7"
+include_dir.workspace = true
