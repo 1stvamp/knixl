@@ -1725,7 +1725,7 @@ mod tests {
     fn load_web_service() -> DeclarativeModule {
         let src = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../modules/web-service/knixl-module.kdl"
+            "/stdlib/web-service/knixl-module.kdl"
         ))
         .expect("read manifest");
         let doc = src.parse::<kdl::KdlDocument>().expect("parse manifest");
@@ -2221,7 +2221,7 @@ mod tests {
     fn web_service_manifest() -> String {
         std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../modules/web-service/knixl-module.kdl"
+            "/stdlib/web-service/knixl-module.kdl"
         ))
         .expect("read web-service manifest")
     }

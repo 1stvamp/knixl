@@ -2726,7 +2726,7 @@ mod tests {
         let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
         std::fs::copy(examples.join("hosts/web.kdl"), root.join("hosts/web.kdl")).unwrap();
         std::fs::copy(
-            examples.join("../modules/web-service/knixl-module.kdl"),
+            examples.join("../crates/knixl-modules/stdlib/web-service/knixl-module.kdl"),
             root.join("modules/web-service/knixl-module.kdl"),
         )
         .unwrap();
