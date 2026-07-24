@@ -78,9 +78,20 @@ raw-nix {
 
 (see `examples/hosts/web.kdl`) passes that string through unmodified into the generated file. The content still hashes into the file, so it is covered by drift detection like everything else (ADR 0004); what is different is that the oracle does not look inside it. `raw-nix` is opaque to option-path validation, the trade-off for an escape hatch that can express anything Nix can.
 
+## Module sources and precedence
+
+Modules come from four layers, ordered by precedence (highest to lowest):
+
+1. **Built-in** (Rust modules compiled into the binary)
+2. **Local** (`<project>/modules/*`, declarative KDL modules)
+3. **Fetched** (declared in `knixl.kdl`, resolved and pinned at install/upgrade, see ADR 0010)
+4. **Embedded stdlib** (curated declarative modules bundled in the binary via `include_dir`, see ADR 0010)
+
+Each layer is scanned in reverse precedence order. The first layer to claim a node name wins; any later layer claiming the same name is shadowed and does not register. When a shadow occurs, the generator emits a notice in the generated code naming the winning layer, the shadowed layer, and the module name. This non-silent shadowing lets hand-readers and auditors see that the precedence choice is intentional.
+
 ## Registration
 
-Startup registers built-ins, then scans `modules/` for `knixl-module.kdl` files and registers each as a `DeclarativeModule`. Two modules claiming the same node name is a hard error, not last-wins. A third party ships a module by dropping a file in: no recompile, no fork. That is the whole ecosystem argument.
+Startup registers built-ins, then scans the embedded stdlib, then fetched modules (loaded from the lock-pinned cache), then local `modules/` for `knixl-module.kdl` files, registering each as a `DeclarativeModule` in reverse precedence order so the highest-precedence layer registers last and wins on name collision. Two modules claiming the same node name across the same layer is a hard error, not last-wins. A third party ships a module by dropping a file in `modules/`, or declares a flake-based fetched module in `knixl.kdl`: no recompile, no fork. That is the whole ecosystem argument.
 
 ## Payoff of a structured `schema()`
 
