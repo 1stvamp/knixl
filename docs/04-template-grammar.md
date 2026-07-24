@@ -147,3 +147,11 @@ The module sets `services.tailscale.enable = true`, collects `up-flag` children 
 `incus` claims the `incus` node and generates an Incus host. Node shape: repeated `storage-pool "<name>" driver= source=`, `network "<name>" type= ipv4= nat=`, and `profile "<name>" pool= network=` children. A profile emits the default shape: a root disk on `pool` and an `eth0` nic on `network`.
 
 The module sets `virtualisation.incus.enable = true`, enables the web UI via `virtualisation.incus.ui.enable` (gated by a `ui` flag), and configures the daemon preseed from pools, networks, and profiles. Virtual machine support (via `package "qemu"`) and administrative access (via the `user` module with `group "incus-admin"`) are configured separately, which the incus module does not emit.
+
+### home-manager
+
+`home-manager` claims the `home-manager` node and configures home-manager for one user (as a NixOS module). Node shape: `home-manager "<user>" state-version="<rel>"` with repeated `session-var "<name>" "<value>"` and `program "<name>"` children. Each `program` child enables `programs.<name>`.
+
+The module sets `home.stateVersion` (required), collects `session-var` children into `home.sessionVariables` (sourced only in home-manager-managed shells, not display managers or non-login shells), and always sets `useUserPackages` and `useGlobalPkgs` to true for safe NixOS integration. It never emits `nix.gc` or `nix.settings` (left to NixOS). In v1, only one `home-manager` node per host is supported; multi-user and `home.packages` are follow-ups.
+
+Validation of `home-manager.*` paths and the home-manager NixOS module import run only when the project declares home-manager as an oracle module via `oracle-modules { module "home-manager" ... }` in `knixl.kdl`, like disko or sops.
