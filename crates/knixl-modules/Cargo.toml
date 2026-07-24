@@ -12,9 +12,9 @@ keywords = ["nix", "kdl", "modules"]
 categories = ["development-tools"]
 
 [dependencies]
-knixl-ir = { path = "../knixl-ir", version = "0.3.1" }
-knixl-oracle = { path = "../knixl-oracle", version = "0.3.1" }
-knixl-kdl = { path = "../knixl-kdl", version = "0.3.1" }
+knixl-ir = { path = "../knixl-ir", version = "1.0.0" }
+knixl-oracle = { path = "../knixl-oracle", version = "1.0.0" }
+knixl-kdl = { path = "../knixl-kdl", version = "1.0.0" }
 kdl.workspace = true
 miette.workspace = true
 semver.workspace = true
