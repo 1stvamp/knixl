@@ -12,7 +12,7 @@ keywords = ["nix", "lockfile", "reproducibility"]
 categories = ["development-tools"]
 
 [dependencies]
-knixl-nix = { path = "../knixl-nix", version = "0.3.1" }
+knixl-nix = { path = "../knixl-nix", version = "1.0.0" }
 kdl.workspace = true
 semver.workspace = true
 thiserror.workspace = true
