@@ -28,7 +28,7 @@ Each layer is scanned in reverse precedence order (stdlib first, then fetched, t
 
 ### Embedded stdlib
 
-The repository's `modules/` directory (under version control in the knixl repository, not the project repository) is the single source of truth for the curated, versioned baseline modules. These are bundled into the knixl binary via `include_dir`, registered on startup at the lowest precedence, and carry no external dependency or network fetch. Projects see them exactly as the knixl version provides; they cannot be overridden except by local or fetched modules claiming the same node name.
+The `crates/knixl-modules/stdlib/` directory (under version control in the knixl repository, not the project repository) is the single source of truth for the curated, versioned baseline modules. It lives inside the `knixl-modules` crate so it is packaged into the published crate: `include_dir!` embeds a path relative to the crate, and a crate cannot bundle files that sit outside its own directory. These modules are embedded into the knixl binary, registered on startup at the lowest precedence, and carry no external dependency or network fetch. Projects see them exactly as the knixl version provides; they cannot be overridden except by local or fetched modules claiming the same node name.
 
 ### Fetched modules
 

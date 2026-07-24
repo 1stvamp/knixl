@@ -86,7 +86,7 @@ fn temp_project(tag: &str) -> PathBuf {
     }
     fs::copy(examples.join("knixl.lock.kdl"), root.join("knixl.lock.kdl")).unwrap();
     fs::copy(
-        examples.join("../modules/web-service/knixl-module.kdl"),
+        examples.join("../crates/knixl-modules/stdlib/web-service/knixl-module.kdl"),
         root.join("modules/web-service/knixl-module.kdl"),
     )
     .unwrap();

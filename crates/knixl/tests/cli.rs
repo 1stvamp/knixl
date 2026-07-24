@@ -21,7 +21,7 @@ fn temp_project(tag: &str) -> PathBuf {
     // No lockfile: a fresh project, so the baseline versions match the running tool
     // (the copied examples lock pins nixfmt 1.3.1, which would skew against `cat`).
     fs::copy(
-        ex.join("../modules/web-service/knixl-module.kdl"),
+        ex.join("../crates/knixl-modules/stdlib/web-service/knixl-module.kdl"),
         root.join("modules/web-service/knixl-module.kdl"),
     )
     .unwrap();

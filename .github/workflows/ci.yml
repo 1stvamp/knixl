@@ -21,3 +21,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo build --workspace --tests
       - run: cargo test --workspace
+      # knixl-modules embeds its stdlib via include_dir!; a dry-run publish builds from an
+      # isolated tarball, catching any embedded path that escapes the crate directory (which
+      # a normal build does not, since it resolves paths relative to the live checkout).
+      - run: cargo publish -p knixl-modules --dry-run

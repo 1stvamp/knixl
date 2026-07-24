@@ -7,7 +7,7 @@ use crate::{Module, ModuleLayer, ShadowNotice};
 use include_dir::{include_dir, Dir};
 use std::collections::BTreeSet;
 
-static STDLIB: Dir = include_dir!("$CARGO_MANIFEST_DIR/../../modules");
+static STDLIB: Dir = include_dir!("$CARGO_MANIFEST_DIR/stdlib");
 
 /// Register every embedded stdlib module whose claimed node is not already taken by a
 /// higher-precedence layer. Returns a shadow notice for each module skipped because its node
