@@ -13,6 +13,7 @@ pub struct Lock {
     pub tool: Version,
     pub formatter: FormatterPin,
     pub oracle: OraclePin,
+    pub module_sources: Vec<ModuleSourcePin>,
     pub inputs: BTreeMap<PathBuf, Hash>,
     pub modules: BTreeMap<String, Version>,
     pub outputs: Vec<OutputEntry>,
@@ -50,6 +51,17 @@ pub struct OracleModulePin {
     pub url: String,
     pub rev: String,
     pub attr: String,
+}
+
+/// A pin for a fetched declarative module source (issue #13): the resolved source and the
+/// exact bytes, so a declared module is reproducible and generate stays offline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleSourcePin {
+    pub name: String,
+    pub url: String,
+    pub rev: String,
+    pub path: String,
+    pub hash: Hash,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +113,7 @@ impl Lock {
         let mut tool = None;
         let mut formatter = None;
         let mut oracle = None;
+        let mut module_sources = Vec::new();
         let mut inputs = BTreeMap::new();
         let mut modules = BTreeMap::new();
         let mut outputs = Vec::new();
@@ -122,6 +135,15 @@ impl Lock {
                         options_hash: prop_str(node, "options-hash")?,
                         modules: parse_oracle_modules(node)?,
                     })
+                }
+                "module-source" => {
+                    module_sources.push(ModuleSourcePin {
+                        name: arg_str(node, 0)?,
+                        url: prop_str(node, "url")?,
+                        rev: prop_str(node, "rev")?,
+                        path: prop_str_opt(node, "path"),
+                        hash: prop_str(node, "hash")?,
+                    });
                 }
                 "input" => {
                     inputs.insert(PathBuf::from(arg_str(node, 0)?), prop_str(node, "hash")?);
@@ -187,6 +209,7 @@ impl Lock {
             formatter: formatter
                 .ok_or_else(|| LockError::Malformed("missing `formatter`".into()))?,
             oracle: oracle.ok_or_else(|| LockError::Malformed("missing `oracle`".into()))?,
+            module_sources,
             inputs,
             modules,
             outputs,
@@ -212,6 +235,22 @@ impl Lock {
             esc(&self.oracle.options_hash),
         ));
         render_oracle_modules_block(&mut s, "    ", "        ", &self.oracle.modules);
+
+        if !self.module_sources.is_empty() {
+            let mut module_sources: Vec<&ModuleSourcePin> = self.module_sources.iter().collect();
+            module_sources.sort_by(|a, b| a.name.cmp(&b.name));
+            s.push('\n');
+            for m in module_sources {
+                s.push_str(&format!(
+                    "    module-source \"{}\" url=\"{}\" rev=\"{}\" path=\"{}\" hash=\"{}\"\n",
+                    esc(&m.name),
+                    esc(&m.url),
+                    esc(&m.rev),
+                    esc(&m.path),
+                    esc(&m.hash),
+                ));
+            }
+        }
 
         s.push('\n');
         for (path, hash) in &self.inputs {
@@ -381,6 +420,15 @@ fn prop_str(node: &KdlNode, key: &str) -> Result<String, LockError> {
         })
 }
 
+/// An optional string prop: absent reads as `""`, for back-compat with lockfiles written
+/// before this prop existed.
+fn prop_str_opt(node: &KdlNode, key: &str) -> String {
+    node.get(key)
+        .and_then(|v| v.as_string())
+        .map(str::to_string)
+        .unwrap_or_default()
+}
+
 /// The pin's `strategy` attr: absent means `CommitMix` (the default), `"override"` means
 /// `Override`, anything else is malformed.
 fn parse_pin_strategy(node: &KdlNode) -> Result<PinStrategy, LockError> {
@@ -459,6 +507,7 @@ mod tests {
                 options_hash: "blake3:77de".into(),
                 modules: vec![],
             },
+            module_sources: vec![],
             inputs,
             modules,
             outputs: vec![
@@ -705,6 +754,94 @@ mod tests {
     fn a_lock_without_module_pins_renders_unchanged() {
         let text = sample().render();
         assert!(!text.contains("oracle-module"));
+    }
+
+    #[test]
+    fn module_source_pins_round_trip() {
+        let mut lock = sample();
+        lock.module_sources = vec![ModuleSourcePin {
+            name: "web-service".into(),
+            url: "https://example.com/modules/web-service.tar.gz".into(),
+            rev: "abc123".into(),
+            path: "modules/web-service".into(),
+            hash: "blake3:feed".into(),
+        }];
+
+        let text = lock.render();
+        let back = Lock::parse(&text).expect("parse");
+        assert_eq!(back, lock);
+        assert!(text.contains(
+            "module-source \"web-service\" url=\"https://example.com/modules/web-service.tar.gz\" rev=\"abc123\" path=\"modules/web-service\" hash=\"blake3:feed\""
+        ));
+    }
+
+    #[test]
+    fn module_source_pin_with_empty_path_round_trips() {
+        let mut lock = sample();
+        lock.module_sources = vec![ModuleSourcePin {
+            name: "web-service".into(),
+            url: "https://example.com/modules/web-service.tar.gz".into(),
+            rev: "abc123".into(),
+            path: "".into(),
+            hash: "blake3:feed".into(),
+        }];
+
+        let text = lock.render();
+        let back = Lock::parse(&text).expect("parse");
+        assert_eq!(back, lock);
+        assert!(text.contains(
+            "module-source \"web-service\" url=\"https://example.com/modules/web-service.tar.gz\" rev=\"abc123\" path=\"\" hash=\"blake3:feed\""
+        ));
+    }
+
+    #[test]
+    fn module_source_pin_without_path_attr_parses_as_empty_path() {
+        let src = r#"lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
+
+    module-source "web-service" url="https://example.com/modules/web-service.tar.gz" rev="abc123" hash="blake3:feed"
+}
+"#;
+        let lock = Lock::parse(src).expect("parse");
+        assert_eq!(lock.module_sources.len(), 1);
+        assert_eq!(lock.module_sources[0].path, "");
+    }
+
+    #[test]
+    fn module_source_pins_are_sorted_by_name_on_render() {
+        let mut lock = sample();
+        lock.module_sources = vec![
+            ModuleSourcePin {
+                name: "zeta".into(),
+                url: "https://example.com/zeta".into(),
+                rev: "z1".into(),
+                path: "".into(),
+                hash: "blake3:zzz".into(),
+            },
+            ModuleSourcePin {
+                name: "alpha".into(),
+                url: "https://example.com/alpha".into(),
+                rev: "a1".into(),
+                path: "".into(),
+                hash: "blake3:aaa".into(),
+            },
+        ];
+
+        let text = lock.render();
+        let alpha_idx = text.find("module-source \"alpha\"").expect("alpha present");
+        let zeta_idx = text.find("module-source \"zeta\"").expect("zeta present");
+        assert!(
+            alpha_idx < zeta_idx,
+            "module sources must render sorted by name"
+        );
+    }
+
+    #[test]
+    fn a_lock_without_module_sources_renders_unchanged() {
+        let text = sample().render();
+        assert!(!text.contains("module-source"));
     }
 
     #[test]

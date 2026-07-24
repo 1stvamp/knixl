@@ -6,17 +6,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use knixl_lock::model::{FormatterPin, OracleModulePin, OraclePin};
+use knixl_lock::model::{FormatterPin, ModuleSourcePin, OracleModulePin, OraclePin};
 use knixl_lock::reconcile::{DiskState, ExpectedFile, Inputs, Versions};
 use knixl_lock::Lock;
 use knixl_modules::builtin::register_builtins;
 use knixl_modules::template::DeclarativeModule;
-use knixl_modules::Registry;
+use knixl_modules::{Module, Registry};
+use knixl_nix::module_fetch::{hash_module, module_cache_path};
 use knixl_nix::{hash, Formatter};
 use semver::Version;
 
 use crate::flake::{render_system_flake, FlakeHost};
-use crate::project::parse_project;
+use crate::project::{parse_project, ModuleSource};
 use crate::{generate, GenerateError, HostSource};
 
 /// Everything `Plan::compute` needs to reconcile a project, plus the registry (for `doc`),
@@ -53,7 +54,17 @@ pub enum GatherError {
 pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Project, GatherError> {
     let project = parse_project(root).map_err(|e| GatherError::Module(e.to_string()))?;
     let hosts = read_hosts(root)?;
-    let registry = build_registry(root)?;
+    // Read the lock before building the registry: the fetched layer (issue #13) resolves
+    // declared `modules {}` sources through the lock's pins, but a fresh project with no
+    // lock yet still needs a registry (the fallback `Lock` literal below seeds `modules`
+    // from it), so the lock is read once here and reused for both.
+    let existing_lock = read_lock(root)?;
+    let module_pins: &[ModuleSourcePin] = existing_lock
+        .as_ref()
+        .map(|l| l.module_sources.as_slice())
+        .unwrap_or(&[]);
+    let (registry, module_notices, module_validation_errors) =
+        build_registry(root, &project.module_sources, module_pins)?;
 
     let formatter_pin = FormatterPin {
         name: formatter.name.clone(),
@@ -61,7 +72,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     };
     // No lockfile means a fresh project: seed the baseline from the running versions so
     // there is no phantom skew (skew only means a recorded version actually moved).
-    let lock = match read_lock(root)? {
+    let lock = match existing_lock {
         Some(l) => l,
         None => Lock {
             version: 1,
@@ -72,6 +83,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
                 options_hash: String::new(),
                 modules: Vec::new(),
             },
+            module_sources: Vec::new(),
             inputs: BTreeMap::new(),
             modules: registry.module_versions(),
             outputs: Vec::new(),
@@ -133,7 +145,9 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     };
 
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
-    let mut warnings: Vec<String> = Vec::new();
+    // Shadowed stdlib modules are non-fatal: fold into the same warnings channel as the
+    // generate-path lints, so shadowing is reported but never gates.
+    let mut warnings: Vec<String> = module_notices.iter().map(|n| n.message()).collect();
     let (mut expected, mut validation_errors) = match generate(
         &hosts,
         &registry,
@@ -166,6 +180,11 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         Err(GenerateError::Validation(errs)) => (Vec::new(), errs),
         Err(other) => return Err(other.into()),
     };
+
+    // A declared `modules {}` source with no matching lock pin (issue #13) is a validation
+    // error naming the fix, exactly like an unresolved baseline: `build_registry` already
+    // refused to register it rather than silently skipping.
+    validation_errors.extend(module_validation_errors);
 
     // A declared baseline that is not yet resolved (no lock entry) or that has moved to a
     // different release than what is now declared, is a validation error naming the fix
@@ -384,17 +403,46 @@ pub fn declared_oracle_module_hosts(hosts: &[HostSource]) -> BTreeSet<String> {
     out
 }
 
-/// Build just the module registry for `root` (built-ins plus declarative modules under
-/// `modules/`). Unlike `gather` this needs no formatter or oracle, so listing modules works
-/// even where nix/nixfmt are absent.
+/// Build just the module registry for `root` (built-ins, local, then the embedded stdlib).
+/// Unlike `gather` this needs no formatter or oracle, so listing modules works even where
+/// nix/nixfmt are absent; it also passes no declared sources/pins, so the fetched layer
+/// (issue #13) is empty here (that needs the lock read `gather` already does). Shadow
+/// notices and validation errors are dropped; callers that need them use `build_registry`
+/// directly.
 pub fn registry(root: &Path) -> Result<Registry, GatherError> {
-    build_registry(root)
+    Ok(build_registry(root, &[], &[])?.0)
 }
 
-fn build_registry(root: &Path) -> Result<Registry, GatherError> {
+/// Layer the registry in precedence order: built-in, then local (`<root>/modules/*`, a hard
+/// error on a duplicate within this layer), then fetched (declared `modules {}` sources,
+/// issue #13, resolved through the lock's `pins` rather than the network, so this stays
+/// offline), then the embedded stdlib filling whatever node is still unclaimed.
+///
+/// A declared source with no matching pin is a validation error (never a silent skip)
+/// naming `install`/`upgrade` as the fix, collected in the third element rather than
+/// returned as an `Err`, so every problem in a project surfaces together (mirroring the
+/// unresolved-baseline check in `gather`). A cached manifest whose hash no longer matches
+/// its pin IS a hard error: the cache may be corrupt or tampered, and it must never be
+/// silently refetched.
+///
+/// Returns `(registry, shadow notices, validation errors)`.
+fn build_registry(
+    root: &Path,
+    sources: &[ModuleSource],
+    pins: &[ModuleSourcePin],
+) -> Result<(Registry, Vec<knixl_modules::ShadowNotice>, Vec<String>), GatherError> {
     let mut registry = Registry::new();
     register_builtins(&mut registry);
+    let builtin_nodes: BTreeSet<String> = registry.entries().map(|(k, _)| k.to_string()).collect();
 
+    let mut notices = Vec::new();
+    let mut validation_errors = Vec::new();
+
+    // Local project modules (highest after built-ins). A local module claiming a node a
+    // built-in already claims is a shadow notice, not a hard error (ADR 0010: every
+    // across-layer collision is "higher wins + a shadow notice, never silent"), mirroring
+    // the fetched loop below. A duplicate WITHIN this layer (two local modules claiming the
+    // same node) is still a hard error: nothing outranks it to resolve the collision.
     let dir = root.join("modules");
     if dir.is_dir() {
         let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)?
@@ -410,12 +458,98 @@ fn build_registry(root: &Path) -> Result<Registry, GatherError> {
             let doc = knixl_kdl::parse(&src).map_err(|e| GatherError::Module(e.to_string()))?;
             let module = DeclarativeModule::from_kdl(&doc, &manifest)
                 .map_err(|e| GatherError::Module(e.to_string()))?;
+            let node = module.node_name().to_string();
+            if builtin_nodes.contains(&node) {
+                notices.push(knixl_modules::ShadowNotice {
+                    node,
+                    kept: knixl_modules::ModuleLayer::Builtin,
+                    shadowed: knixl_modules::ModuleLayer::Local,
+                });
+                continue;
+            }
             registry
                 .register(Box::new(module))
                 .map_err(|e| GatherError::Module(e.to_string()))?;
         }
     }
-    Ok(registry)
+    let local_nodes: BTreeSet<String> = registry
+        .entries()
+        .map(|(k, _)| k.to_string())
+        .filter(|k| !builtin_nodes.contains(k))
+        .collect();
+
+    // Fetched layer (issue #13). `pre_fetch_nodes` is everything already claimed by built-in
+    // or local (the same set either way, since this snapshot sits right between the local
+    // layer above and the fetched layer below) so the nodes this layer itself adds can be
+    // told apart afterwards, for `register_stdlib`'s shadow attribution.
+    let pre_fetch_nodes: BTreeSet<String> =
+        registry.entries().map(|(k, _)| k.to_string()).collect();
+    for source in sources {
+        let name = source.name.as_str();
+        let Some(pin) = pins.iter().find(|p| p.name == source.name) else {
+            validation_errors.push(format!(
+                "module source \"{name}\": not resolved (no lock pin): run knixl install or upgrade"
+            ));
+            continue;
+        };
+        let Some(cache_path) = module_cache_path(&pin.url, &pin.rev, &pin.path) else {
+            validation_errors.push(format!(
+                "module source \"{name}\": cannot determine a cache location (no XDG_CACHE_HOME or HOME): run knixl install or upgrade"
+            ));
+            continue;
+        };
+        if !cache_path.is_file() {
+            validation_errors.push(format!(
+                "module source \"{name}\": not cached: run knixl install or upgrade"
+            ));
+            continue;
+        }
+        let text = std::fs::read_to_string(&cache_path)?;
+        let actual = hash_module(&text);
+        if actual != pin.hash {
+            let expected = &pin.hash;
+            return Err(GatherError::Module(format!(
+                "module source \"{name}\": cached manifest hash mismatch (expected {expected}, found {actual}): the cache may be corrupt or tampered, so it is never silently refetched; run knixl install or upgrade to refetch and re-verify"
+            )));
+        }
+        let doc = knixl_kdl::parse(&text).map_err(|e| GatherError::Module(e.to_string()))?;
+        let module = DeclarativeModule::from_kdl(&doc, &cache_path)
+            .map_err(|e| GatherError::Module(e.to_string()))?;
+        let node = module.node_name().to_string();
+        if builtin_nodes.contains(&node) || local_nodes.contains(&node) {
+            let kept = if builtin_nodes.contains(&node) {
+                knixl_modules::ModuleLayer::Builtin
+            } else {
+                knixl_modules::ModuleLayer::Local
+            };
+            notices.push(knixl_modules::ShadowNotice {
+                node,
+                kept,
+                shadowed: knixl_modules::ModuleLayer::Fetched,
+            });
+            continue;
+        }
+        // A duplicate here (neither built-in nor local already claims `node`) can only be
+        // two fetched sources claiming the same node: a hard error, as within any layer.
+        registry
+            .register(Box::new(module))
+            .map_err(|e| GatherError::Module(e.to_string()))?;
+    }
+
+    // Embedded stdlib fills any node not already claimed.
+    let fetched_nodes: BTreeSet<String> = registry
+        .entries()
+        .map(|(k, _)| k.to_string())
+        .filter(|k| !pre_fetch_nodes.contains(k))
+        .collect();
+    let stdlib_notices = knixl_modules::stdlib::register_stdlib(
+        &mut registry,
+        &builtin_nodes,
+        &local_nodes,
+        &fetched_nodes,
+    );
+    notices.extend(stdlib_notices);
+    Ok((registry, notices, validation_errors))
 }
 
 fn read_disk(root: &Path) -> Result<DiskState, GatherError> {
