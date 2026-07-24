@@ -4,7 +4,7 @@ Full sketch in `crates/knixl/src/main.rs`. The design rule: `Plan::compute` is t
 
 ## Finding your project
 
-Every command discovers its project root by walking up from the current directory: the first directory holding either `knixl.lock.kdl` or a `hosts/` directory wins (`discover_root` in `crates/knixl/src/main.rs`). If neither turns up before the filesystem root, the starting directory is used as-is. `modules/` is not itself part of that walk, but once a root is found it is expected to sit beside `hosts/` at that root (module lookups resolve it as `<root>/modules`), so run knixl from inside a project tree, not above or beside it.
+Every command discovers its project root by walking up from the current directory: the first directory holding either `knixl.lock.kdl` or a `hosts/` directory wins (`discover_root` in `crates/knixl/src/main.rs`). If neither turns up before the filesystem root, the starting directory is used as-is. A local `modules/` directory is optional: the curated stdlib modules are embedded in the binary, so most projects need no `modules/` at all. When present it sits beside `hosts/` at the root (resolved as `<root>/modules`) and its modules take precedence over the stdlib. Run knixl from inside a project tree, not above or beside it.
 
 ## Commands
 
