@@ -462,9 +462,14 @@ fn build_registry(
         .filter(|k| !builtin_nodes.contains(k))
         .collect();
 
-    // Fetched layer (issue #13).
+    // Fetched layer (issue #13). `pre_fetch_nodes` is everything already claimed by built-in
+    // or local (the same set either way, since this snapshot sits right between the local
+    // layer above and the fetched layer below) so the nodes this layer itself adds can be
+    // told apart afterwards, for `register_stdlib`'s shadow attribution.
     let mut notices = Vec::new();
     let mut validation_errors = Vec::new();
+    let pre_fetch_nodes: BTreeSet<String> =
+        registry.entries().map(|(k, _)| k.to_string()).collect();
     for source in sources {
         let name = source.name.as_str();
         let Some(pin) = pins.iter().find(|p| p.name == source.name) else {
@@ -473,7 +478,7 @@ fn build_registry(
             ));
             continue;
         };
-        let Some(cache_path) = module_cache_path(&pin.url, &pin.rev, &source.path) else {
+        let Some(cache_path) = module_cache_path(&pin.url, &pin.rev, &pin.path) else {
             validation_errors.push(format!(
                 "module source \"{name}\": cannot determine a cache location (no XDG_CACHE_HOME or HOME): run knixl install or upgrade"
             ));
@@ -518,7 +523,17 @@ fn build_registry(
     }
 
     // Embedded stdlib fills any node not already claimed.
-    let stdlib_notices = knixl_modules::stdlib::register_stdlib(&mut registry);
+    let fetched_nodes: BTreeSet<String> = registry
+        .entries()
+        .map(|(k, _)| k.to_string())
+        .filter(|k| !pre_fetch_nodes.contains(k))
+        .collect();
+    let stdlib_notices = knixl_modules::stdlib::register_stdlib(
+        &mut registry,
+        &builtin_nodes,
+        &local_nodes,
+        &fetched_nodes,
+    );
     notices.extend(stdlib_notices);
     Ok((registry, notices, validation_errors))
 }

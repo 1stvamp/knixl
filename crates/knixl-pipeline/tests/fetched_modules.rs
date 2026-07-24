@@ -90,6 +90,7 @@ fn fetched_source_with_a_verified_cache_entry_registers_its_node() {
         name: "widget".into(),
         url: url.into(),
         rev: rev.into(),
+        path: "".into(),
         hash: hash_module(&text),
     }];
     fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();
@@ -103,6 +104,61 @@ fn fetched_source_with_a_verified_cache_entry_registers_its_node() {
     assert!(
         project.registry.get("widget").is_some(),
         "the fetched module must register its claimed node"
+    );
+
+    std::env::remove_var("XDG_CACHE_HOME");
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&cache_home);
+}
+
+/// Generate loads from `pin.path`, the locked path, not `source.path`, the declared one: a
+/// project whose `knixl.kdl` has moved `path=` since the last `install`/`upgrade` stays
+/// reproducible against what was actually resolved, rather than reading a path nobody fetched
+/// (or worse, silently reading whatever happens to live at the new path today).
+#[test]
+fn load_at_generate_uses_the_pins_locked_path_not_the_declared_source_path() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let root = temp_root("pin-path");
+    let cache_home = temp_cache_home("pin-path");
+    std::env::set_var("XDG_CACHE_HOME", &cache_home);
+
+    // The declared source now points at "new-path", but the lock's pin (what was actually
+    // resolved and cached) still records "old-path".
+    fs::write(
+        root.join("knixl.kdl"),
+        "modules {\n    module \"widget\" flake=\"github:example/widget\" path=\"new-path\"\n}\n",
+    )
+    .unwrap();
+
+    let text = widget_manifest();
+    let url = "https://example.com/widget.git";
+    let rev = "abc123";
+    let cache_path = module_cache_path(url, rev, "old-path").expect("cache path");
+    fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+    fs::write(&cache_path, &text).unwrap();
+
+    let formatter = identity_formatter();
+    let tool: semver::Version = "0.3.1".parse().unwrap();
+    let seed = gather(&root, &formatter, tool.clone()).expect("gather (seed)");
+    let mut lock = seed.lock;
+    lock.module_sources = vec![knixl_lock::model::ModuleSourcePin {
+        name: "widget".into(),
+        url: url.into(),
+        rev: rev.into(),
+        path: "old-path".into(),
+        hash: hash_module(&text),
+    }];
+    fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();
+
+    let project = gather(&root, &formatter, tool).expect("gather");
+    assert!(
+        project.inputs.validation_errors.is_empty(),
+        "got: {:?}",
+        project.inputs.validation_errors
+    );
+    assert!(
+        project.registry.get("widget").is_some(),
+        "the fetched module must register from the pin's locked path"
     );
 
     std::env::remove_var("XDG_CACHE_HOME");
@@ -165,6 +221,7 @@ fn a_cached_manifest_whose_hash_no_longer_matches_its_pin_is_a_hard_error() {
         name: "widget".into(),
         url: url.into(),
         rev: rev.into(),
+        path: "".into(),
         // Deliberately wrong: the pin no longer matches what is cached, as if the cache had
         // been hand-edited or corrupted after being written by `install`/`upgrade`.
         hash: "blake3:0000000000000000000000000000000000000000000000000000000000000000".into(),
@@ -221,6 +278,7 @@ fn a_local_module_shadows_a_fetched_module_claiming_the_same_node() {
         name: "widget".into(),
         url: url.into(),
         rev: rev.into(),
+        path: "".into(),
         hash: hash_module(&text),
     }];
     fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();

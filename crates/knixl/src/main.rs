@@ -9,7 +9,7 @@ use std::io::IsTerminal;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use knixl_lock::model::{HostBaseline, OracleModulePin};
+use knixl_lock::model::{HostBaseline, ModuleSourcePin, OracleModulePin};
 use knixl_lock::{FileState, Plan};
 
 #[derive(Parser)]
@@ -147,12 +147,28 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             BTreeMap::new()
         };
 
+    // Task 5b: declared `modules {}` sources (knixl.kdl) resolve the same way, alongside the
+    // pre-passes above (in memory only, never written here; see
+    // `resolve_pending_module_sources`).
+    let pending_module_sources: Option<Vec<PendingModuleSource>> =
+        if matches!(cli.cmd, Cmd::Upgrade { .. } | Cmd::Install { .. }) {
+            match resolve_pending_module_sources(ctx) {
+                Ok(p) => p,
+                Err(code) => return code,
+            }
+        } else {
+            None
+        };
+
     // Plan off a lock patched with `pending` merged in, so the "not resolved: run knixl
     // upgrade" validation error does not block the very commands that would resolve it, and
     // `lock_next` (built from this patched lock) carries the pending baselines for
     // `Cmd::Upgrade` to write verbatim. `check`/`generate`/`plan` never populate `pending`, so
     // they always plan off the on-disk lock and inputs unchanged.
-    let patched_lock = (!pending.is_empty() || !pending_host_modules.is_empty()).then(|| {
+    let patched_lock = (!pending.is_empty()
+        || !pending_host_modules.is_empty()
+        || pending_module_sources.is_some())
+    .then(|| {
         let mut lock = ctx.lock.clone();
         lock.baselines
             .extend(pending.iter().map(|(host, b)| (host.clone(), b.clone())));
@@ -170,6 +186,13 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                     modules: Vec::new(),
                 })
                 .modules = pins.clone();
+        }
+        // Task 5b: a freshly resolved (or GC'd) module-source set replaces `module_sources`
+        // wholesale, exactly as `pending_modules` replaces `oracle.modules` wholesale, so
+        // `build_lock_next` (which copies `lock.module_sources` straight from this patched
+        // lock) carries the resolved pins through to `Cmd::Upgrade`'s/`commit_install`'s write.
+        if let Some(pending) = &pending_module_sources {
+            lock.module_sources = pending.iter().map(|p| p.pin.clone()).collect();
         }
         lock
     });
@@ -270,6 +293,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                 && pending.is_empty()
                 && pending_modules.is_none()
                 && pending_host_modules.is_empty()
+                && pending_module_sources.is_none()
             {
                 println!("already up to date");
                 return Code::Clean;
@@ -294,6 +318,14 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                         println!(
                             "would resolve oracle module \"{}\" ({}) for host \"{host}\" -> {}",
                             m.name, m.url, m.rev,
+                        );
+                    }
+                }
+                for p in pending_module_sources.iter().flatten() {
+                    if p.fetched_text.is_some() {
+                        println!(
+                            "would resolve module source \"{}\" ({}) -> {}",
+                            p.pin.name, p.pin.url, p.pin.rev,
                         );
                     }
                 }
@@ -325,10 +357,19 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                     );
                 }
             }
+            for p in pending_module_sources.iter().flatten() {
+                if p.fetched_text.is_some() {
+                    println!(
+                        "resolved module source \"{}\" ({}) -> {}",
+                        p.pin.name, p.pin.url, p.pin.rev,
+                    );
+                }
+            }
             // `plan.lock_next` was built from the lock already patched with `pending`/
-            // `pending_modules`/`pending_host_modules` (see `run`'s planning step above), so
-            // this carries the baselines and module pins through; the augmented-set build
-            // below (ADR 0008) may additionally set an `options-hash` on top of that.
+            // `pending_modules`/`pending_host_modules`/`pending_module_sources` (see `run`'s
+            // planning step above), so this carries the baselines and module pins through; the
+            // augmented-set build below (ADR 0008) may additionally set an `options-hash` on
+            // top of that.
             let mut lock_next = plan.lock_next.clone();
             let mut changed_hosts: BTreeSet<String> = pending.keys().cloned().collect();
             changed_hosts.extend(pending_host_modules.keys().cloned());
@@ -341,6 +382,14 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                 false,
             ) {
                 return code;
+            }
+            // Cache file writes (a disk side effect) happen only here, strictly after the
+            // `--yes` gate above, and before the lock write, so a lock pin is never recorded
+            // for a manifest that failed to land in the cache (task 5b).
+            if let Some(pending) = &pending_module_sources {
+                if let Err(code) = write_module_source_caches(pending) {
+                    return code;
+                }
             }
             write_lock(ctx, &lock_next); // bump tool/module/formatter/oracle/baselines
             Code::Clean
@@ -369,6 +418,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             &pending,
             pending_modules.as_deref(),
             &pending_host_modules,
+            pending_module_sources.as_deref(),
         ),
 
         Cmd::Tui => unreachable!("tui is dispatched before Ctx::load"),
@@ -390,6 +440,7 @@ fn install(
     pending: &BTreeMap<String, HostBaseline>,
     pending_modules: Option<&[OracleModulePin]>,
     pending_host_modules: &BTreeMap<String, Vec<OracleModulePin>>,
+    pending_module_sources: Option<&[PendingModuleSource]>,
 ) -> Code {
     use knixl_nix::pin::{PinError, PinResolver};
     use knixl_pipeline::install::{list_hosts, select_host};
@@ -598,6 +649,7 @@ fn install(
         baseline_pending.as_ref(),
         pending_modules,
         host_modules_pending.as_deref(),
+        pending_module_sources,
         strict,
     );
     if code == Code::Clean {
@@ -619,6 +671,14 @@ fn install(
                 m.name, m.url, initial.name, m.rev
             );
         }
+        for p in pending_module_sources.into_iter().flatten() {
+            if p.fetched_text.is_some() {
+                println!(
+                    "resolved module source \"{}\" ({}) -> {}",
+                    p.pin.name, p.pin.url, p.pin.rev
+                );
+            }
+        }
         if let Some((v, _, strategy, reason)) = &version_pin {
             println!(
                 "pinned {name} {v} via {} ({reason})",
@@ -632,8 +692,8 @@ fn install(
 // `pending_modules` is `None` for the interactive/TUI install paths (#35 phase 3 only wires
 // the plain, non-interactive `install`/`upgrade` paths; the TUI's own commit path does not
 // resolve or write project oracle-module pins yet -- see `commit_tui_install`'s call site).
-// `host_modules_pending` (ADR 0008, the host-override counterpart) is `None` there too, for
-// the same reason.
+// `host_modules_pending` (ADR 0008, the host-override counterpart) and `pending_module_sources`
+// (task 5b) are `None` there too, for the same reason.
 #[allow(clippy::too_many_arguments)]
 fn commit_install(
     chosen: &knixl_pipeline::install::HostInfo,
@@ -646,6 +706,7 @@ fn commit_install(
     baseline_pending: Option<&HostBaseline>,
     pending_modules: Option<&[OracleModulePin]>,
     host_modules_pending: Option<&[OracleModulePin]>,
+    pending_module_sources: Option<&[PendingModuleSource]>,
     strict: bool,
 ) -> Code {
     use knixl_pipeline::install::add_package;
@@ -684,6 +745,20 @@ fn commit_install(
             .map(|b| b.modules.clone())
             .unwrap_or_default()
     });
+    // As above, for the project-wide `module_sources` list (task 5b): captured before the
+    // write below, so a revert restores exactly what was pinned before, rather than blanking
+    // sources this install did not touch.
+    let prior_module_sources =
+        pending_module_sources.map(|_| Ctx::load().lock.module_sources.clone());
+
+    // The module-source cache file write (task 5b) is a disk side effect with nothing yet on
+    // record to undo, so it runs first and, on failure, simply refuses before writing anything
+    // else: a lock pin must never be recorded for a manifest that failed to land in the cache.
+    if let Some(pending) = pending_module_sources {
+        if let Err(code) = write_module_source_caches(pending) {
+            return code;
+        }
+    }
 
     // Record the pin, any pending baseline resolution, and any pending oracle-module
     // resolution before the versioned KDL hits disk (issue #22 review fix: a baseline
@@ -706,6 +781,10 @@ fn commit_install(
     if let Some(pins) = host_modules_pending {
         write_host_oracle_modules(&chosen.name, pins);
     }
+    if let Some(pending) = pending_module_sources {
+        let pins: Vec<ModuleSourcePin> = pending.iter().map(|p| p.pin.clone()).collect();
+        write_module_sources(&pins);
+    }
 
     if let Err(e) = std::fs::write(&chosen.path, &draft) {
         eprintln!("knixl: {}: {e}", chosen.path.display());
@@ -722,6 +801,9 @@ fn commit_install(
         }
         if let Some(prior) = &prior_host_modules {
             restore_host_oracle_modules(&chosen.name, prior);
+        }
+        if let Some(prior) = &prior_module_sources {
+            restore_module_sources(prior);
         }
         return Code::Internal;
     }
@@ -741,6 +823,9 @@ fn commit_install(
         }
         if let Some(prior) = &prior_host_modules {
             restore_host_oracle_modules(&chosen.name, prior);
+        }
+        if let Some(prior) = &prior_module_sources {
+            restore_module_sources(prior);
         }
     };
 
@@ -914,6 +999,30 @@ fn restore_host_oracle_modules(host: &str, prior: &[OracleModulePin]) {
     if let Some(b) = lock.baselines.get_mut(host) {
         b.modules = prior.to_vec();
     }
+    write_lock(&ctx, &lock);
+}
+
+/// Replace the lock's `module_sources` pins with `pins`, then write it back to disk (task 5b).
+/// Project-wide, like `write_oracle_modules`, not per host: a declared `modules {}` source is
+/// not tied to any one host.
+fn write_module_sources(pins: &[ModuleSourcePin]) {
+    let ctx = Ctx::load();
+    let mut lock = ctx.lock.clone();
+    lock.module_sources = pins.to_vec();
+    write_lock(&ctx, &lock);
+}
+
+/// Undo `write_module_sources`: restore `module_sources` to `prior` (captured by
+/// `commit_install` before it wrote the pending resolution), then write the lock back. Mirrors
+/// `restore_oracle_modules`. Deliberately does not touch any cache file `write_module_source_
+/// caches` may already have written for a freshly resolved source: the cache is
+/// content-addressed (keyed on `(url, rev, path)`), so a stray cache entry left behind by an
+/// aborted install is harmless, exactly as `build_and_cache_options`'s options.json cache is
+/// never deleted on any of the other revert paths here.
+fn restore_module_sources(prior: &[ModuleSourcePin]) {
+    let ctx = Ctx::load();
+    let mut lock = ctx.lock.clone();
+    lock.module_sources = prior.to_vec();
     write_lock(&ctx, &lock);
 }
 
@@ -1120,6 +1229,155 @@ fn resolve_pending_host_modules(ctx: &Ctx) -> Result<BTreeMap<String, Vec<Oracle
         }
     }
     Ok(pending)
+}
+
+/// One resolved fetched-module-source pin from `run`'s pre-pass (task 5b), plus (only when
+/// this run actually resolved and fetched it) the manifest text still waiting to be cached.
+/// `fetched_text: None` means the existing lock pin was verified up to date and is simply
+/// carried forward unchanged, needing no cache write; `Some(text)` means the pin is new or
+/// changed this run and `text` must still be written to `module_cache_path(pin.url, pin.rev,
+/// pin.path)` after the `--yes`/confirm gate (see `write_module_source_caches`).
+#[derive(Clone)]
+struct PendingModuleSource {
+    pin: ModuleSourcePin,
+    fetched_text: Option<String>,
+}
+
+/// Whether `pin` (the lock's currently recorded pin for a declared module source) is still
+/// valid against `source` (that source's current `knixl.kdl` declaration): its `path` has not
+/// moved AND its cache entry still hashes to `pin.hash`. Deliberately NOT a copy of
+/// `oracle_modules_up_to_date`'s name+url-only identity check: `module_cache_path` keys the
+/// cache location on `path` too, so a path edit that this check ignored would leave `gather`
+/// looking in the wrong place forever, and `install`/`upgrade` re-running the naive check would
+/// never notice or fix it (see task 5b brief and the task 5 report's "Half 2" analysis).
+fn module_source_up_to_date(
+    pin: &ModuleSourcePin,
+    source: &knixl_pipeline::project::ModuleSource,
+) -> bool {
+    if pin.path != source.path {
+        return false;
+    }
+    let Some(cache_path) =
+        knixl_nix::module_fetch::module_cache_path(&pin.url, &pin.rev, &pin.path)
+    else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(&cache_path) else {
+        return false;
+    };
+    knixl_nix::module_fetch::hash_module(&text) == pin.hash
+}
+
+/// Resolve one declared module source that is not already up to date: look up its flake ref,
+/// then fetch its manifest at the resolved rev. `Err(Code::Validation)` on a resolver or fetch
+/// failure (message already printed, naming the source), never a silent skip.
+fn resolve_module_source(
+    source: &knixl_pipeline::project::ModuleSource,
+) -> Result<PendingModuleSource, Code> {
+    let resolved = knixl_nix::module::ModuleResolver::resolve()
+        .lookup(&source.flake)
+        .map_err(|e| {
+            eprintln!(
+                "knixl: cannot resolve module source \"{}\" ({}): {e}",
+                source.name, source.flake
+            );
+            Code::Validation
+        })?;
+    let text = knixl_nix::module_fetch::fetch_module(&resolved.url, &resolved.rev, &source.path)
+        .map_err(|e| {
+            eprintln!(
+                "knixl: cannot fetch module source \"{}\" ({}@{}): {e}",
+                source.name, resolved.url, resolved.rev
+            );
+            Code::Validation
+        })?;
+    let pin = ModuleSourcePin {
+        name: source.name.clone(),
+        url: resolved.url,
+        rev: resolved.rev,
+        path: source.path.clone(),
+        hash: knixl_nix::module_fetch::hash_module(&text),
+    };
+    Ok(PendingModuleSource {
+        pin,
+        fetched_text: Some(text),
+    })
+}
+
+/// Resolve every declared `modules {}` source (`knixl.kdl`) IN MEMORY ONLY (task 5b; mirrors
+/// `resolve_pending_project_modules`/`resolve_pending_baseline`): a source whose lock pin is
+/// still up to date (`module_source_up_to_date`) is carried forward unchanged with no network
+/// call at all; anything else is freshly resolved and fetched via `resolve_module_source`, read
+/// but not yet written. `Ok(None)` when the resulting full set is identical to what the lock
+/// already holds (nothing to plan or write, so `Cmd::Upgrade`'s "already up to date" short
+/// circuit still fires); `Ok(Some(pins))` otherwise, always the FULL declared set (up-to-date
+/// entries included), since `module_sources` is replaced wholesale on write, mirroring
+/// `resolve_pending_project_modules`'s all-or-nothing GC-on-removal note: a project that drops
+/// its `modules {}` block entirely resolves to `Ok(Some(Vec::new()))` when the lock still holds
+/// stale pins, not `Ok(None)`, so those pins actually get GC'd rather than lingering forever.
+fn resolve_pending_module_sources(ctx: &Ctx) -> Result<Option<Vec<PendingModuleSource>>, Code> {
+    let project = knixl_pipeline::project::parse_project(&ctx.root).unwrap_or_default();
+    let mut next = Vec::new();
+    for source in &project.module_sources {
+        let existing = ctx
+            .lock
+            .module_sources
+            .iter()
+            .find(|p| p.name == source.name);
+        if let Some(pin) = existing {
+            if module_source_up_to_date(pin, source) {
+                next.push(PendingModuleSource {
+                    pin: pin.clone(),
+                    fetched_text: None,
+                });
+                continue;
+            }
+        }
+        next.push(resolve_module_source(source)?);
+    }
+
+    let mut next_sorted: Vec<&ModuleSourcePin> = next.iter().map(|p| &p.pin).collect();
+    next_sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut existing_sorted: Vec<&ModuleSourcePin> = ctx.lock.module_sources.iter().collect();
+    existing_sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    if next_sorted == existing_sorted {
+        return Ok(None);
+    }
+    Ok(Some(next))
+}
+
+/// Write every freshly resolved module source's manifest text to its cache location (task 5b),
+/// creating the cache directory if needed. Skips any entry with `fetched_text: None` (already
+/// verified in place, nothing to write). A write failure is a hard `Code::Internal`: a lock pin
+/// must never be recorded for a manifest that failed to land in the cache. Called only after
+/// the `--yes`/confirm gate (see `Cmd::Upgrade` and `commit_install`), never from the shared
+/// pending pre-pass.
+fn write_module_source_caches(pending: &[PendingModuleSource]) -> Result<(), Code> {
+    for p in pending {
+        let Some(text) = &p.fetched_text else {
+            continue;
+        };
+        let Some(cache_path) =
+            knixl_nix::module_fetch::module_cache_path(&p.pin.url, &p.pin.rev, &p.pin.path)
+        else {
+            eprintln!(
+                "knixl: module source \"{}\": cannot determine a cache location (no XDG_CACHE_HOME or HOME)",
+                p.pin.name
+            );
+            return Err(Code::Internal);
+        };
+        if let Some(parent) = cache_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("knixl: {}: {e}", parent.display());
+                return Err(Code::Internal);
+            }
+        }
+        if let Err(e) = std::fs::write(&cache_path, text) {
+            eprintln!("knixl: {}: {e}", cache_path.display());
+            return Err(Code::Internal);
+        }
+    }
+    Ok(())
 }
 
 /// Build the augmented `options.json` for one effective set (a nixpkgs rev plus its module
@@ -1343,14 +1601,15 @@ fn commit_tui_install(
     let pin_args = version_pin
         .as_ref()
         .map(|(v, resolved, strategy)| (*v, resolved, *strategy));
-    // The TUI/Hub commit path does not resolve project or host oracle-module pins (#35 phase 3
-    // / ADR 0008 wire only the plain `install`/`upgrade` paths; see the note on
-    // `commit_install`).
+    // The TUI/Hub commit path does not resolve project, host, or module-source pins (#35
+    // phase 3 / ADR 0008 / task 5b wire only the plain `install`/`upgrade` paths; see the note
+    // on `commit_install`).
     let code = commit_install(
         &host,
         &pkg,
         pin_args,
         baseline_pending.as_ref(),
+        None,
         None,
         None,
         strict,

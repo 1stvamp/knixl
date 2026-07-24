@@ -25,7 +25,10 @@ fn examples_dir() -> PathBuf {
 fn build_registry() -> Registry {
     let mut reg = Registry::new();
     register_builtins(&mut reg);
-    let _ = knixl_modules::stdlib::register_stdlib(&mut reg);
+    let builtin_nodes: std::collections::BTreeSet<String> =
+        reg.entries().map(|(k, _)| k.to_string()).collect();
+    let empty = std::collections::BTreeSet::new();
+    let _ = knixl_modules::stdlib::register_stdlib(&mut reg, &builtin_nodes, &empty, &empty);
     reg
 }
 

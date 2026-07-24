@@ -60,6 +60,7 @@ pub struct ModuleSourcePin {
     pub name: String,
     pub url: String,
     pub rev: String,
+    pub path: String,
     pub hash: Hash,
 }
 
@@ -140,6 +141,7 @@ impl Lock {
                         name: arg_str(node, 0)?,
                         url: prop_str(node, "url")?,
                         rev: prop_str(node, "rev")?,
+                        path: prop_str_opt(node, "path"),
                         hash: prop_str(node, "hash")?,
                     });
                 }
@@ -240,10 +242,11 @@ impl Lock {
             s.push('\n');
             for m in module_sources {
                 s.push_str(&format!(
-                    "    module-source \"{}\" url=\"{}\" rev=\"{}\" hash=\"{}\"\n",
+                    "    module-source \"{}\" url=\"{}\" rev=\"{}\" path=\"{}\" hash=\"{}\"\n",
                     esc(&m.name),
                     esc(&m.url),
                     esc(&m.rev),
+                    esc(&m.path),
                     esc(&m.hash),
                 ));
             }
@@ -415,6 +418,15 @@ fn prop_str(node: &KdlNode, key: &str) -> Result<String, LockError> {
                 node.name().value()
             ))
         })
+}
+
+/// An optional string prop: absent reads as `""`, for back-compat with lockfiles written
+/// before this prop existed.
+fn prop_str_opt(node: &KdlNode, key: &str) -> String {
+    node.get(key)
+        .and_then(|v| v.as_string())
+        .map(str::to_string)
+        .unwrap_or_default()
 }
 
 /// The pin's `strategy` attr: absent means `CommitMix` (the default), `"override"` means
@@ -751,6 +763,7 @@ mod tests {
             name: "web-service".into(),
             url: "https://example.com/modules/web-service.tar.gz".into(),
             rev: "abc123".into(),
+            path: "modules/web-service".into(),
             hash: "blake3:feed".into(),
         }];
 
@@ -758,8 +771,42 @@ mod tests {
         let back = Lock::parse(&text).expect("parse");
         assert_eq!(back, lock);
         assert!(text.contains(
-            "module-source \"web-service\" url=\"https://example.com/modules/web-service.tar.gz\" rev=\"abc123\" hash=\"blake3:feed\""
+            "module-source \"web-service\" url=\"https://example.com/modules/web-service.tar.gz\" rev=\"abc123\" path=\"modules/web-service\" hash=\"blake3:feed\""
         ));
+    }
+
+    #[test]
+    fn module_source_pin_with_empty_path_round_trips() {
+        let mut lock = sample();
+        lock.module_sources = vec![ModuleSourcePin {
+            name: "web-service".into(),
+            url: "https://example.com/modules/web-service.tar.gz".into(),
+            rev: "abc123".into(),
+            path: "".into(),
+            hash: "blake3:feed".into(),
+        }];
+
+        let text = lock.render();
+        let back = Lock::parse(&text).expect("parse");
+        assert_eq!(back, lock);
+        assert!(text.contains(
+            "module-source \"web-service\" url=\"https://example.com/modules/web-service.tar.gz\" rev=\"abc123\" path=\"\" hash=\"blake3:feed\""
+        ));
+    }
+
+    #[test]
+    fn module_source_pin_without_path_attr_parses_as_empty_path() {
+        let src = r#"lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle nixpkgs-rev="deadbeef" options-hash="blake3:x"
+
+    module-source "web-service" url="https://example.com/modules/web-service.tar.gz" rev="abc123" hash="blake3:feed"
+}
+"#;
+        let lock = Lock::parse(src).expect("parse");
+        assert_eq!(lock.module_sources.len(), 1);
+        assert_eq!(lock.module_sources[0].path, "");
     }
 
     #[test]
@@ -770,12 +817,14 @@ mod tests {
                 name: "zeta".into(),
                 url: "https://example.com/zeta".into(),
                 rev: "z1".into(),
+                path: "".into(),
                 hash: "blake3:zzz".into(),
             },
             ModuleSourcePin {
                 name: "alpha".into(),
                 url: "https://example.com/alpha".into(),
                 rev: "a1".into(),
+                path: "".into(),
                 hash: "blake3:aaa".into(),
             },
         ];
