@@ -1,0 +1,29 @@
+module name="home-manager" version="1.0.0" {
+    summary "home-manager for one user, with safe NixOS-module integration and a required stateVersion. Session variables are sourced only in home-manager-managed shells, not every context (display managers, non-login shells)."
+    claims-node "home-manager"
+
+    schema {
+        arg "name" type="string" required=#true doc="Login name of the user whose home is managed."
+        prop "state-version" type="string" required=#true \
+            doc="home.stateVersion, e.g. \"24.11\". Required: home-manager refuses to build without it."
+        child "session-var" repeated=#true \
+            doc="A home.sessionVariables entry. Sourced only in home-manager-managed shells." {
+            arg "name" type="string" required=#true
+            arg "value" type="string" required=#true
+        }
+        child "program" type="string" repeated=#true \
+            doc="Enable programs.<name> for the user, e.g. program \"git\"."
+    }
+
+    emit {
+        set "home-manager.useUserPackages" #true
+        set "home-manager.useGlobalPkgs" #true
+        set "home-manager.users.{name}.home.stateVersion" "{state-version}"
+        for-each "v" in "session-var" {
+            set "home-manager.users.{name}.home.sessionVariables.{v.name}" "{v.value}"
+        }
+        for-each "p" in "program" {
+            set "home-manager.users.{name}.programs.{p}.enable" #true
+        }
+    }
+}

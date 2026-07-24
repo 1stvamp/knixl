@@ -474,6 +474,44 @@ fn vmhost_file_attributes_incus() {
 }
 
 #[test]
+fn workstation_pipeline_produces_expected_structure() {
+    let files = generate_host("workstation.kdl");
+    assert_eq!(files.len(), 1, "workstation has no side-files");
+    let text = &files[0].text;
+    for needle in [
+        "home-manager.useUserPackages = true",
+        "home-manager.useGlobalPkgs = true",
+        "home-manager.users.\"wes\"",
+        "stateVersion = \"24.11\"",
+        "sessionVariables",
+        // EDITOR is a dynamic attr key (interpolated), so it renders quoted like every
+        // other dynamic key in this file (`"wes"`, `"git"`).
+        "\"EDITOR\" = \"nvim\"",
+        "programs",
+        "git",
+        "enable = true",
+    ] {
+        assert!(
+            text.contains(needle),
+            "workstation.nix missing `{needle}`\n---\n{text}"
+        );
+    }
+}
+
+#[test]
+fn workstation_file_attributes_home_manager() {
+    let files = generate_host("workstation.kdl");
+    let ws = &files[0];
+    for m in ["host", "home-manager"] {
+        assert!(
+            ws.modules.contains(&m.to_string()),
+            "workstation.nix should list {m}, got {:?}",
+            ws.modules
+        );
+    }
+}
+
+#[test]
 fn repeated_block_is_hoisted_into_a_let() {
     // shared.kdl applies the same security-headers block to two vhosts, so the block
     // is bound once and referenced twice (structure visible pre-nixfmt).
@@ -598,6 +636,15 @@ fn vmhost_matches_golden() {
         return;
     }
     assert_host_matches("vmhost.kdl");
+}
+
+#[test]
+fn workstation_matches_golden() {
+    if !formatter_available() {
+        eprintln!("skipping workstation_matches_golden: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
+    assert_host_matches("workstation.kdl");
 }
 
 #[test]

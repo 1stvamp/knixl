@@ -1,0 +1,10 @@
+host "workstation" {
+    system "x86_64-linux"
+
+    home-manager "wes" state-version="24.11" {
+        session-var "EDITOR" "nvim"
+        session-var "PAGER" "less"
+        program "git"
+        program "fish"
+    }
+}
