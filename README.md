@@ -86,7 +86,7 @@ The binary lands at `target/release/knixl`.
 
 ## Quickstart
 
-A knixl project is a directory with a `hosts/` folder. Declarative modules, when you have them, live in a `modules/` folder alongside it. knixl walks up from the current directory to the first folder that has `hosts/` or `knixl.lock.kdl`, and treats that as the root.
+A knixl project is a directory with a `hosts/` folder. The stdlib modules are built into knixl, so that is all you need to start; your own declarative modules, if you write any, live in an optional `modules/` folder beside it. knixl walks up from the current directory to the first folder that has `hosts/` or `knixl.lock.kdl`, and treats that as the root.
 
 ```sh
 mkdir -p demo/hosts && cd demo
@@ -101,7 +101,27 @@ knixl generate    # writes generated/hosts/web.nix and knixl.lock.kdl
 knixl check       # clean
 ```
 
-From there, add a module node (`web-service`, `postgres`, `backups`, ...) to the host and regenerate. `knixl doc <node>` prints what a node accepts before you write it.
+From there, add a module node to the host and regenerate. The modules are built in (see below), so there is nothing to install or copy first. `knixl doc <node>` prints what a node accepts before you write it.
+
+## Batteries included
+
+knixl ships a curated stdlib of modules, embedded in the binary, usable in any project with no setup (no `modules/` directory to place, nothing to fetch):
+
+- **web-service** : an nginx vhost with TLS, ACME, and hardening presets.
+- **disko** : declarative disk layout, GPT partitions with ext4/vfat/swap/LUKS content and ZFS pools, plus a `boot-root-zfs` shorthand.
+- **zfs**, **user**, **openssh** : the host primitives, ZFS with a stable `hostId`, a login user with SSH keys, a hardened sshd.
+- **tailscale** : Tailscale with an auth key pulled from a named secret.
+- **incus** : an Incus host, enable plus the web UI and the storage/network/profile preseed.
+- **home-manager** : per-user home-manager with the "Words of warning" guardrails (required `stateVersion`, safe `useUserPackages`, `nix.gc` left to NixOS) baked in.
+- **host**, **postgres**, **backups**, **package**, **raw-nix**, **security-headers** : the rest of the built-ins.
+
+Run `knixl doc <node>` for the typed reference of any of them.
+
+Three things worth calling out:
+
+- **Generate a bootable system.** Add a `system { }` block to `knixl.kdl` and `generate` also emits `generated/flake.nix` with `nixosConfigurations.<host>`, each host pinned to its own nixpkgs baseline. `nixos-rebuild switch --flake .#<host>` (or nixos-anywhere) and it boots. Absent the block, knixl emits modules only and the assembly seam stays yours (ADR 0009).
+- **Reference secrets without seeing them.** A `(secret)"name"` value wires a module option to a decrypted path (`config.sops.secrets."name".path`, or agenix), so the encrypted material stays out of band and knixl never reads or hashes the plaintext.
+- **Bring your own modules.** Declare `modules { module "x" flake="github:org/x" }` in `knixl.kdl`; knixl resolves it to a pinned rev, caches the manifest, and records it in the lock, so `generate` stays offline and byte-reproducible. Precedence is built-in, then your local `modules/`, then fetched, then stdlib, and a shadowed module is reported, never silent (ADR 0010).
 
 ## The model in four points
 
@@ -141,11 +161,11 @@ A generated file that someone hand-edited is **tainted**. knixl tells drift apar
 
 ## Examples
 
-`examples/` holds five worked hosts (`db`, `web`, `shared`, `pinned`, `pinned-override`) with their golden Nix output under `examples/expected/` and the matching lock. They double as the acceptance tests. To run them from a checkout the repo-root `modules/` directory must sit alongside (the declarative modules `web-service` and `security-headers` live there). See examples/README.md.
+`examples/` holds worked hosts (`db`, `web`, `shared`, `pinned`, `pinned-override`, plus `nas`, `gateway`, `vault`, `vmhost`, `workstation` exercising the newer modules) with their golden Nix output under `examples/expected/` and the matching lock. They double as the acceptance tests, and run with nothing beside them: every module they use is part of the embedded stdlib. See examples/README.md.
 
 ## Status
 
-v1 is built: `check`, `plan`, `generate`, `upgrade`, `doc`, `install`, and `tui` work, all example hosts reproduce byte-for-byte through the pinned nixfmt, and the oracle validates emitted paths against the NixOS option set. The backlog and in-flight work live in GitHub issues; design specs are under `docs/superpowers/specs/`.
+1.0.0 is released (on crates.io, with prebuilt binaries). `check`, `plan`, `generate`, `upgrade`, `doc`, `install`, and `tui` work; every example host reproduces byte-for-byte through the pinned nixfmt; the oracle validates emitted paths against the NixOS option set; and the stdlib covers disks (disko), ZFS, users, OpenSSH, Tailscale, Incus, home-manager, and nginx, with opt-in bootable-system flake emission, reference-by-name secrets, and flake-based fetched modules. Design specs are under `docs/superpowers/specs/`; new work is tracked in GitHub issues.
 
 ## Prior art
 
