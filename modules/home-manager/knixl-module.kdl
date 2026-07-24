@@ -1,5 +1,5 @@
 module name="home-manager" version="1.0.0" {
-    summary "home-manager for one user, with safe NixOS-module integration and a required stateVersion. Session variables are sourced only in home-manager-managed shells, not every context (display managers, non-login shells)."
+    summary "home-manager for one user, with safe NixOS-module integration and a required stateVersion. Session variables are sourced only in home-manager-managed shells; display managers and non-login shells do not see them."
     claims-node "home-manager"
 
     schema {
