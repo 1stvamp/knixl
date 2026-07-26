@@ -105,7 +105,7 @@ From there, add a module node to the host and regenerate. The modules are built 
 
 ## Batteries included
 
-knixl ships a curated stdlib of modules, embedded in the binary, usable in any project with no setup (no `modules/` directory to place, nothing to fetch):
+knixl ships a curated set of modules (built-in Rust and declarative KDL alike), all embedded in the binary and usable in any project with no setup (no `modules/` directory to place, nothing to fetch):
 
 - **web-service** : an nginx vhost with TLS, ACME, and hardening presets.
 - **disko** : declarative disk layout, GPT partitions with ext4/vfat/swap/LUKS content and ZFS pools, plus a `boot-root-zfs` shorthand.
@@ -168,7 +168,7 @@ A generated file that someone hand-edited is **tainted**. knixl tells drift apar
 
 ## Status
 
-1.0.0 is released (on crates.io, with prebuilt binaries). `check`, `plan`, `generate`, `upgrade`, `doc`, `install`, and `tui` work; every example host reproduces byte-for-byte through the pinned nixfmt; the oracle validates emitted paths against the NixOS option set; and the stdlib covers disks (disko), ZFS, users, OpenSSH, Tailscale, Incus, home-manager, and nginx, with opt-in bootable-system flake emission, reference-by-name secrets, and flake-based fetched modules. Design specs are under `docs/superpowers/specs/`; new work is tracked in GitHub issues.
+1.0.0 is released (on crates.io, with prebuilt binaries). `check`, `plan`, `generate`, `upgrade`, `doc`, `install`, and `tui` work; every example host reproduces byte-for-byte through the pinned nixfmt; the oracle validates emitted paths against the NixOS option set; and the module set covers disks (disko), ZFS, users, OpenSSH, Tailscale, Incus, home-manager, nginx, and core host config (os: hostName, boot, kernel, sysctl, nix.settings, packages), plus nested NixOS system containers (guest) and installer-media/ISO generation. On top of that: opt-in bootable-system flake emission, reference-by-name secrets, and flake-based fetched modules. Design specs are under `docs/superpowers/specs/`; new work is tracked in GitHub issues.
 
 ## Prior art
 

@@ -21,7 +21,19 @@ Notes:
 - `pinned` and `pinned-override` exercise package version pinning: a pinned package alongside
   an ambient one, contrasting the `commit-mix` strategy (default) against `override`
   (`pkgs.<pkg>.overrideAttrs` against the historical pin).
-- Running these examples needs nothing beside them: the declarative modules they use
-  (`web-service`, `security-headers`, and the rest of the stdlib) are embedded in the knixl
-  binary, so there is no `modules/` directory to place or copy. A project only needs a local
-  `modules/` if it ships its own declarative modules.
+- `nas` exercises the host primitives together: `os` (stateVersion, boot loader, kernel pin,
+  timezone/locale, `sysctl`, `nix.settings`, systemPackages, `mutableUsers`), `zfs` (with an
+  explicit `force-import-root`), a `user` with a `hashed-password`, and `openssh`. It also shows
+  `networking.hostName` defaulting to the host label.
+- `gateway` exercises the `tailscale` module: an auth key from a named secret, `up-flag`s, and
+  `open-firewall`.
+- `vault` exercises the `disko` module: a GPT layout with an ESP (`mount-option`), swap, a LUKS
+  root, and a ZFS pool carrying `options`/`root-fs-options`.
+- `vmhost` exercises `incus` (the daemon preseed with bridge ipv6, the API-listener oneshot, and
+  host-firewall integration) and a `guest`: a nested NixOS system container whose `config { }`
+  is an ordinary module tree re-rooted under `containers.<name>.config`.
+- `workstation` exercises the `home-manager` module.
+- Running these examples needs nothing beside them: the built-in modules and the declarative
+  ones they use (`web-service`, `security-headers`, and the rest of the stdlib) are embedded in
+  the knixl binary, so there is no `modules/` directory to place or copy. A project only needs a
+  local `modules/` if it ships its own declarative modules.

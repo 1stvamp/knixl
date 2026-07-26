@@ -51,7 +51,9 @@ A module says only "main file" (`Bucket::Default`) or "a named side-file" (`Buck
 
 ## Built-in vs declarative: the honest boundary
 
-- **Built-in (Rust)** when the module needs logic a template cannot express. `postgres` is the canonical case: "force the override only if the user's input conflicts with the base preset" is conditional priority computation. See `builtin/postgres.rs`.
+- **Built-in (Rust)** when the module needs logic or structure a template cannot express. Two triggers, both real:
+  - **Logic:** `postgres` is the canonical case: "force the override only if the user's input conflicts with the base preset" is conditional priority computation. See `builtin/postgres.rs`.
+  - **Structure the single-level grammar cannot reach:** name-keyed attribute sets nested several levels deep (`disko`), arbitrary-key attribute sets and `pkgs` references (`os`'s `boot.kernel.sysctl`/`nix.settings`/`boot.kernelPackages`), optional per-item fields plus a runtime oneshot (`incus`), or re-rooting a whole module tree under a sub-path (`guest`, containers.<name>.config, ADR 0011). These lower to fully-built attribute sets a `set`/`for-each`/`list` template cannot produce.
 - **Declarative (KDL)** when it is straight-line substitution. `web-service` qualifies; its whole definition is data in `crates/knixl-modules/stdlib/web-service/knixl-module.kdl`, interpreted by one `DeclarativeModule` that impls the same trait.
 
 State the boundary in contributor docs on day one, or declarative modules will quietly reach for logic the interpreter keeps having to grow to meet. A declarative module can only:
@@ -62,7 +64,7 @@ State the boundary in contributor docs on day one, or declarative modules will q
 - gate a block on an input flag (`when-flag`, generation-time),
 - gate a block on a runtime `config.*` condition (`when-config`, emitted as `lib.mkIf`).
 
-It cannot compute priorities from cross-module conflicts and only writes `Bucket::Default`. The moment a module needs either of those, it becomes a built-in. A runtime condition alone no longer forces the boundary (so `backups`, a built-in solely for its `when=` condition, could in principle be declarative; converting it is a separate decision).
+It cannot compute priorities from cross-module conflicts, build arbitrary-key or deeply nested attribute sets, emit `pkgs` references, re-root another module's output, or write anything but `Bucket::Default`. The moment a module needs any of those, it becomes a built-in. A runtime condition alone no longer forces the boundary (so `backups`, a built-in solely for its `when=` condition, could in principle be declarative; converting it is a separate decision).
 
 ## The `raw-nix` escape hatch
 
