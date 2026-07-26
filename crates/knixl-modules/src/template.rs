@@ -51,6 +51,7 @@ pub enum ValueTemplate {
     Collect(String),         // (collect "alias") -> List of that child's first arg
     CollectOpt(String),      // (collect-opt "x") -> like Collect, but the set is dropped when empty
     Secret(Vec<StrPart>),    // (secret)"name" -> config.<backend>.secrets."name".path
+    Scalar(Vec<StrPart>), // (scalar)"{x}" -> the bound scalar emitted as its native bool/int/string
 }
 
 pub enum StrPart {
@@ -347,6 +348,14 @@ impl ValueTemplate {
                 }
                 NixExpr::List(items)
             }
+            ValueTemplate::Scalar(parts) => match parts.as_slice() {
+                [StrPart::Interp(lk)] => scalar_to_expr(lk.resolve(b, loops)?),
+                _ => {
+                    return Err(LowerError::Other(
+                        "(scalar) needs exactly one {interpolation} and no surrounding text".into(),
+                    ))
+                }
+            },
             ValueTemplate::Secret(parts) => {
                 let name = interp_parts(parts, b, loops)?;
                 let prefix = match backend {
@@ -833,6 +842,12 @@ fn parse_value(entry: &kdl::KdlEntry) -> Result<ValueTemplate, LowerError> {
                 .ok_or_else(|| LowerError::Other("secret needs a name string".into()))?;
             Ok(ValueTemplate::Secret(parse_str_parts(s)))
         }
+        Some("scalar") => {
+            let s = entry.value().as_string().ok_or_else(|| {
+                LowerError::Other("scalar needs an {interpolation} string".into())
+            })?;
+            Ok(ValueTemplate::Scalar(parse_str_parts(s)))
+        }
         Some(other) => Err(LowerError::Other(format!(
             "unknown value annotation `{other}`"
         ))),
@@ -991,7 +1006,8 @@ fn check_stmts<'a>(
                 match value {
                     ValueTemplate::Str(parts)
                     | ValueTemplate::IndentStr(parts)
-                    | ValueTemplate::Secret(parts) => {
+                    | ValueTemplate::Secret(parts)
+                    | ValueTemplate::Scalar(parts) => {
                         for part in parts {
                             if let StrPart::Interp(lk) = part {
                                 expect_scalar(&lk.0, shapes, loops, errors);
@@ -1873,6 +1889,33 @@ mod tests {
             "services.nginx.virtualHosts.\"ex.com\".locations.\"/\".extraConfig"
         )
         .is_none());
+    }
+
+    #[test]
+    fn scalar_value_form_emits_native_bool_int_and_string() {
+        // (scalar)"{...}" resolves a bound arg to its native Nix type, unlike "{...}" which
+        // always stringifies. A repeated child feeds the loop var.
+        let manifest = "module name=\"s\" version=\"0.1.0\" {\n    claims-node \"s\"\n    schema {\n        child \"flag\" repeated=#true {\n            arg \"value\" type=\"bool\" required=#true\n        }\n        child \"num\" repeated=#true {\n            arg \"value\" type=\"int\" required=#true\n        }\n        child \"word\" repeated=#true {\n            arg \"value\" type=\"string\" required=#true\n        }\n    }\n    emit {\n        for-each \"f\" in \"flag\" { set \"a.b\" (scalar)\"{f.value}\" }\n        for-each \"n\" in \"num\" { set \"a.c\" (scalar)\"{n.value}\" }\n        for-each \"w\" in \"word\" { set \"a.d\" (scalar)\"{w.value}\" }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let module = DeclarativeModule::from_kdl(&doc, std::path::Path::new("s")).expect("loads");
+
+        let n = node("s {\n    flag #false\n    num 42\n    word \"hi\"\n}");
+        let out = lower(&module, &n);
+
+        assert!(
+            matches!(find(&out, "a.b"), Some(NixExpr::Bool(false))),
+            "bool arg should emit a native Nix bool, got {:?}",
+            find(&out, "a.b")
+        );
+        assert!(
+            matches!(find(&out, "a.c"), Some(NixExpr::Int(42))),
+            "int arg should emit a native Nix int, got {:?}",
+            find(&out, "a.c")
+        );
+        match find(&out, "a.d") {
+            Some(NixExpr::Str(s)) => assert_eq!(s, "hi"),
+            other => panic!("string arg should emit a Nix string, got {other:?}"),
+        }
     }
 
     #[test]

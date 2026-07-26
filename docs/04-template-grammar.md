@@ -23,6 +23,7 @@ Matching exactly the boundary in docs/03 (substitute, repeat-into-list, fold-int
   whose absence should leave the NixOS default in place (e.g. `services.openssh.ports`,
   which defaults to `[ 22 ]`). `(collect)` still emits `[ ]` when empty.
 - `(secret)"name"` : a reference to a decrypted secret path, emitting `config.<backend>.secrets."name".path`. The name may interpolate bindings (e.g. `(secret)"{k.secret}"`). The backend is the project's `secrets backend=` setting (default sops-nix; the other value is agenix). knixl never sees the secret material: reference-only, no declaration and no name validation.
+- `(scalar)"{lookup}"` : emit a bound arg as its native Nix type (bool, int, or string), instead of stringifying it the way a plain `"{lookup}"` would. It takes exactly one `{interpolation}` and no surrounding literal text (anything else is an error). Use it to pass a user-chosen bool or int through faithfully, e.g. `set "boot.zfs.forceImportRoot" (scalar)"{f.value}"` where `value` is a `type="bool"` arg emits `false`, not `"false"`.
 
 ## Paths
 
