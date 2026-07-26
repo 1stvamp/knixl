@@ -478,6 +478,10 @@ fn vmhost_pipeline_produces_expected_structure() {
         "incus config set core.https_address",
         "networking.firewall.trustedInterfaces",
         "networking.firewall.interfaces.\"tailscale0\".allowedTCPPorts",
+        "containers.\"sandbox\".autoStart = true",
+        "containers.\"sandbox\".bindMounts.\"/data\"",
+        "containers.\"sandbox\".config.system.stateVersion = \"25.11\"",
+        "containers.\"sandbox\".config.services.openssh.enable = true",
     ] {
         assert!(
             text.contains(needle),

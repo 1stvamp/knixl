@@ -1,6 +1,7 @@
 //! Built-in Rust modules: used when the logic cannot be straight-line substitution.
 pub mod backups;
 pub mod disko;
+pub mod guest;
 pub mod host;
 pub mod incus;
 pub mod os;
@@ -20,5 +21,6 @@ pub fn register_builtins(reg: &mut Registry) {
     let _ = reg.register(Box::new(disko::Disko::new()));
     let _ = reg.register(Box::new(incus::Incus::new()));
     let _ = reg.register(Box::new(os::Os::new()));
+    let _ = reg.register(Box::new(guest::Guest::new()));
     // ... more as they land.
 }

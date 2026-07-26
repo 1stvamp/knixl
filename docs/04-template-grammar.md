@@ -149,6 +149,14 @@ Node shape (all children optional): `state-version "25.11"` (`system.stateVersio
 
 `networking.hostName` is NOT part of `os`: the `host` module sets it to the host's label by default, overridable with a `hostname "x"` child on `host` (only `host` knows the label, and every host gets a hostName even with no `os` block). `mutable-users` here is the host-level half of enforcing a declarative password (the per-user `hashedPassword` lives on the `user` module).
 
+### guest
+
+`guest "<name>"` claims the `guest` node: a NixOS system container (`containers.<name>`) whose configuration is a nested knixl module tree (ADR 0011). It is built-in because it lowers a `config { }` block through the ordinary module registry (a guest is a mini-host) and re-roots every resulting assignment under `containers.<name>.config`, which no fixed-path module can do.
+
+Node shape: a required name, envelope children `autostart`/`ephemeral`/`private-network` (bool flags), `host-address`/`local-address` (strings), repeated `bind-mount "/mount" host-path="..." [read-only=#true]`, and a `config { }` block holding ordinary knixl module nodes (`os`, `user`, `openssh`, `web-service`, ...). Envelope children map to `containers.<name>.<opt>` (`autoStart`, `privateNetwork`, `hostAddress`, `bindMounts`, ...); the config block's modules are lowered and re-rooted, so `web-service` inside a guest emits `containers.<name>.config.services.nginx.enable = true`.
+
+Paths inside `containers.*.config` are exempt from oracle validation: `nixosOptionsDoc` types the container config as one submodule, so its interior is not in the flat option set (ADR 0011), the same opaque treatment `raw-nix` gets. In v1 the config block re-roots normal (`Bucket::Default`) assignments only; a nested module that emits a side-file or raw-nix is rejected.
+
 ## Declarative modules shipped with knixl
 
 These are authored in the grammar above, not in Rust. They are embedded in the binary from `crates/knixl-modules/stdlib/<name>/knixl-module.kdl` (the stdlib), so they are available in any project with no local files. A project can still shadow one by dropping a `modules/<name>/knixl-module.kdl` of its own.
