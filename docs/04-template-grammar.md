@@ -134,7 +134,25 @@ Validation of `disko.*` paths (e.g. `disko.devices.disk.main.device`) runs only 
 
 ## Declarative modules shipped with knixl
 
-These are authored in the grammar above and live under `modules/<name>/knixl-module.kdl`, not in Rust.
+These are authored in the grammar above, not in Rust. They are embedded in the binary from `crates/knixl-modules/stdlib/<name>/knixl-module.kdl` (the stdlib), so they are available in any project with no local files. A project can still shadow one by dropping a `modules/<name>/knixl-module.kdl` of its own.
+
+### zfs
+
+`zfs` claims the `zfs` node and enables ZFS with the mandatory host id. Node shape: `zfs "<host-id>"` (an 8 hex-digit machine id, required because ZFS refuses to import a pool whose host id does not match) with optional `auto-scrub` (a bool flag), repeated `extra-pool "<name>"` (imported at boot), and an at-most-one `arc-max-bytes <n>` child.
+
+It sets `networking.hostId`, `boot.supportedFilesystems.zfs = true`, collects `extra-pool` into `boot.zfs.extraPools`, enables `services.zfs.autoScrub` when `auto-scrub` is set, and caps the ARC via `boot.extraModprobeConfig` when `arc-max-bytes` is given.
+
+### user
+
+`user` claims the `user` node: a normal login user. Node shape: `user "<name>"` with an at-most-one `description "<text>"`, repeated `group "<name>"` (supplementary groups), and repeated `ssh-key "<key>"` children.
+
+It sets `users.users.<name>.isNormalUser = true`, collects groups into `extraGroups`, and authorised keys into `openssh.authorizedKeys.keys`. No password handling: secrets are their own concern.
+
+### openssh
+
+`openssh` claims the `openssh` node: a hardened OpenSSH server (password and keyboard-interactive auth off, public-key auth on). Node shape: repeated `port <n>`, an at-most-one `permit-root "<value>"` (e.g. `"prohibit-password"`), and an optional `x11-forwarding` flag.
+
+It sets `services.openssh.enable = true`, forces `PasswordAuthentication`/`KbdInteractiveAuthentication` off, collects `port` into `services.openssh.ports` (omitted leaves the NixOS default `[ 22 ]`), and applies `PermitRootLogin`/`X11Forwarding` when given.
 
 ### tailscale
 

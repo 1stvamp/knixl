@@ -52,7 +52,7 @@ A module says only "main file" (`Bucket::Default`) or "a named side-file" (`Buck
 ## Built-in vs declarative: the honest boundary
 
 - **Built-in (Rust)** when the module needs logic a template cannot express. `postgres` is the canonical case: "force the override only if the user's input conflicts with the base preset" is conditional priority computation. See `builtin/postgres.rs`.
-- **Declarative (KDL)** when it is straight-line substitution. `web-service` qualifies; its whole definition is data in `modules/web-service/knixl-module.kdl`, interpreted by one `DeclarativeModule` that impls the same trait.
+- **Declarative (KDL)** when it is straight-line substitution. `web-service` qualifies; its whole definition is data in `crates/knixl-modules/stdlib/web-service/knixl-module.kdl`, interpreted by one `DeclarativeModule` that impls the same trait.
 
 State the boundary in contributor docs on day one, or declarative modules will quietly reach for logic the interpreter keeps having to grow to meet. A declarative module can only:
 
@@ -87,11 +87,11 @@ Modules come from four layers, ordered by precedence (highest to lowest):
 3. **Fetched** (declared in `knixl.kdl`, resolved and pinned at install/upgrade, see ADR 0010)
 4. **Embedded stdlib** (curated declarative modules bundled in the binary via `include_dir`, see ADR 0010)
 
-Each layer is scanned in reverse precedence order. The first layer to claim a node name wins; any later layer claiming the same name is shadowed and does not register. When a shadow occurs, the generator emits a notice in the generated code naming the winning layer, the shadowed layer, and the module name. This non-silent shadowing lets hand-readers and auditors see that the precedence choice is intentional.
+Layers register highest precedence first. The first layer to claim a node name wins; a lower layer claiming the same name is shadowed and does not register. When a shadow occurs, the generator emits a notice naming the winning layer, the shadowed layer, and the module name. This non-silent shadowing lets hand-readers and auditors see that the precedence choice is intentional.
 
 ## Registration
 
-Startup registers built-ins, then scans the embedded stdlib, then fetched modules (loaded from the lock-pinned cache), then local `modules/` for `knixl-module.kdl` files, registering each as a `DeclarativeModule` in reverse precedence order so the highest-precedence layer registers last and wins on name collision. Two modules claiming the same node name across the same layer is a hard error, not last-wins. A third party ships a module by dropping a file in `modules/`, or declares a flake-based fetched module in `knixl.kdl`: no recompile, no fork. That is the whole ecosystem argument.
+Startup registers built-ins first, then local `<project>/modules/`, then fetched modules (loaded from the lock-pinned cache), then the embedded stdlib. Each lower layer registers only the nodes a higher layer has not already claimed, so a higher layer wins on a name collision and the shadow is reported. Two modules claiming the same node name within one layer is a hard error, not last-wins. A third party ships a module by dropping a `knixl-module.kdl` into the project's `modules/`, or declares a flake-based fetched module in `knixl.kdl`: no recompile, no fork. That is the whole ecosystem argument.
 
 ## Payoff of a structured `schema()`
 

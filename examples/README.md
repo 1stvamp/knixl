@@ -21,7 +21,7 @@ Notes:
 - `pinned` and `pinned-override` exercise package version pinning: a pinned package alongside
   an ambient one, contrasting the `commit-mix` strategy (default) against `override`
   (`pkgs.<pkg>.overrideAttrs` against the historical pin).
-- Running these examples directly needs the repo-root `modules/` directory alongside them:
-  the declarative modules `web-service` and `security-headers` live there, and knixl discovers
-  `modules/` as a sibling of `hosts/`. From a repo checkout both are already present; if
-  copying `examples/` elsewhere, copy `modules/` too.
+- Running these examples needs nothing beside them: the declarative modules they use
+  (`web-service`, `security-headers`, and the rest of the stdlib) are embedded in the knixl
+  binary, so there is no `modules/` directory to place or copy. A project only needs a local
+  `modules/` if it ships its own declarative modules.
