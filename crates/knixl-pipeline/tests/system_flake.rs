@@ -90,6 +90,97 @@ fn system_block_emits_flake_pinned_to_every_host_baseline() {
 }
 
 #[test]
+fn installer_emits_a_module_file_and_an_iso_flake_output() {
+    let root = temp_root("installer");
+    fs::write(
+        root.join("knixl.kdl"),
+        "system {\n    state-version \"25.05\"\n}\ninstaller \"usb\" system=\"x86_64-linux\" {\n    os {\n        state-version \"25.05\"\n    }\n    openssh {\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("hosts/web.kdl"),
+        "host \"web\" {\n    system \"x86_64-linux\"\n    nixpkgs release=\"25.05\"\n}\n",
+    )
+    .unwrap();
+
+    let formatter = identity_formatter();
+    let tool: semver::Version = "0.3.1".parse().unwrap();
+
+    // Seed a lock with a resolved host baseline (so the flake emits) and an oracle rev (which
+    // installers pin to).
+    let seed = gather(&root, &formatter, tool.clone()).expect("gather (seed)");
+    let mut lock = seed.lock;
+    lock.baselines.insert(
+        "web".to_string(),
+        HostBaseline {
+            release: "25.05".into(),
+            nixpkgs_rev: "abcdef1234567890".into(),
+            options_hash: String::new(),
+            modules: Vec::new(),
+        },
+    );
+    lock.oracle.nixpkgs_rev = "installerrev0987".into();
+    fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();
+
+    let project = gather(&root, &formatter, tool).expect("gather");
+
+    // The installer module file: modulesPath formals + installation-cd import + the re-used
+    // module tree at top level (not re-rooted, unlike a guest).
+    let installer_path = PathBuf::from("generated/installer/usb.nix");
+    let module = project.generated.get(&installer_path).unwrap_or_else(|| {
+        panic!(
+            "generated/installer/usb.nix missing: {:?}",
+            project.generated.keys().collect::<Vec<_>>()
+        )
+    });
+    assert!(
+        module.contains("modulesPath"),
+        "installer formals: {module}"
+    );
+    assert!(
+        module.contains("installer/cd-dvd/installation-cd-minimal.nix"),
+        "installation-cd import: {module}"
+    );
+    assert!(
+        module.contains("services.openssh.enable = true"),
+        "module tree lowered: {module}"
+    );
+    assert!(
+        module.contains("nixpkgs.hostPlatform = \"x86_64-linux\""),
+        "hostPlatform: {module}"
+    );
+
+    // The flake: the ISO package output pinned to the oracle rev.
+    let flake = project
+        .generated
+        .get(&PathBuf::from("generated/flake.nix"))
+        .expect("flake present");
+    assert!(
+        flake.contains("installerrev0987"),
+        "installer pinned to oracle rev: {flake}"
+    );
+    assert!(flake.contains("usb-iso"), "iso package output: {flake}");
+    assert!(flake.contains("isoImage"), "iso build attr: {flake}");
+
+    // The installer module file rides the lock's expected outputs like any generated file.
+    let plan = Plan::compute(
+        &project.inputs,
+        &project.disk,
+        &project.lock,
+        &project.versions,
+    );
+    assert!(
+        plan.lock_next
+            .outputs
+            .iter()
+            .any(|o| o.path == installer_path),
+        "lock outputs missing the installer module"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn system_block_with_an_unresolved_host_baseline_is_a_validation_error() {
     let root = temp_root("missing-baseline");
     fs::write(

@@ -36,6 +36,17 @@ pub struct ProjectConfig {
     pub system: Option<SystemConfig>,
     pub secrets_backend: knixl_modules::SecretsBackend,
     pub module_sources: Vec<ModuleSource>,
+    pub installers: Vec<InstallerDef>,
+}
+
+/// A declared installer target (ADR 0012): `installer "<name>" [system="<double>"] { <modules> }`.
+/// The node's children are ordinary knixl module nodes, lowered into a generated installer
+/// module (importing the installation-cd base). `system` defaults to x86_64-linux.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct InstallerDef {
+    pub name: String,
+    pub system: String,
+    pub node: KdlNode,
 }
 
 /// The default nixpkgs flake reference used when a `system {}` block omits `nixpkgs-url`.
@@ -126,12 +137,28 @@ pub fn parse_project(root: &Path) -> Result<ProjectConfig, ProjectError> {
         Some(node) => module_sources_from_node(node)?,
     };
 
+    let installers = doc
+        .nodes()
+        .iter()
+        .filter(|n| n.name().value() == "installer")
+        .map(|n| InstallerDef {
+            name: knixl_kdl::first_arg_str(n).unwrap_or_default(),
+            system: n
+                .get("system")
+                .and_then(|v| v.as_string())
+                .unwrap_or("x86_64-linux")
+                .to_string(),
+            node: n.clone(),
+        })
+        .collect();
+
     Ok(ProjectConfig {
         default_release,
         oracle_modules,
         system,
         secrets_backend,
         module_sources,
+        installers,
     })
 }
 

@@ -56,8 +56,10 @@ a build-time key file is a follow-up if the plain path proves insufficient.)
 - Single target system per installer (the project's `system {}` platform).
 - The module tree re-uses every existing module; installer-specific base is only
   the `installation-cd-minimal` import.
-- Oracle validation of the installer module runs like any host file (the base
-  install-cd options are ordinary nixpkgs options).
+- Installer modules are not oracle-validated in v1 (installers are not hosts, so
+  they carry no per-host option set); the emitted paths are ordinary nixpkgs
+  options and are checked when the ISO is actually built by nix. Wiring a
+  per-installer oracle is a follow-up.
 
 ## Consequences
 

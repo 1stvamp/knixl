@@ -124,6 +124,7 @@ Three things worth calling out:
 - **Generate a bootable system.** Add a `system { }` block to `knixl.kdl` and `generate` also emits `generated/flake.nix` with `nixosConfigurations.<host>`, each host pinned to its own nixpkgs baseline. `nixos-rebuild switch --flake .#<host>` (or nixos-anywhere) and it boots. Absent the block, knixl emits modules only and the assembly seam stays yours (ADR 0009).
 - **Reference secrets without seeing them.** A `(secret)"name"` value wires a module option to a decrypted path (`config.sops.secrets."name".path`, or agenix), so the encrypted material stays out of band and knixl never reads or hashes the plaintext.
 - **Bring your own modules.** Declare `modules { module "x" flake="github:org/x" }` in `knixl.kdl`; knixl resolves it to a pinned rev, caches the manifest, and records it in the lock, so `generate` stays offline and byte-reproducible. Precedence is built-in, then your local `modules/`, then fetched, then stdlib, and a shadowed module is reported, never silent (ADR 0010).
+- **Build installer media.** Declare `installer "usb" { ... }` in `knixl.kdl` with an ordinary module tree; knixl emits an installer NixOS module (the `installation-cd` base plus your modules) and, alongside `system {}`, a `nix build .#usb-iso` output. Handy for a self-bootstrapping ISO that joins a tailnet so `nixos-anywhere` can reach a fresh box (ADR 0012).
 
 ## The model in four points
 
