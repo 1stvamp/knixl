@@ -460,6 +460,12 @@ fn vmhost_pipeline_produces_expected_structure() {
         "type = \"disk\"",
         "type = \"nic\"",
         "network = \"incusbr0\"",
+        "\"ipv6.address\" = \"fd42::1/64\"",
+        "\"ipv6.nat\" = \"true\"",
+        "systemd.services.\"incus-https-address\"",
+        "incus config set core.https_address",
+        "networking.firewall.trustedInterfaces",
+        "networking.firewall.interfaces.\"tailscale0\".allowedTCPPorts",
     ] {
         assert!(
             text.contains(needle),

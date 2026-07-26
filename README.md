@@ -111,7 +111,7 @@ knixl ships a curated stdlib of modules, embedded in the binary, usable in any p
 - **disko** : declarative disk layout, GPT partitions with ext4/vfat/swap/LUKS content and ZFS pools, plus a `boot-root-zfs` shorthand.
 - **zfs**, **user**, **openssh** : the host primitives, ZFS with a stable `hostId`, a login user with SSH keys, a hardened sshd.
 - **tailscale** : Tailscale with an auth key pulled from a named secret.
-- **incus** : an Incus host, enable plus the web UI and the storage/network/profile preseed.
+- **incus** : an Incus host, enable plus the web UI, the storage/network/profile preseed (with optional bridge ipv6), an optional API listener (static or bound to an interface's address at runtime), and host-firewall integration.
 - **home-manager** : per-user home-manager with the "Words of warning" guardrails (required `stateVersion`, safe `useUserPackages`, `nix.gc` left to NixOS) baked in.
 - **host**, **postgres**, **backups**, **package**, **raw-nix**, **security-headers** : the rest of the built-ins.
 

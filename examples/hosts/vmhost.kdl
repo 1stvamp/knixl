@@ -3,8 +3,13 @@ host "vmhost" {
 
     incus {
         ui
+        https-address-from-interface "tailscale0"
+        firewall {
+            trust-interface "incusbr0"
+            open-api-on "tailscale0"
+        }
         storage-pool "default" driver="zfs" source="rpool/incus"
-        network "incusbr0" type="bridge" ipv4="auto" nat="true"
+        network "incusbr0" type="bridge" ipv4="auto" nat="true" ipv6="fd42::1/64" ipv6-nat="true"
         profile "default" pool="default" network="incusbr0"
     }
 }
