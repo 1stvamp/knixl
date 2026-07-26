@@ -1,6 +1,23 @@
 host "nas" {
     system "x86_64-linux"
 
+    os {
+        state-version "25.11"
+        boot-loader "systemd-boot"
+        efi-can-touch-variables #true
+        kernel-package "linuxPackages_6_18"
+        timezone "Europe/London"
+        locale "en_GB.UTF-8"
+        mutable-users #false
+        sysctl "net.ipv4.ip_forward"=1 "vm.swappiness"=10
+        experimental-feature "nix-command"
+        experimental-feature "flakes"
+        trusted-user "wes"
+        nix-setting "max-jobs"=4
+        system-package "vim"
+        system-package "git"
+    }
+
     zfs "8425e349" {
         auto-scrub #true
         extra-pool "tank"

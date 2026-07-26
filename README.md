@@ -113,6 +113,7 @@ knixl ships a curated stdlib of modules, embedded in the binary, usable in any p
 - **tailscale** : Tailscale with an auth key pulled from a named secret.
 - **incus** : an Incus host, enable plus the web UI, the storage/network/profile preseed (with optional bridge ipv6), an optional API listener (static or bound to an interface's address at runtime), and host-firewall integration.
 - **home-manager** : per-user home-manager with the "Words of warning" guardrails (required `stateVersion`, safe `useUserPackages`, `nix.gc` left to NixOS) baked in.
+- **os** : core host config, hostName, stateVersion, boot loader and kernel, timezone/locale, sysctl, nix.settings, and systemPackages.
 - **host**, **postgres**, **backups**, **package**, **raw-nix**, **security-headers** : the rest of the built-ins.
 
 Run `knixl doc <node>` for the typed reference of any of them.

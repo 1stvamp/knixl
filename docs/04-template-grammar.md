@@ -141,6 +141,14 @@ Node shape: an optional `ui` flag, repeated `storage-pool "<name>" driver= sourc
 
 The module sets `virtualisation.incus.enable = true`, enables the web UI via `virtualisation.incus.ui.enable` when `ui` is set, and configures the daemon preseed from pools, networks, and profiles. Virtual machine support (via `package "qemu"`) and administrative access (via the `user` module with `group "incus-admin"`) are configured separately, which the incus module does not emit.
 
+### os
+
+`os` claims the `os` node: core host configuration (identity, boot, and system tunables). It is built-in because it carries arbitrary-key attribute sets (`boot.kernel.sysctl`, `nix.settings`) and `pkgs` references (`boot.kernelPackages`, `environment.systemPackages`), which the declarative grammar cannot express.
+
+Node shape (all children optional): `state-version "25.11"` (`system.stateVersion`), `boot-loader "systemd-boot"` (`boot.loader.systemd-boot.enable`; only systemd-boot today), `efi-can-touch-variables #true` (`boot.loader.efi.canTouchEfiVariables`), `kernel-package "linuxPackages_6_18"` (`boot.kernelPackages = pkgs.<name>`), `timezone "Europe/London"` (`time.timeZone`), `locale "en_GB.UTF-8"` (`i18n.defaultLocale`), `mutable-users #false` (`users.mutableUsers`), `sysctl "<key>"=<value> ...` (a prop map, `boot.kernel.sysctl`, values kept native), repeated `experimental-feature "<name>"` and `trusted-user "<name>"` (`nix.settings.experimental-features` / `trusted-users` lists), `nix-setting "<key>"=<value> ...` (a prop map of scalar `nix.settings.<key>` entries), and repeated `system-package "<name>"` (`environment.systemPackages = [ pkgs.<name> ... ]`).
+
+`networking.hostName` is NOT part of `os`: the `host` module sets it to the host's label by default, overridable with a `hostname "x"` child on `host` (only `host` knows the label, and every host gets a hostName even with no `os` block). `mutable-users` here is the host-level half of enforcing a declarative password (the per-user `hashedPassword` lives on the `user` module).
+
 ## Declarative modules shipped with knixl
 
 These are authored in the grammar above, not in Rust. They are embedded in the binary from `crates/knixl-modules/stdlib/<name>/knixl-module.kdl` (the stdlib), so they are available in any project with no local files. A project can still shadow one by dropping a `modules/<name>/knixl-module.kdl` of its own.

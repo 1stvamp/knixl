@@ -9,6 +9,7 @@
 }:
 {
   nixpkgs.hostPlatform = "x86_64-linux";
+  networking.hostName = "workstation";
   home-manager.useUserPackages = true;
   home-manager.useGlobalPkgs = true;
   home-manager.users."wes".home.stateVersion = "24.11";

@@ -9,6 +9,30 @@
 }:
 {
   nixpkgs.hostPlatform = "x86_64-linux";
+  networking.hostName = "nas";
+  system.stateVersion = "25.11";
+  boot.loader.systemd-boot.enable = true;
+  boot.loader.efi.canTouchEfiVariables = true;
+  boot.kernelPackages = pkgs.linuxPackages_6_18;
+  boot.kernel.sysctl = {
+    "net.ipv4.ip_forward" = 1;
+    "vm.swappiness" = 10;
+  };
+  time.timeZone = "Europe/London";
+  i18n.defaultLocale = "en_GB.UTF-8";
+  users.mutableUsers = false;
+  nix.settings.experimental-features = [
+    "nix-command"
+    "flakes"
+  ];
+  nix.settings.trusted-users = [
+    "wes"
+  ];
+  nix.settings.max-jobs = 4;
+  environment.systemPackages = [
+    pkgs.vim
+    pkgs.git
+  ];
   networking.hostId = "8425e349";
   boot.supportedFilesystems.zfs = true;
   boot.zfs.extraPools = [

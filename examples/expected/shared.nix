@@ -16,6 +16,7 @@ let
 in
 {
   nixpkgs.hostPlatform = "x86_64-linux";
+  networking.hostName = "shared";
   services.nginx.virtualHosts."a.example.com".extraConfig = _knixl0;
   services.nginx.virtualHosts."b.example.com".extraConfig = _knixl0;
 }

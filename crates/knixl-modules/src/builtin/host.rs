@@ -44,11 +44,21 @@ impl Module for Host {
                 NixExpr::Str(sys),
             )));
         }
+        // networking.hostName defaults to the host's label; a `hostname "x"` child overrides it.
+        // host owns this because only it knows the label, and every host gets a hostName even
+        // with no `os` block.
+        let host_name = child_arg_str(node, "hostname").or_else(|| knixl_kdl::first_arg_str(node));
+        if let Some(name) = host_name {
+            units.push(unit_default(assign(
+                &["networking", "hostName"],
+                NixExpr::Str(name),
+            )));
+        }
         // delegate everything except the fields host consumes itself. `nixpkgs` and
         // `oracle-modules` are metadata (the declared baseline release and this host's own
         // out-of-tree oracle module override, ADR 0008, both read by the pipeline's gather
         // scan); neither contributes a `Unit` and must not be dispatched or linted.
-        for out in ctx.lower_children(node, &["system", "nixpkgs", "oracle-modules"])? {
+        for out in ctx.lower_children(node, &["system", "hostname", "nixpkgs", "oracle-modules"])? {
             units.extend(out.units);
             raw.extend(out.raw);
         }
@@ -78,6 +88,15 @@ fn schema() -> NodeSchema {
             repeated: false,
             delegate: false,
             doc: "The Nix system double, e.g. x86_64-linux.".into(),
+            args: vec![],
+            props: vec![],
+        }, Child {
+            name: "hostname".into(),
+            ty: ValueTy::Str,
+            required: false,
+            repeated: false,
+            delegate: false,
+            doc: "Overrides networking.hostName (defaults to the host's label).".into(),
             args: vec![],
             props: vec![],
         }, Child {
@@ -147,6 +166,22 @@ mod tests {
             .clone()
     }
 
+    fn value_at<'a>(out: &'a LowerOutput, path: &[&str]) -> Option<&'a NixExpr> {
+        out.units
+            .iter()
+            .map(|u| &u.assignment)
+            .find(|a| {
+                a.path
+                    .0
+                    .iter()
+                    .map(|k| match k {
+                        AttrKey::Ident(s) | AttrKey::Quoted(s) => s.as_str(),
+                    })
+                    .eq(path.iter().copied())
+            })
+            .map(|a| &a.value)
+    }
+
     #[test]
     fn host_accepts_a_default_flag() {
         let h = Host::new();
@@ -156,12 +191,12 @@ mod tests {
             h.schema().validate(&n).is_ok(),
             "default prop should validate"
         );
-        // It emits nothing: lowering still yields only the hostPlatform assignment.
+        // It emits nothing extra: only the two host-owned assignments (hostPlatform, hostName).
         let reg = Registry::new();
         let mut diags = Vec::new();
         let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
         let out = h.lower(&n, &mut ctx).unwrap();
-        assert_eq!(out.units.len(), 1, "default emits nothing extra");
+        assert_eq!(out.units.len(), 2, "default emits nothing extra");
     }
 
     #[test]
@@ -173,18 +208,36 @@ mod tests {
         let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
 
         let out = host.lower(&n, &mut ctx).unwrap();
-        assert_eq!(out.units.len(), 1);
-        let a = &out.units[0].assignment;
-        let keys: Vec<&str> = a
-            .path
-            .0
-            .iter()
-            .map(|k| match k {
-                AttrKey::Ident(s) | AttrKey::Quoted(s) => s.as_str(),
-            })
-            .collect();
-        assert_eq!(keys, vec!["nixpkgs", "hostPlatform"]);
-        assert!(matches!(&a.value, NixExpr::Str(s) if s == "x86_64-linux"));
+        assert!(matches!(
+            value_at(&out, &["nixpkgs", "hostPlatform"]),
+            Some(NixExpr::Str(s)) if s == "x86_64-linux"
+        ));
+    }
+
+    #[test]
+    fn host_name_defaults_to_the_label_and_a_hostname_child_overrides_it() {
+        let host = Host::new();
+        let reg = Registry::new();
+        let mut diags = Vec::new();
+
+        let bare = node("host \"nas\" {\n    system \"x86_64-linux\"\n}");
+        let mut ctx = LowerCtx::new(Scope { host: "nas".into() }, &reg, &mut diags, vec![]);
+        let out = host.lower(&bare, &mut ctx).unwrap();
+        assert!(matches!(
+            value_at(&out, &["networking", "hostName"]),
+            Some(NixExpr::Str(s)) if s == "nas"
+        ));
+
+        let overridden =
+            node("host \"nas\" {\n    system \"x86_64-linux\"\n    hostname \"nas-prod\"\n}");
+        let mut ctx2 = LowerCtx::new(Scope { host: "nas".into() }, &reg, &mut diags, vec![]);
+        let out2 = host.lower(&overridden, &mut ctx2).unwrap();
+        assert!(matches!(
+            value_at(&out2, &["networking", "hostName"]),
+            Some(NixExpr::Str(s)) if s == "nas-prod"
+        ));
+        // `hostname` is consumed by host, never dispatched as a module.
+        assert!(diags.iter().all(|d| !d.message.contains("hostname")));
     }
 
     #[test]
@@ -206,10 +259,14 @@ mod tests {
             diags.iter().all(|d| !d.message.contains("nixpkgs")),
             "no diagnostic should mention nixpkgs, got: {diags:?}"
         );
-        // Only the hostPlatform assignment from `system`; nixpkgs contributes nothing.
-        assert_eq!(out.units.len(), 1);
-        let a = &out.units[0].assignment;
-        let rendered = format!("{a:?}");
+        // Only the two host-owned assignments (hostPlatform, hostName); nixpkgs contributes
+        // nothing.
+        assert_eq!(out.units.len(), 2);
+        let rendered = out
+            .units
+            .iter()
+            .map(|u| format!("{:?}", u.assignment))
+            .collect::<String>();
         assert!(
             !rendered.contains("nixpkgs release"),
             "release node must not be emitted"
