@@ -259,6 +259,18 @@ fn nas_pipeline_produces_expected_structure() {
     assert_eq!(files.len(), 1, "nas has no side-files");
     let text = &files[0].text;
     for needle in [
+        "networking.hostName = \"nas\"",
+        "system.stateVersion = \"25.11\"",
+        "boot.loader.systemd-boot.enable = true",
+        "boot.kernelPackages = pkgs.linuxPackages_6_18",
+        "boot.kernel.sysctl",
+        "\"net.ipv4.ip_forward\" = 1",
+        "time.timeZone = \"Europe/London\"",
+        "users.mutableUsers = false",
+        "nix.settings.experimental-features",
+        "nix.settings.trusted-users",
+        "nix.settings.max-jobs = 4",
+        "environment.systemPackages",
         "networking.hostId = \"8425e349\"",
         "boot.supportedFilesystems.zfs = true",
         "boot.zfs.extraPools",

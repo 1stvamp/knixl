@@ -9,6 +9,7 @@
 }:
 {
   nixpkgs.hostPlatform = "x86_64-linux";
+  networking.hostName = "vmhost";
   virtualisation.incus.enable = true;
   virtualisation.incus.ui.enable = true;
   virtualisation.incus.preseed.storage_pools = [

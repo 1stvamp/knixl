@@ -9,6 +9,7 @@
 }:
 {
   nixpkgs.hostPlatform = "x86_64-linux";
+  networking.hostName = "pinned-override";
   environment.systemPackages = [
     (
       let

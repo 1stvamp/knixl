@@ -9,6 +9,7 @@
 }:
 {
   nixpkgs.hostPlatform = "x86_64-linux";
+  networking.hostName = "vault";
   disko.devices.disk."main" = {
     content = {
       partitions = {

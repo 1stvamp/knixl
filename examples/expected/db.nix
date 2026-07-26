@@ -13,6 +13,7 @@
   ];
 
   nixpkgs.hostPlatform = "x86_64-linux";
+  networking.hostName = "db";
   services.postgresql.enable = true;
   services.postgresql.package = pkgs.postgresql_16;
   services.postgresql.ensureDatabases = [

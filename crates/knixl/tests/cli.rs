@@ -1376,7 +1376,7 @@ fn upgrade_builds_and_caches_the_augmented_set_and_a_later_check_validates_disko
     let module_resolver = resolver_shim("host-oracle-module-build-rev", "modrev123", "", 0);
     let build_shim = optionsdoc_build_shim(
         "host-oracle-module-build",
-        r#"{ "nixpkgs.hostPlatform": { "type": "string" }, "disko.devices.disk.main.device": { "type": "string" } }"#,
+        r#"{ "nixpkgs.hostPlatform": { "type": "string" }, "networking.hostName": { "type": "string" }, "disko.devices.disk.main.device": { "type": "string" } }"#,
     );
     let xdg = std::env::temp_dir().join(format!("knixl-cli-optionsdoc-xdg-{}", std::process::id()));
     let _ = fs::remove_dir_all(&xdg);

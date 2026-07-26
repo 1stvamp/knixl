@@ -9,6 +9,7 @@
 }:
 {
   nixpkgs.hostPlatform = "x86_64-linux";
+  networking.hostName = "gateway";
   services.tailscale.enable = true;
   services.tailscale.openFirewall = true;
   services.tailscale.extraUpFlags = [

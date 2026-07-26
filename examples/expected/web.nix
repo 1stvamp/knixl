@@ -9,6 +9,7 @@
 }:
 {
   nixpkgs.hostPlatform = "x86_64-linux";
+  networking.hostName = "web";
   services.nginx.enable = true;
   services.nginx.recommendedTlsSettings = true;
   services.nginx.recommendedProxySettings = true;
