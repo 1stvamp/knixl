@@ -264,8 +264,10 @@ fn nas_pipeline_produces_expected_structure() {
         "boot.zfs.extraPools",
         "services.zfs.autoScrub.enable = true",
         "options zfs zfs_arc_max=8589934592",
+        "boot.zfs.forceImportRoot = false",
         "users.users.\"wes\".isNormalUser = true",
         "users.users.\"wes\".description = \"Wes Mason\"",
+        "users.users.\"wes\".hashedPassword =",
         "users.users.\"wes\".openssh.authorizedKeys.keys",
         "services.openssh.settings.PasswordAuthentication = false",
         "services.openssh.settings.KbdInteractiveAuthentication = false",
@@ -346,6 +348,7 @@ fn gateway_pipeline_produces_expected_structure() {
     let text = &files[0].text;
     for needle in [
         "services.tailscale.enable = true",
+        "services.tailscale.openFirewall = true",
         "services.tailscale.extraUpFlags",
         "\"--ssh\"",
         "services.tailscale.authKeyFile = config.sops.secrets.\"tailscale-authkey\".path",

@@ -139,15 +139,15 @@ These are authored in the grammar above, not in Rust. They are embedded in the b
 
 ### zfs
 
-`zfs` claims the `zfs` node and enables ZFS with the mandatory host id. Node shape: `zfs "<host-id>"` (an 8 hex-digit machine id, required because ZFS refuses to import a pool whose host id does not match) with optional `auto-scrub` (a bool flag), repeated `extra-pool "<name>"` (imported at boot), and an at-most-one `arc-max-bytes <n>` child.
+`zfs` claims the `zfs` node and enables ZFS with the mandatory host id. Node shape: `zfs "<host-id>"` (an 8 hex-digit machine id, required because ZFS refuses to import a pool whose host id does not match) with optional `auto-scrub` (a bool flag), repeated `extra-pool "<name>"` (imported at boot), an at-most-one `arc-max-bytes <n>` child, and an at-most-one `force-import-root <bool>` child.
 
-It sets `networking.hostId`, `boot.supportedFilesystems.zfs = true`, collects `extra-pool` into `boot.zfs.extraPools`, enables `services.zfs.autoScrub` when `auto-scrub` is set, and caps the ARC via `boot.extraModprobeConfig` when `arc-max-bytes` is given.
+It sets `networking.hostId`, `boot.supportedFilesystems.zfs = true`, collects `extra-pool` into `boot.zfs.extraPools`, enables `services.zfs.autoScrub` when `auto-scrub` is set, caps the ARC via `boot.extraModprobeConfig` when `arc-max-bytes` is given, and sets `boot.zfs.forceImportRoot` (via `(scalar)`, so `force-import-root #false` emits `false`, not `"false"`) when `force-import-root` is given.
 
 ### user
 
-`user` claims the `user` node: a normal login user. Node shape: `user "<name>"` with an at-most-one `description "<text>"`, repeated `group "<name>"` (supplementary groups), and repeated `ssh-key "<key>"` children.
+`user` claims the `user` node: a normal login user. Node shape: `user "<name>"` with an at-most-one `description "<text>"`, repeated `group "<name>"` (supplementary groups), repeated `ssh-key "<key>"`, and an at-most-one `hashed-password "<hash>"` child.
 
-It sets `users.users.<name>.isNormalUser = true`, collects groups into `extraGroups`, and authorised keys into `openssh.authorizedKeys.keys`. No password handling: secrets are their own concern.
+It sets `users.users.<name>.isNormalUser = true`, collects groups into `extraGroups`, authorised keys into `openssh.authorizedKeys.keys`, and sets `hashedPassword` when `hashed-password` is given (a mkpasswd hash, so no plaintext). Enforcing a declarative password also needs `users.mutableUsers = false`, which is a host-level tunable, not a per-user one.
 
 ### openssh
 
@@ -157,9 +157,9 @@ It sets `services.openssh.enable = true`, forces `PasswordAuthentication`/`KbdIn
 
 ### tailscale
 
-`tailscale` claims the `tailscale` node and generates NixOS tailscale configuration. Node shape: optional `up-flag` children hold flags passed to `tailscale up` (e.g. `up-flag "--ssh"`, `up-flag "--operator=alice"`), and an `auth-key secret="name"` child wires `services.tailscale.authKeyFile` to a named secret via `(secret)`.
+`tailscale` claims the `tailscale` node and generates NixOS tailscale configuration. Node shape: an optional `open-firewall` (a bool flag), optional `up-flag` children hold flags passed to `tailscale up` (e.g. `up-flag "--ssh"`, `up-flag "--operator=alice"`), and an `auth-key secret="name"` child wires `services.tailscale.authKeyFile` to a named secret via `(secret)`.
 
-The module sets `services.tailscale.enable = true`, collects `up-flag` children into `services.tailscale.extraUpFlags` as a list, and wires the `auth-key` secret reference to `services.tailscale.authKeyFile`. If no `auth-key` is declared, `authKeyFile` is not set, leaving interactive login as the fallback.
+The module sets `services.tailscale.enable = true`, sets `services.tailscale.openFirewall = true` when `open-firewall` is given, collects `up-flag` children into `services.tailscale.extraUpFlags` as a list, and wires the `auth-key` secret reference to `services.tailscale.authKeyFile`. If no `auth-key` is declared, `authKeyFile` is not set, leaving interactive login as the fallback.
 
 ### incus
 

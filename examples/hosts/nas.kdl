@@ -5,12 +5,14 @@ host "nas" {
         auto-scrub #true
         extra-pool "tank"
         arc-max-bytes 8589934592
+        force-import-root #false
     }
 
     user "wes" {
         description "Wes Mason"
         group "wheel"
         ssh-key "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAExampleKeyForGoldenTest wes@nas"
+        hashed-password "$6$rounds=100000$exampleSaltForGoldenTest$exampleHashDigestValueForTheGoldenTestOnly0123456789abcdefghij."
     }
 
     openssh {

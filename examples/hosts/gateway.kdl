@@ -2,6 +2,7 @@ host "gateway" {
     system "x86_64-linux"
 
     tailscale {
+        open-firewall #true
         up-flag "--ssh"
         auth-key secret="tailscale-authkey"
     }

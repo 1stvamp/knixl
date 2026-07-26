@@ -6,6 +6,8 @@ module name="tailscale" version="1.0.0" {
     claims-node "tailscale"
 
     schema {
+        child "open-firewall" type="bool" \
+            doc="Open the firewall for Tailscale (services.tailscale.openFirewall)."
         child "up-flag" type="string" repeated=#true \
             doc="A flag appended to services.tailscale.extraUpFlags, e.g. \"--ssh\"."
         child "auth-key" repeated=#true \
@@ -16,6 +18,9 @@ module name="tailscale" version="1.0.0" {
 
     emit {
         set "services.tailscale.enable" #true
+        when-flag "open-firewall" {
+            set "services.tailscale.openFirewall" #true
+        }
         set "services.tailscale.extraUpFlags" (collect-opt)"up-flag"
         for-each "k" in "auth-key" {
             set "services.tailscale.authKeyFile" (secret)"{k.secret}"

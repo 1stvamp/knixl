@@ -16,6 +16,7 @@
   ];
   services.zfs.autoScrub.enable = true;
   boot.extraModprobeConfig = "options zfs zfs_arc_max=8589934592";
+  boot.zfs.forceImportRoot = false;
   users.users."wes".isNormalUser = true;
   users.users."wes".extraGroups = [
     "wheel"
@@ -24,6 +25,8 @@
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAExampleKeyForGoldenTest wes@nas"
   ];
   users.users."wes".description = "Wes Mason";
+  users.users."wes".hashedPassword =
+    "$6$rounds=100000$exampleSaltForGoldenTest$exampleHashDigestValueForTheGoldenTestOnly0123456789abcdefghij.";
   services.openssh.enable = true;
   services.openssh.settings.PasswordAuthentication = false;
   services.openssh.settings.KbdInteractiveAuthentication = false;

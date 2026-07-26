@@ -16,6 +16,11 @@ module name="zfs" version="1.0.0" {
             doc="Cap the ARC at N bytes via boot.extraModprobeConfig. At most one." {
             arg "bytes" type="int" required=#true
         }
+        child "force-import-root" repeated=#true \
+            doc="Set boot.zfs.forceImportRoot explicitly. Older baselines defaulted it true; \
+                 a data-pool host with a non-ZFS root wants false. At most one." {
+            arg "value" type="bool" required=#true
+        }
     }
 
     emit {
@@ -27,6 +32,9 @@ module name="zfs" version="1.0.0" {
         }
         for-each "cap" in "arc-max-bytes" {
             set "boot.extraModprobeConfig" "options zfs zfs_arc_max={cap.bytes}"
+        }
+        for-each "f" in "force-import-root" {
+            set "boot.zfs.forceImportRoot" (scalar)"{f.value}"
         }
     }
 }
