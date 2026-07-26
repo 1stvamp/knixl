@@ -16,9 +16,9 @@ use knixl_nix::module_fetch::{hash_module, module_cache_path};
 use knixl_nix::{hash, Formatter};
 use semver::Version;
 
-use crate::flake::{render_system_flake, FlakeHost};
+use crate::flake::{render_system_flake, FlakeHost, FlakeInstaller};
 use crate::project::{parse_project, ModuleSource};
-use crate::{generate, GenerateError, HostSource};
+use crate::{generate, generate_installers, GenerateError, HostSource};
 
 /// Everything `Plan::compute` needs to reconcile a project, plus the registry (for `doc`),
 /// the project root, and the freshly generated file text (for the apply path to write).
@@ -186,6 +186,35 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     // refused to register it rather than silently skipping.
     validation_errors.extend(module_validation_errors);
 
+    // Installer module files (ADR 0012). Emitted whether or not `system {}` is present; the ISO
+    // flake output is wired only when it is (below).
+    match generate_installers(
+        &project.installers,
+        &registry,
+        formatter,
+        &tool,
+        project.secrets_backend,
+    ) {
+        Ok(files) => {
+            for f in files {
+                generated.insert(f.path.clone(), f.text.clone());
+                warnings.extend(
+                    f.warnings
+                        .iter()
+                        .map(|w| format!("{}: {w}", f.from.display())),
+                );
+                expected.push(ExpectedFile {
+                    path: f.path,
+                    hash: hash(f.text.as_bytes()),
+                    from: f.from,
+                    modules: f.modules,
+                });
+            }
+        }
+        Err(GenerateError::Validation(errs)) => validation_errors.extend(errs),
+        Err(other) => return Err(other.into()),
+    }
+
     // A declared baseline that is not yet resolved (no lock entry) or that has moved to a
     // different release than what is now declared, is a validation error naming the fix
     // (issue #22). Checked here rather than in `generate` because it compares declared KDL
@@ -239,9 +268,31 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
                 }
             }
         }
+        // Installers pin to the project's default nixpkgs rev (the oracle's), the single rev the
+        // project validates against (ADR 0012). With no lock rev yet, the ISO output is skipped
+        // (the installer module file is still generated above).
+        let flake_installers: Vec<FlakeInstaller> = if lock.oracle.nixpkgs_rev.is_empty() {
+            Vec::new()
+        } else {
+            project
+                .installers
+                .iter()
+                .map(|i| FlakeInstaller {
+                    name: i.name.clone(),
+                    baseline_rev: lock.oracle.nixpkgs_rev.clone(),
+                    module_path: format!("./installer/{}.nix", i.name),
+                    system: i.system.clone(),
+                })
+                .collect()
+        };
         // Only emit when every host resolved; a partial flake would lie about the fleet.
         if !missing {
-            let raw = render_system_flake(&flake_hosts, &system.state_version, &system.nixpkgs_url);
+            let raw = render_system_flake(
+                &flake_hosts,
+                &flake_installers,
+                &system.state_version,
+                &system.nixpkgs_url,
+            );
             let text = formatter
                 .format(&raw)
                 .map_err(|e| GatherError::Module(e.to_string()))?;

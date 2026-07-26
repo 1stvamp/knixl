@@ -293,6 +293,123 @@ fn generate_one(
     Ok(generated)
 }
 
+/// Generate the installer module files (ADR 0012). Each `installer "<name>"` block's children are
+/// lowered through the registry like a host's, then emitted into `generated/installer/<name>.nix`
+/// with `modulesPath` in scope and the minimal installation-cd base imported ahead of the module
+/// tree. `nixpkgs.hostPlatform` is set from the installer's target system so the assembly flake's
+/// `eval-config` has a platform. v1 emits a single file per installer: a nested side-file bucket
+/// is rejected (there is nowhere to import it from an installer module).
+pub fn generate_installers(
+    installers: &[project::InstallerDef],
+    registry: &Registry,
+    formatter: &Formatter,
+    tool: &Version,
+    secrets_backend: knixl_modules::SecretsBackend,
+) -> Result<Vec<GeneratedFile>, GenerateError> {
+    let mut generated = Vec::new();
+    for installer in installers {
+        let mut diags: Vec<knixl_modules::Diagnostic> = Vec::new();
+        let mut body: Vec<Assignment> = vec![Assignment {
+            path: knixl_ir::AttrPath(vec![
+                knixl_ir::AttrKey::Ident("nixpkgs".into()),
+                knixl_ir::AttrKey::Ident("hostPlatform".into()),
+            ]),
+            value: NixExpr::Str(installer.system.clone()),
+            priority: None,
+            condition: None,
+            doc: None,
+        }];
+        let mut raw: Vec<RawNix> = Vec::new();
+        let mut modules: BTreeSet<String> = BTreeSet::new();
+
+        let mut ctx = LowerCtx::new(
+            Scope {
+                host: installer.name.clone(),
+            },
+            registry,
+            &mut diags,
+            vec![],
+        )
+        .with_secrets_backend(secrets_backend);
+        // The installer node's children are modules; `system` is a prop, not a child.
+        for out in ctx.lower_children(&installer.node, &["system"])? {
+            for unit in out.units {
+                if !matches!(unit.bucket, Bucket::Default) {
+                    return Err(GenerateError::Validation(vec![format!(
+                        "installer `{}`: a side-file module cannot be part of an installer",
+                        installer.name
+                    )]));
+                }
+                modules.insert(unit.module);
+                body.push(unit.assignment);
+            }
+            for r in out.raw {
+                modules.insert(r.module);
+                raw.push(r.raw);
+            }
+        }
+
+        let warnings: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
+        merge_list_assignments(&mut body);
+        let lets = knixl_ir::hoist::hoist(&mut body);
+
+        let module_names: Vec<String> = modules.into_iter().filter(|n| !n.is_empty()).collect();
+        let module_refs: Vec<ModuleRef> = module_names
+            .iter()
+            .map(|n| ModuleRef {
+                name: n.clone(),
+                version: registry
+                    .module_versions()
+                    .get(n)
+                    .cloned()
+                    .unwrap_or_else(|| Version::new(0, 0, 0)),
+            })
+            .collect();
+
+        let module = NixModule {
+            header: installer_header(),
+            imports: vec![NixExpr::Raw(RawNix {
+                src: "modulesPath + \"/installer/cd-dvd/installation-cd-minimal.nix\"".into(),
+                span: None,
+            })],
+            lets,
+            body,
+            raw,
+            provenance: Provenance {
+                tool_version: tool.clone(),
+                modules: module_refs,
+                sources: vec![PathBuf::from("knixl.kdl")],
+            },
+        };
+
+        let mut w = Writer::new();
+        module.emit(&mut w);
+        let text = formatter.format(&w.into_string())?;
+
+        generated.push(GeneratedFile {
+            path: PathBuf::from(format!("generated/installer/{}.nix", installer.name)),
+            text,
+            from: PathBuf::from("knixl.kdl"),
+            modules: module_names,
+            warnings,
+        });
+    }
+    Ok(generated)
+}
+
+/// An installer module additionally needs `modulesPath` (to import the installation-cd base).
+fn installer_header() -> Formals {
+    Formals {
+        args: vec![
+            "config".into(),
+            "lib".into(),
+            "pkgs".into(),
+            "modulesPath".into(),
+        ],
+        ellipsis: true,
+    }
+}
+
 /// Merge same-path list-valued assignments into one (NixOS list-option semantics), so
 /// repeated contributors like `package` nodes become a single `environment.systemPackages`
 /// rather than a duplicate attribute. Only plain list values are merged: an assignment with
