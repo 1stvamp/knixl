@@ -122,14 +122,14 @@ Some modules are written in Rust because their logic exceeds what the declarativ
 
 Node shape: `disk "<label>" device="<path>"` holds `partition "<name>" size="<size>" [type="<code>"]` children. Each partition holds exactly one content child, which is one of:
 
-- `filesystem format="<fmt>" mountpoint="<path>"` : a mounted filesystem.
+- `filesystem format="<fmt>" mountpoint="<path>"` : a mounted filesystem. Repeated `mount-option "<opt>"` children add to disko's `mountOptions` list (e.g. `mount-option "umask=0077"` for an ESP).
 - `zfs pool="<name>"` : a ZFS member of the pool `<name>`. The pool itself must be declared as `zpool "<name>"` in the same node.
 - `swap [resume=#true]` : a swap partition, optionally resuming to it.
 - `luks name="<name>"` wrapping one inner content : LUKS encryption around a filesystem, zfs, or swap.
 
-`zpool "<label>"` holds an optional `mountpoint` and zero or more `dataset "<name>" [type="<type>"] [mountpoint="<path>"]` children. Dataset type defaults to `zfs_fs`.
+`zpool "<label>"` holds an optional `mountpoint` and zero or more `dataset "<name>" [type="<type>"] [mountpoint="<path>"]` children. Dataset type defaults to `zfs_fs`. Two optional prop-map children tune the pool: `options key="value" ...` (disko's `options`, e.g. `options ashift="12"`) and `root-fs-options key="value" ...` (disko's `rootFsOptions`, e.g. `root-fs-options compression="zstd" acltype="posixacl" xattr="sa" mountpoint="none"`). Values are emitted as strings.
 
-The `preset="boot-root-zfs" pool="<name>" root-size="<size>" [boot-size="<size>"]` shorthand is pure sugar for the common three-partition layout: an ESP (`512M` by default, or `boot-size` if set), an ext4 root (sized by `root-size`), and a ZFS vdev at 100% of the remaining space handed to `pool`. It suits single-disk systems that keep the OS on ext4 and the data on ZFS.
+The `preset="boot-root-zfs" pool="<name>" root-size="<size>" [boot-size="<size>"] [data-label="<name>"]` shorthand is pure sugar for the common three-partition layout: an ESP (`512M` by default, or `boot-size` if set), an ext4 root (sized by `root-size`), and a ZFS vdev at 100% of the remaining space handed to `pool`. The data partition is named `data` by default; `data-label` renames it (older layouts used `pool`). It suits single-disk systems that keep the OS on ext4 and the data on ZFS.
 
 Validation of `disko.*` paths (e.g. `disko.devices.disk.main.device`) runs only when the project declares disko as an out-of-tree oracle module via `oracle-modules { module "disko" ... }` in `knixl.kdl`. Without that declaration, disko paths remain unchecked (docs/06, ADR 0008).
 

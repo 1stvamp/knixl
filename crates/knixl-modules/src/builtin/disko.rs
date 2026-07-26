@@ -36,6 +36,7 @@ enum Content {
     Filesystem {
         format: String,
         mountpoint: Option<String>,
+        mount_options: Vec<String>,
     },
     Zfs {
         pool: String,
@@ -75,6 +76,8 @@ struct Dataset {
 struct Pool {
     label: String,
     mountpoint: Option<String>,
+    options: BTreeMap<String, String>,
+    root_fs_options: BTreeMap<String, String>,
     datasets: Vec<Dataset>,
 }
 
@@ -195,6 +198,13 @@ fn expand_preset(
         .and_then(|v| v.as_string())
         .unwrap_or("512M")
         .to_string();
+    // The data partition's name defaults to "data"; older layouts called it "pool", so it is
+    // configurable via `data-label=`.
+    let data_label = n
+        .get("data-label")
+        .and_then(|v| v.as_string())
+        .unwrap_or("data")
+        .to_string();
     let partitions = vec![
         Partition {
             name: "ESP".into(),
@@ -203,6 +213,7 @@ fn expand_preset(
             content: Content::Filesystem {
                 format: "vfat".into(),
                 mountpoint: Some("/boot".into()),
+                mount_options: vec![],
             },
         },
         Partition {
@@ -212,10 +223,11 @@ fn expand_preset(
             content: Content::Filesystem {
                 format: "ext4".into(),
                 mountpoint: Some("/".into()),
+                mount_options: vec![],
             },
         },
         Partition {
-            name: "data".into(),
+            name: data_label,
             size: "100%".into(),
             type_code: None,
             content: Content::Zfs { pool },
@@ -295,7 +307,14 @@ fn content_from(n: &KdlNode, label: &str) -> Result<Content, LowerError> {
                 .get("mountpoint")
                 .and_then(|v| v.as_string())
                 .map(str::to_string);
-            Ok(Content::Filesystem { format, mountpoint })
+            let mount_options = children_named(n, "mount-option")
+                .filter_map(first_arg_str)
+                .collect();
+            Ok(Content::Filesystem {
+                format,
+                mountpoint,
+                mount_options,
+            })
         }
         "zfs" => {
             let pool = n
@@ -332,6 +351,8 @@ fn parse_pool(n: &KdlNode) -> Result<Pool, LowerError> {
     let label =
         first_arg_str(n).ok_or_else(|| LowerError::Other("`zpool` needs a label".into()))?;
     let mountpoint = child_arg_str(n, "mountpoint");
+    let options = collect_prop_map(n, "options");
+    let root_fs_options = collect_prop_map(n, "root-fs-options");
     let mut datasets = Vec::new();
     for dn in children_named(n, "dataset") {
         let name =
@@ -355,8 +376,36 @@ fn parse_pool(n: &KdlNode) -> Result<Pool, LowerError> {
     Ok(Pool {
         label,
         mountpoint,
+        options,
+        root_fs_options,
         datasets,
     })
+}
+
+/// Read the props of every `<name>` child of `n` into one string map (e.g. `options ashift="12"`
+/// or `root-fs-options compression="zstd" acltype="posixacl"`). Scalar values are coerced to
+/// their string form, since disko wants strings ("12", not 12). Deterministic: a BTreeMap.
+fn collect_prop_map(n: &KdlNode, name: &str) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for child in children_named(n, name) {
+        for entry in child.entries().iter().filter(|e| e.name().is_some()) {
+            let key = entry.name().unwrap().value().to_string();
+            map.insert(key, scalar_str(entry.value()));
+        }
+    }
+    map
+}
+
+fn scalar_str(v: &kdl::KdlValue) -> String {
+    if let Some(s) = v.as_string() {
+        s.to_string()
+    } else if let Some(i) = v.as_integer() {
+        i.to_string()
+    } else if let Some(b) = v.as_bool() {
+        b.to_string()
+    } else {
+        String::new()
+    }
 }
 
 fn ensure_unique<'a>(labels: impl Iterator<Item = &'a str>, what: &str) -> Result<(), LowerError> {
@@ -412,13 +461,23 @@ fn quoted_set(entries: Vec<(String, NixExpr)>) -> NixExpr {
 
 fn emit_content(c: &Content) -> NixExpr {
     match c {
-        Content::Filesystem { format, mountpoint } => {
+        Content::Filesystem {
+            format,
+            mountpoint,
+            mount_options,
+        } => {
             let mut e = vec![
                 ("type", str_expr("filesystem")),
                 ("format", str_expr(format)),
             ];
             if let Some(mp) = mountpoint {
                 e.push(("mountpoint", str_expr(mp)));
+            }
+            if !mount_options.is_empty() {
+                e.push((
+                    "mountOptions",
+                    NixExpr::List(mount_options.iter().map(|o| str_expr(o)).collect()),
+                ));
             }
             ident_set(e)
         }
@@ -478,10 +537,24 @@ fn emit_disk(d: &Disk) -> Assignment {
     }
 }
 
+fn str_map_set(m: &BTreeMap<String, String>) -> NixExpr {
+    let mut out: BTreeMap<AttrKey, NixExpr> = BTreeMap::new();
+    for (k, v) in m {
+        out.insert(AttrKey::Ident(k.clone()), str_expr(v));
+    }
+    NixExpr::AttrSet(out)
+}
+
 fn emit_pool(p: &Pool) -> Assignment {
     let mut e = vec![("type", str_expr("zpool"))];
     if let Some(mp) = &p.mountpoint {
         e.push(("mountpoint", str_expr(mp)));
+    }
+    if !p.options.is_empty() {
+        e.push(("options", str_map_set(&p.options)));
+    }
+    if !p.root_fs_options.is_empty() {
+        e.push(("rootFsOptions", str_map_set(&p.root_fs_options)));
     }
     if !p.datasets.is_empty() {
         let ds: Vec<(String, NixExpr)> = p
@@ -824,5 +897,69 @@ mod tests {
             "disko { disk \"m\" device=\"/dev/sda\" preset=\"boot-root-zfs\" pool=\"tank\" zpool \"tank\" { } }"
         )
         .contains("root-size"));
+    }
+
+    #[test]
+    fn pool_options_and_root_fs_options_emit() {
+        let units = lower_ok(
+            "disko { zpool \"tank\" { mountpoint \"none\"; options ashift=\"12\"; root-fs-options compression=\"zstd\" acltype=\"posixacl\" xattr=\"sa\" } }",
+        );
+        let NixExpr::AttrSet(pool) = &units[0].assignment.value else {
+            panic!("pool value not a set")
+        };
+        let NixExpr::AttrSet(opts) = pool.get(&AttrKey::Ident("options".into())).unwrap() else {
+            panic!("options not a set")
+        };
+        assert!(matches!(
+            opts.get(&AttrKey::Ident("ashift".into())),
+            Some(NixExpr::Str(s)) if s == "12"
+        ));
+        let NixExpr::AttrSet(rfs) = pool.get(&AttrKey::Ident("rootFsOptions".into())).unwrap()
+        else {
+            panic!("rootFsOptions not a set")
+        };
+        assert!(matches!(
+            rfs.get(&AttrKey::Ident("compression".into())),
+            Some(NixExpr::Str(s)) if s == "zstd"
+        ));
+        assert!(matches!(
+            rfs.get(&AttrKey::Ident("xattr".into())),
+            Some(NixExpr::Str(s)) if s == "sa"
+        ));
+    }
+
+    #[test]
+    fn filesystem_mount_options_emit() {
+        let units = lower_ok(
+            "disko { disk \"m\" device=\"/dev/sda\" { partition \"ESP\" size=\"512M\" type=\"EF00\" { filesystem format=\"vfat\" mountpoint=\"/boot\" { mount-option \"umask=0077\" } } } }",
+        );
+        let parts = partitions_of(&units, "m");
+        let NixExpr::AttrSet(esp) = parts.get(&AttrKey::Quoted("ESP".into())).unwrap() else {
+            panic!()
+        };
+        let NixExpr::AttrSet(content) = esp.get(&AttrKey::Ident("content".into())).unwrap() else {
+            panic!()
+        };
+        let NixExpr::List(opts) = content.get(&AttrKey::Ident("mountOptions".into())).unwrap()
+        else {
+            panic!("mountOptions not a list")
+        };
+        assert_eq!(opts.len(), 1);
+        assert!(matches!(&opts[0], NixExpr::Str(s) if s == "umask=0077"));
+    }
+
+    #[test]
+    fn preset_data_label_configurable() {
+        // Default is "data"; `data-label=` renames the ZFS data partition (older layouts used
+        // "pool").
+        let disk = super::parse_disk(&node(
+            "disk \"main\" device=\"/dev/nvme0n1\" preset=\"boot-root-zfs\" pool=\"tank\" root-size=\"100G\" data-label=\"pool\"",
+        ))
+        .unwrap();
+        assert_eq!(disk.partitions[2].name, "pool");
+        assert!(matches!(
+            disk.partitions[2].content,
+            Content::Zfs { ref pool } if pool == "tank"
+        ));
     }
 }
