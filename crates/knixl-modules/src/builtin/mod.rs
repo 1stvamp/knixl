@@ -2,6 +2,7 @@
 pub mod backups;
 pub mod disko;
 pub mod host;
+pub mod incus;
 pub mod package;
 pub mod postgres;
 pub mod raw_nix;
@@ -16,5 +17,6 @@ pub fn register_builtins(reg: &mut Registry) {
     let _ = reg.register(Box::new(raw_nix::RawNixModule::new()));
     let _ = reg.register(Box::new(package::PackageModule::new()));
     let _ = reg.register(Box::new(disko::Disko::new()));
+    let _ = reg.register(Box::new(incus::Incus::new()));
     // ... more as they land.
 }

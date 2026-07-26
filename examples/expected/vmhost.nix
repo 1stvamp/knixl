@@ -25,6 +25,8 @@
       config = {
         "ipv4.address" = "auto";
         "ipv4.nat" = "true";
+        "ipv6.address" = "fd42::1/64";
+        "ipv6.nat" = "true";
       };
       name = "incusbr0";
       type = "bridge";
@@ -46,5 +48,42 @@
       };
       name = "default";
     }
+  ];
+  systemd.services."incus-https-address" = {
+    after = [
+      "incus.service"
+      "network-online.target"
+    ];
+    description = "Bind the Incus HTTPS API to the tailscale0 address";
+    path = [
+      pkgs.iproute2
+      pkgs.gawk
+      pkgs.coreutils
+      pkgs.incus
+    ];
+    requires = [
+      "incus.service"
+    ];
+    script = ''
+      addr=$(ip -4 -o addr show dev tailscale0 scope global | awk '{print $4}' | cut -d/ -f1 | head -n1)
+      if [ -n "$addr" ]; then
+        incus config set core.https_address "$addr:8443"
+      fi
+    '';
+    serviceConfig = {
+      Type = "oneshot";
+    };
+    wantedBy = [
+      "multi-user.target"
+    ];
+    wants = [
+      "network-online.target"
+    ];
+  };
+  networking.firewall.trustedInterfaces = [
+    "incusbr0"
+  ];
+  networking.firewall.interfaces."tailscale0".allowedTCPPorts = [
+    8443
   ];
 }

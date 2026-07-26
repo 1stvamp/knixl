@@ -87,7 +87,6 @@ mod tests {
         assert!(reg.get("web-service").is_some());
         assert!(reg.get("zfs").is_some());
         assert!(reg.get("tailscale").is_some());
-        assert!(reg.get("incus").is_some());
     }
 
     #[test]

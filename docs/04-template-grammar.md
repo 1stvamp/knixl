@@ -133,6 +133,14 @@ The `preset="boot-root-zfs" pool="<name>" root-size="<size>" [boot-size="<size>"
 
 Validation of `disko.*` paths (e.g. `disko.devices.disk.main.device`) runs only when the project declares disko as an out-of-tree oracle module via `oracle-modules { module "disko" ... }` in `knixl.kdl`. Without that declaration, disko paths remain unchecked (docs/06, ADR 0008).
 
+### incus
+
+`incus` claims the `incus` node and generates an Incus host. It is built-in because the daemon preseed is name-keyed attribute sets with optional per-network fields, plus a host firewall and an optional runtime API-listener oneshot, none of which the single-level declarative grammar can express.
+
+Node shape: an optional `ui` flag, repeated `storage-pool "<name>" driver= source=`, `network "<name>" type= ipv4= nat= [ipv6= ipv6-nat=]`, and `profile "<name>" pool= network=` children. A profile emits the default shape: a root disk on `pool` and an `eth0` nic on `network`. Optional API listener: at most one of `https-address "<host:port>"` (a static `core.https_address` in the preseed) or `https-address-from-interface "<iface>"` (a systemd oneshot that binds `core.https_address` to that interface's IPv4 at runtime, the tailnet-bind pattern). An optional `firewall { }` block holds repeated `trust-interface "<iface>"` (`networking.firewall.trustedInterfaces`) and `open-api-on "<iface>"` (opens the API port, `networking.firewall.interfaces.<iface>.allowedTCPPorts`, defaulting to 8443 or the port from a static `https-address`).
+
+The module sets `virtualisation.incus.enable = true`, enables the web UI via `virtualisation.incus.ui.enable` when `ui` is set, and configures the daemon preseed from pools, networks, and profiles. Virtual machine support (via `package "qemu"`) and administrative access (via the `user` module with `group "incus-admin"`) are configured separately, which the incus module does not emit.
+
 ## Declarative modules shipped with knixl
 
 These are authored in the grammar above, not in Rust. They are embedded in the binary from `crates/knixl-modules/stdlib/<name>/knixl-module.kdl` (the stdlib), so they are available in any project with no local files. A project can still shadow one by dropping a `modules/<name>/knixl-module.kdl` of its own.
@@ -160,12 +168,6 @@ It sets `services.openssh.enable = true`, forces `PasswordAuthentication`/`KbdIn
 `tailscale` claims the `tailscale` node and generates NixOS tailscale configuration. Node shape: an optional `open-firewall` (a bool flag), optional `up-flag` children hold flags passed to `tailscale up` (e.g. `up-flag "--ssh"`, `up-flag "--operator=alice"`), and an `auth-key secret="name"` child wires `services.tailscale.authKeyFile` to a named secret via `(secret)`.
 
 The module sets `services.tailscale.enable = true`, sets `services.tailscale.openFirewall = true` when `open-firewall` is given, collects `up-flag` children into `services.tailscale.extraUpFlags` as a list, and wires the `auth-key` secret reference to `services.tailscale.authKeyFile`. If no `auth-key` is declared, `authKeyFile` is not set, leaving interactive login as the fallback.
-
-### incus
-
-`incus` claims the `incus` node and generates an Incus host. Node shape: repeated `storage-pool "<name>" driver= source=`, `network "<name>" type= ipv4= nat=`, and `profile "<name>" pool= network=` children. A profile emits the default shape: a root disk on `pool` and an `eth0` nic on `network`.
-
-The module sets `virtualisation.incus.enable = true`, enables the web UI via `virtualisation.incus.ui.enable` (gated by a `ui` flag), and configures the daemon preseed from pools, networks, and profiles. Virtual machine support (via `package "qemu"`) and administrative access (via the `user` module with `group "incus-admin"`) are configured separately, which the incus module does not emit.
 
 ### home-manager
 
