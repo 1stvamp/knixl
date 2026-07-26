@@ -12,4 +12,20 @@ host "vmhost" {
         network "incusbr0" type="bridge" ipv4="auto" nat="true" ipv6="fd42::1/64" ipv6-nat="true"
         profile "default" pool="default" network="incusbr0"
     }
+
+    guest "sandbox" {
+        autostart #true
+        private-network #true
+        host-address "10.100.0.1"
+        local-address "10.100.0.2"
+        bind-mount "/data" host-path="/srv/sandbox" read-only=#true
+        config {
+            os {
+                state-version "25.11"
+            }
+            openssh {
+                permit-root "no"
+            }
+        }
+    }
 }

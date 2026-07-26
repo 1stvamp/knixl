@@ -87,4 +87,17 @@
   networking.firewall.interfaces."tailscale0".allowedTCPPorts = [
     8443
   ];
+  containers."sandbox".autoStart = true;
+  containers."sandbox".privateNetwork = true;
+  containers."sandbox".hostAddress = "10.100.0.1";
+  containers."sandbox".localAddress = "10.100.0.2";
+  containers."sandbox".bindMounts."/data" = {
+    hostPath = "/srv/sandbox";
+    isReadOnly = true;
+  };
+  containers."sandbox".config.system.stateVersion = "25.11";
+  containers."sandbox".config.services.openssh.enable = true;
+  containers."sandbox".config.services.openssh.settings.PasswordAuthentication = false;
+  containers."sandbox".config.services.openssh.settings.KbdInteractiveAuthentication = false;
+  containers."sandbox".config.services.openssh.settings.PermitRootLogin = "no";
 }

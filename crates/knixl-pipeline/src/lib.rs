@@ -185,6 +185,13 @@ fn generate_one(
         let mut errors = Vec::new();
         for body in files.values() {
             for a in body {
+                // Paths inside a guest's nested config (containers.<name>.config.*) are exempt:
+                // nixosOptionsDoc types `containers.<name>.config` as one submodule, so its inner
+                // paths are not keys in the option set and would all falsely fail. Opaque, like
+                // raw-nix (ADR 0011).
+                if is_guest_config_path(&a.path) {
+                    continue;
+                }
                 if let Err(mismatch) = oracle.check(&a.path, &a.value) {
                     errors.push(format!("{mismatch:?}"));
                 }
@@ -367,6 +374,16 @@ fn detect_conflicts(assignments: &[Assignment]) -> Vec<String> {
         }
     }
     warnings
+}
+
+/// A path inside a guest's nested config: `containers.<name>.config.*`. Exempt from oracle
+/// validation because the container submodule's interior is not in the flat option set (ADR 0011).
+fn is_guest_config_path(path: &knixl_ir::AttrPath) -> bool {
+    use knixl_ir::AttrKey;
+    matches!(
+        path.0.as_slice(),
+        [AttrKey::Ident(a), _, AttrKey::Ident(c), ..] if a == "containers" && c == "config"
+    )
 }
 
 /// Exact path key (quoted segments kept distinct, unlike to_option_key's `<name>`), so a
