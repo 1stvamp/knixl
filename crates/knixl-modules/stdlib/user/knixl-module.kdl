@@ -15,6 +15,10 @@ module name="user" version="1.0.0" {
             doc="Supplementary group, e.g. wheel."
         child "ssh-key" type="string" repeated=#true \
             doc="Authorised SSH public key."
+        child "hashed-password" repeated=#true \
+            doc="users.users.<name>.hashedPassword (a mkpasswd hash). At most one." {
+            arg "hash" type="string" required=#true
+        }
     }
 
     emit {
@@ -23,6 +27,9 @@ module name="user" version="1.0.0" {
         set "users.users.{name}.openssh.authorizedKeys.keys" (collect-opt)"ssh-key"
         for-each "d" in "description" {
             set "users.users.{name}.description" "{d.text}"
+        }
+        for-each "p" in "hashed-password" {
+            set "users.users.{name}.hashedPassword" "{p.hash}"
         }
     }
 }
