@@ -4,7 +4,9 @@ host "vault" {
     disko {
         disk "main" device="/dev/nvme0n1" {
             partition "ESP" size="512M" type="EF00" {
-                filesystem format="vfat" mountpoint="/boot"
+                filesystem format="vfat" mountpoint="/boot" {
+                    mount-option "umask=0077"
+                }
             }
             partition "swap" size="8G" {
                 swap
@@ -20,6 +22,8 @@ host "vault" {
         }
         zpool "tank" {
             mountpoint "/tank"
+            options ashift="12"
+            root-fs-options compression="zstd" acltype="posixacl" xattr="sa" mountpoint="none"
             dataset "media" mountpoint="/tank/media"
         }
     }

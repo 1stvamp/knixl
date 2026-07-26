@@ -15,6 +15,9 @@
         "ESP" = {
           content = {
             format = "vfat";
+            mountOptions = [
+              "umask=0077"
+            ];
             mountpoint = "/boot";
             type = "filesystem";
           };
@@ -60,6 +63,15 @@
       };
     };
     mountpoint = "/tank";
+    options = {
+      ashift = "12";
+    };
+    rootFsOptions = {
+      acltype = "posixacl";
+      compression = "zstd";
+      mountpoint = "none";
+      xattr = "sa";
+    };
     type = "zpool";
   };
 }

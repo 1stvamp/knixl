@@ -320,6 +320,11 @@ fn vault_pipeline_produces_expected_structure() {
         "\"zpool\"",
         "datasets",
         "\"zfs_fs\"",
+        "mountOptions",
+        "umask=0077",
+        "ashift = \"12\"",
+        "rootFsOptions",
+        "compression = \"zstd\"",
     ] {
         assert!(
             text.contains(needle),
