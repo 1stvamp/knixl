@@ -181,6 +181,89 @@ fn installer_emits_a_module_file_and_an_iso_flake_output() {
 }
 
 #[test]
+fn guest_image_emits_an_lxc_module_and_flake_outputs() {
+    let root = temp_root("guest-image");
+    fs::write(
+        root.join("knixl.kdl"),
+        "system {\n    state-version \"25.05\"\n}\nguest-image \"llm\" system=\"x86_64-linux\" {\n    os {\n        state-version \"25.05\"\n    }\n    raw-nix {\n        \"services.ollama.enable = true;\"\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("hosts/web.kdl"),
+        "host \"web\" {\n    system \"x86_64-linux\"\n    nixpkgs release=\"25.05\"\n}\n",
+    )
+    .unwrap();
+
+    let formatter = identity_formatter();
+    let tool: semver::Version = "0.3.1".parse().unwrap();
+
+    let seed = gather(&root, &formatter, tool.clone()).expect("gather (seed)");
+    let mut lock = seed.lock;
+    lock.baselines.insert(
+        "web".to_string(),
+        HostBaseline {
+            release: "25.05".into(),
+            nixpkgs_rev: "abcdef1234567890".into(),
+            options_hash: String::new(),
+            modules: Vec::new(),
+        },
+    );
+    lock.oracle.nixpkgs_rev = "lxcrev12345".into();
+    fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();
+
+    let project = gather(&root, &formatter, tool).expect("gather");
+
+    // The guest-image module: modulesPath formals + the lxc-container base + the module tree
+    // (and a raw-nix seam), NOT re-rooted (unlike an nspawn guest).
+    let module = project
+        .generated
+        .get(&PathBuf::from("generated/guest-image/llm.nix"))
+        .unwrap_or_else(|| {
+            panic!(
+                "generated/guest-image/llm.nix missing: {:?}",
+                project.generated.keys().collect::<Vec<_>>()
+            )
+        });
+    assert!(module.contains("modulesPath"), "formals: {module}");
+    assert!(
+        module.contains("virtualisation/lxc-container.nix"),
+        "lxc-container base import: {module}"
+    );
+    assert!(
+        module.contains("system.stateVersion = \"25.05\""),
+        "module tree lowered at top level: {module}"
+    );
+    assert!(
+        module.contains("services.ollama.enable = true;"),
+        "raw-nix seam: {module}"
+    );
+
+    // The flake: rootfs + metadata outputs, pinned to the oracle rev, no ISO.
+    let flake = project
+        .generated
+        .get(&PathBuf::from("generated/flake.nix"))
+        .expect("flake present");
+    assert!(
+        flake.contains("lxcrev12345"),
+        "pinned to oracle rev: {flake}"
+    );
+    assert!(
+        flake.contains("\"llm-lxc\" = image_llm.config.system.build.tarball;"),
+        "lxc rootfs output: {flake}"
+    );
+    assert!(
+        flake.contains("\"llm-lxc-metadata\" = image_llm.config.system.build.metadata;"),
+        "lxc metadata output: {flake}"
+    );
+    assert!(
+        !flake.contains("-iso"),
+        "no ISO output for a guest image: {flake}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn system_block_with_an_unresolved_host_baseline_is_a_validation_error() {
     let root = temp_root("missing-baseline");
     fs::write(

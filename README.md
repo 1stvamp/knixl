@@ -125,6 +125,7 @@ Three things worth calling out:
 - **Reference secrets without seeing them.** A `(secret)"name"` value wires a module option to a decrypted path (`config.sops.secrets."name".path`, or agenix), so the encrypted material stays out of band and knixl never reads or hashes the plaintext.
 - **Bring your own modules.** Declare `modules { module "x" flake="github:org/x" }` in `knixl.kdl`; knixl resolves it to a pinned rev, caches the manifest, and records it in the lock, so `generate` stays offline and byte-reproducible. Precedence is built-in, then your local `modules/`, then fetched, then stdlib, and a shadowed module is reported, never silent (ADR 0010).
 - **Build installer media.** Declare `installer "usb" { ... }` in `knixl.kdl` with an ordinary module tree; knixl emits an installer NixOS module (the `installation-cd` base plus your modules) and, alongside `system {}`, a `nix build .#usb-iso` output. Handy for a self-bootstrapping ISO that joins a tailnet so `nixos-anywhere` can reach a fresh box (ADR 0012).
+- **Build guest images.** Declare `guest-image "llm" { ... }` for a NixOS system built as an lxc image for Incus (the sibling of the nspawn `guest` module). Same mechanism as installer media, different output: `nix build .#llm-lxc` (+ `.#llm-lxc-metadata`) produces what `incus image import` takes (ADR 0013).
 
 ## The model in four points
 
@@ -168,7 +169,7 @@ A generated file that someone hand-edited is **tainted**. knixl tells drift apar
 
 ## Status
 
-1.0.0 is released (on crates.io, with prebuilt binaries). `check`, `plan`, `generate`, `upgrade`, `doc`, `install`, and `tui` work; every example host reproduces byte-for-byte through the pinned nixfmt; the oracle validates emitted paths against the NixOS option set; and the module set covers disks (disko), ZFS, users, OpenSSH, Tailscale, Incus, home-manager, nginx, and core host config (os: hostName, boot, kernel, sysctl, nix.settings, packages), plus nested NixOS system containers (guest) and installer-media/ISO generation. On top of that: opt-in bootable-system flake emission, reference-by-name secrets, and flake-based fetched modules. Design specs are under `docs/superpowers/specs/`; new work is tracked in GitHub issues.
+1.1.0 is released (on crates.io, with prebuilt binaries). `check`, `plan`, `generate`, `upgrade`, `doc`, `install`, and `tui` work; every example host reproduces byte-for-byte through the pinned nixfmt; the oracle validates emitted paths against the NixOS option set; and the module set covers disks (disko), ZFS, users, OpenSSH, Tailscale, Incus, home-manager, nginx, and core host config (os: hostName, boot, kernel, sysctl, nix.settings, packages), plus nested NixOS system containers (guest), installer-media/ISO generation, and lxc guest images for Incus (guest-image). On top of that: opt-in bootable-system flake emission, reference-by-name secrets, and flake-based fetched modules. Design specs are under `docs/superpowers/specs/`; new work is tracked in GitHub issues.
 
 ## Prior art
 

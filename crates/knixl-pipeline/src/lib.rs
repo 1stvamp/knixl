@@ -293,28 +293,28 @@ fn generate_one(
     Ok(generated)
 }
 
-/// Generate the installer module files (ADR 0012). Each `installer "<name>"` block's children are
-/// lowered through the registry like a host's, then emitted into `generated/installer/<name>.nix`
-/// with `modulesPath` in scope and the minimal installation-cd base imported ahead of the module
-/// tree. `nixpkgs.hostPlatform` is set from the installer's target system so the assembly flake's
-/// `eval-config` has a platform. v1 emits a single file per installer: a nested side-file bucket
-/// is rejected (there is nowhere to import it from an installer module).
-pub fn generate_installers(
-    installers: &[project::InstallerDef],
+/// Generate the image-target module files (ADR 0012, 0013). Each target's block children are
+/// lowered through the registry like a host's, then emitted into `generated/<dir>/<name>.nix`
+/// with `modulesPath` in scope and the kind's base module (installation-cd or lxc-container)
+/// imported ahead of the module tree. `nixpkgs.hostPlatform` is set from the target's system so
+/// the assembly flake's `eval-config` has a platform. v1 emits a single file per target: a nested
+/// side-file bucket is rejected (there is nowhere to import it from the module).
+pub fn generate_image_targets(
+    targets: &[project::ImageTarget],
     registry: &Registry,
     formatter: &Formatter,
     tool: &Version,
     secrets_backend: knixl_modules::SecretsBackend,
 ) -> Result<Vec<GeneratedFile>, GenerateError> {
     let mut generated = Vec::new();
-    for installer in installers {
+    for target in targets {
         let mut diags: Vec<knixl_modules::Diagnostic> = Vec::new();
         let mut body: Vec<Assignment> = vec![Assignment {
             path: knixl_ir::AttrPath(vec![
                 knixl_ir::AttrKey::Ident("nixpkgs".into()),
                 knixl_ir::AttrKey::Ident("hostPlatform".into()),
             ]),
-            value: NixExpr::Str(installer.system.clone()),
+            value: NixExpr::Str(target.system.clone()),
             priority: None,
             condition: None,
             doc: None,
@@ -324,20 +324,21 @@ pub fn generate_installers(
 
         let mut ctx = LowerCtx::new(
             Scope {
-                host: installer.name.clone(),
+                host: target.name.clone(),
             },
             registry,
             &mut diags,
             vec![],
         )
         .with_secrets_backend(secrets_backend);
-        // The installer node's children are modules; `system` is a prop, not a child.
-        for out in ctx.lower_children(&installer.node, &["system"])? {
+        // The target node's children are modules; `system` is a prop, not a child.
+        for out in ctx.lower_children(&target.node, &["system"])? {
             for unit in out.units {
                 if !matches!(unit.bucket, Bucket::Default) {
                     return Err(GenerateError::Validation(vec![format!(
-                        "installer `{}`: a side-file module cannot be part of an installer",
-                        installer.name
+                        "{} `{}`: a side-file module cannot be part of an image target",
+                        target.kind.output_dir(),
+                        target.name
                     )]));
                 }
                 modules.insert(unit.module);
@@ -367,9 +368,9 @@ pub fn generate_installers(
             .collect();
 
         let module = NixModule {
-            header: installer_header(),
+            header: image_target_header(),
             imports: vec![NixExpr::Raw(RawNix {
-                src: "modulesPath + \"/installer/cd-dvd/installation-cd-minimal.nix\"".into(),
+                src: format!("modulesPath + \"/{}\"", target.kind.base_import()),
                 span: None,
             })],
             lets,
@@ -387,7 +388,11 @@ pub fn generate_installers(
         let text = formatter.format(&w.into_string())?;
 
         generated.push(GeneratedFile {
-            path: PathBuf::from(format!("generated/installer/{}.nix", installer.name)),
+            path: PathBuf::from(format!(
+                "generated/{}/{}.nix",
+                target.kind.output_dir(),
+                target.name
+            )),
             text,
             from: PathBuf::from("knixl.kdl"),
             modules: module_names,
@@ -397,8 +402,8 @@ pub fn generate_installers(
     Ok(generated)
 }
 
-/// An installer module additionally needs `modulesPath` (to import the installation-cd base).
-fn installer_header() -> Formals {
+/// An image-target module additionally needs `modulesPath` (to import its base module).
+fn image_target_header() -> Formals {
     Formals {
         args: vec![
             "config".into(),

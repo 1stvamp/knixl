@@ -36,16 +36,54 @@ pub struct ProjectConfig {
     pub system: Option<SystemConfig>,
     pub secrets_backend: knixl_modules::SecretsBackend,
     pub module_sources: Vec<ModuleSource>,
-    pub installers: Vec<InstallerDef>,
+    pub image_targets: Vec<ImageTarget>,
 }
 
-/// A declared installer target (ADR 0012): `installer "<name>" [system="<double>"] { <modules> }`.
-/// The node's children are ordinary knixl module nodes, lowered into a generated installer
-/// module (importing the installation-cd base). `system` defaults to x86_64-linux.
+/// The kind of image a target builds (ADR 0012, 0013): a bootable installer ISO, or a NixOS
+/// system built as an lxc image for Incus. They share one generation and flake path, differing
+/// only in the base module imported and the flake output shape.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ImageKind {
+    /// `installer "<name>"` -> installation-cd base, `<name>-iso` output (ADR 0012).
+    Installer,
+    /// `guest-image "<name>"` -> lxc-container base, `<name>-lxc`/`-lxc-metadata` outputs (ADR 0013).
+    GuestLxc,
+}
+
+impl ImageKind {
+    /// The KDL top-level node name that declares this kind.
+    fn node_name(self) -> &'static str {
+        match self {
+            ImageKind::Installer => "installer",
+            ImageKind::GuestLxc => "guest-image",
+        }
+    }
+
+    /// The nixpkgs module imported (relative to `modulesPath`) ahead of the lowered tree.
+    pub fn base_import(self) -> &'static str {
+        match self {
+            ImageKind::Installer => "installer/cd-dvd/installation-cd-minimal.nix",
+            ImageKind::GuestLxc => "virtualisation/lxc-container.nix",
+        }
+    }
+
+    /// The `generated/<dir>/<name>.nix` subdirectory the module file is written to.
+    pub fn output_dir(self) -> &'static str {
+        match self {
+            ImageKind::Installer => "installer",
+            ImageKind::GuestLxc => "guest-image",
+        }
+    }
+}
+
+/// A declared image target: `<kind-node> "<name>" [system="<double>"] { <modules> }` in
+/// `knixl.kdl`. The node's children are ordinary knixl module nodes, lowered into a generated
+/// module (importing the kind's base). `system` defaults to x86_64-linux.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct InstallerDef {
+pub struct ImageTarget {
     pub name: String,
     pub system: String,
+    pub kind: ImageKind,
     pub node: KdlNode,
 }
 
@@ -137,20 +175,25 @@ pub fn parse_project(root: &Path) -> Result<ProjectConfig, ProjectError> {
         Some(node) => module_sources_from_node(node)?,
     };
 
-    let installers = doc
-        .nodes()
-        .iter()
-        .filter(|n| n.name().value() == "installer")
-        .map(|n| InstallerDef {
-            name: knixl_kdl::first_arg_str(n).unwrap_or_default(),
-            system: n
-                .get("system")
-                .and_then(|v| v.as_string())
-                .unwrap_or("x86_64-linux")
-                .to_string(),
-            node: n.clone(),
-        })
-        .collect();
+    let mut image_targets = Vec::new();
+    for kind in [ImageKind::Installer, ImageKind::GuestLxc] {
+        for n in doc
+            .nodes()
+            .iter()
+            .filter(|n| n.name().value() == kind.node_name())
+        {
+            image_targets.push(ImageTarget {
+                name: knixl_kdl::first_arg_str(n).unwrap_or_default(),
+                system: n
+                    .get("system")
+                    .and_then(|v| v.as_string())
+                    .unwrap_or("x86_64-linux")
+                    .to_string(),
+                kind,
+                node: n.clone(),
+            });
+        }
+    }
 
     Ok(ProjectConfig {
         default_release,
@@ -158,7 +201,7 @@ pub fn parse_project(root: &Path) -> Result<ProjectConfig, ProjectError> {
         system,
         secrets_backend,
         module_sources,
-        installers,
+        image_targets,
     })
 }
 
