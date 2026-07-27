@@ -16,9 +16,9 @@ use knixl_nix::module_fetch::{hash_module, module_cache_path};
 use knixl_nix::{hash, Formatter};
 use semver::Version;
 
-use crate::flake::{render_system_flake, FlakeHost, FlakeInstaller};
+use crate::flake::{render_system_flake, FlakeHost, FlakeImage};
 use crate::project::{parse_project, ModuleSource};
-use crate::{generate, generate_installers, GenerateError, HostSource};
+use crate::{generate, generate_image_targets, GenerateError, HostSource};
 
 /// Everything `Plan::compute` needs to reconcile a project, plus the registry (for `doc`),
 /// the project root, and the freshly generated file text (for the apply path to write).
@@ -186,10 +186,10 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     // refused to register it rather than silently skipping.
     validation_errors.extend(module_validation_errors);
 
-    // Installer module files (ADR 0012). Emitted whether or not `system {}` is present; the ISO
-    // flake output is wired only when it is (below).
-    match generate_installers(
-        &project.installers,
+    // Image-target module files (ADR 0012, 0013: installer ISOs and lxc guest images). Emitted
+    // whether or not `system {}` is present; the build/flake output is wired only when it is.
+    match generate_image_targets(
+        &project.image_targets,
         &registry,
         formatter,
         &tool,
@@ -268,20 +268,21 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
                 }
             }
         }
-        // Installers pin to the project's default nixpkgs rev (the oracle's), the single rev the
-        // project validates against (ADR 0012). With no lock rev yet, the ISO output is skipped
-        // (the installer module file is still generated above).
-        let flake_installers: Vec<FlakeInstaller> = if lock.oracle.nixpkgs_rev.is_empty() {
+        // Image targets pin to the project's default nixpkgs rev (the oracle's), the single rev
+        // the project validates against (ADR 0012, 0013). With no lock rev yet, the build output
+        // is skipped (the module file is still generated above).
+        let flake_images: Vec<FlakeImage> = if lock.oracle.nixpkgs_rev.is_empty() {
             Vec::new()
         } else {
             project
-                .installers
+                .image_targets
                 .iter()
-                .map(|i| FlakeInstaller {
-                    name: i.name.clone(),
+                .map(|t| FlakeImage {
+                    name: t.name.clone(),
                     baseline_rev: lock.oracle.nixpkgs_rev.clone(),
-                    module_path: format!("./installer/{}.nix", i.name),
-                    system: i.system.clone(),
+                    module_path: format!("./{}/{}.nix", t.kind.output_dir(), t.name),
+                    system: t.system.clone(),
+                    kind: t.kind,
                 })
                 .collect()
         };
@@ -289,7 +290,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         if !missing {
             let raw = render_system_flake(
                 &flake_hosts,
-                &flake_installers,
+                &flake_images,
                 &system.state_version,
                 &system.nixpkgs_url,
             );

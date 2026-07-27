@@ -8,20 +8,46 @@ pub struct FlakeHost {
     pub module_path: String,
 }
 
-/// An installer target (ADR 0012): builds to an ISO. `system` is the platform double keying its
-/// `packages.<system>` output; `baseline_rev` pins nixpkgs like a host.
+/// An image target (ADR 0012, 0013): an installer ISO or an lxc image. `system` is the platform
+/// double keying its `packages.<system>` output; `baseline_rev` pins nixpkgs like a host; `kind`
+/// selects the flake output shape.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct FlakeInstaller {
+pub struct FlakeImage {
     pub name: String,
     pub baseline_rev: String,
     pub module_path: String,
     pub system: String,
+    pub kind: crate::project::ImageKind,
 }
 
-/// A Nix identifier derived from an installer name for a `let` binding (names are simple in
-/// practice, but hyphens and other non-ident chars are mapped to `_` defensively).
+impl FlakeImage {
+    /// The `packages.<system>` outputs this image contributes, as `(output-name, expression)`
+    /// where the expression reads a build product off the image's evaluated config (`binding`).
+    fn outputs(&self, binding: &str) -> Vec<(String, String)> {
+        match self.kind {
+            crate::project::ImageKind::Installer => vec![(
+                format!("{}-iso", self.name),
+                format!("{binding}.config.system.build.isoImage"),
+            )],
+            // incus image import takes both a rootfs and a metadata tarball, so both are exposed.
+            crate::project::ImageKind::GuestLxc => vec![
+                (
+                    format!("{}-lxc", self.name),
+                    format!("{binding}.config.system.build.tarball"),
+                ),
+                (
+                    format!("{}-lxc-metadata", self.name),
+                    format!("{binding}.config.system.build.metadata"),
+                ),
+            ],
+        }
+    }
+}
+
+/// A Nix identifier derived from an image name for a `let` binding (names are simple in practice,
+/// but hyphens and other non-ident chars are mapped to `_` defensively).
 fn let_ident(name: &str) -> String {
-    let mut out = String::from("installer_");
+    let mut out = String::from("image_");
     for c in name.chars() {
         out.push(if c.is_ascii_alphanumeric() { c } else { '_' });
     }
@@ -46,13 +72,13 @@ fn esc(v: &str) -> String {
 /// a full rev is a pure pin; `shallow = true` matches the package-pin emit idiom.
 pub fn render_system_flake(
     hosts: &[FlakeHost],
-    installers: &[FlakeInstaller],
+    images: &[FlakeImage],
     state_version: &str,
     nixpkgs_url: &str,
 ) -> String {
     let mut sorted: Vec<&FlakeHost> = hosts.iter().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut inst: Vec<&FlakeInstaller> = installers.iter().collect();
+    let mut inst: Vec<&FlakeImage> = images.iter().collect();
     inst.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut s = String::new();
@@ -65,8 +91,8 @@ pub fn render_system_flake(
         "      evalAt = rev: import \"${{builtins.fetchGit {{ url = \"{}\"; rev = rev; shallow = true; }}}}/nixos/lib/eval-config.nix\";\n",
         esc(nixpkgs_url)
     ));
-    // One `let` binding per installer, so both nixosConfigurations and packages can name the
-    // same evaluated configuration (ADR 0012).
+    // One `let` binding per image target, so both nixosConfigurations and packages can name the
+    // same evaluated configuration (ADR 0012, 0013).
     for i in &inst {
         s.push_str(&format!(
             "      {} = evalAt \"{}\" {{\n",
@@ -108,16 +134,24 @@ pub fn render_system_flake(
         ));
     }
     s.push_str("      };\n");
-    // ISO build outputs, keyed by each installer's target system.
+    // Image build outputs, grouped by target system (so two images on the same system share one
+    // `packages.<system>` set rather than emitting a duplicate key).
     if !inst.is_empty() {
-        s.push_str("      packages = {\n");
+        let mut by_system: std::collections::BTreeMap<&str, Vec<(String, String)>> =
+            std::collections::BTreeMap::new();
         for i in &inst {
-            s.push_str(&format!("        \"{}\" = {{\n", esc(&i.system)));
-            s.push_str(&format!(
-                "          \"{}-iso\" = {}.config.system.build.isoImage;\n",
-                esc(&i.name),
-                let_ident(&i.name)
-            ));
+            by_system
+                .entry(i.system.as_str())
+                .or_default()
+                .extend(i.outputs(&let_ident(&i.name)));
+        }
+        s.push_str("      packages = {\n");
+        for (system, mut outs) in by_system {
+            outs.sort_by(|a, b| a.0.cmp(&b.0));
+            s.push_str(&format!("        \"{}\" = {{\n", esc(system)));
+            for (name, expr) in outs {
+                s.push_str(&format!("          \"{}\" = {};\n", esc(&name), expr));
+            }
             s.push_str("        };\n");
         }
         s.push_str("      };\n");
@@ -203,32 +237,84 @@ mod tests {
 
     #[test]
     fn emits_installer_config_and_iso_package_output() {
-        let installers = vec![FlakeInstaller {
+        use crate::project::ImageKind;
+        let images = vec![FlakeImage {
             name: "usb".into(),
             baseline_rev: "rev-inst".into(),
             module_path: "./installer/usb.nix".into(),
             system: "x86_64-linux".into(),
+            kind: ImageKind::Installer,
         }];
-        let out = render_system_flake(&hosts(), &installers, "25.05", "https://x/nixpkgs");
+        let out = render_system_flake(&hosts(), &images, "25.05", "https://x/nixpkgs");
         // a let binding the config, referenced by both nixosConfigurations and packages
-        assert!(out.contains("installer_usb = evalAt \"rev-inst\""));
+        assert!(out.contains("image_usb = evalAt \"rev-inst\""));
         assert!(out.contains("./installer/usb.nix"));
-        assert!(out.contains("\"usb\" = installer_usb;"));
+        assert!(out.contains("\"usb\" = image_usb;"));
         // the ISO package output, keyed by the installer's system
         assert!(out.contains("packages = {"));
         assert!(out.contains("\"x86_64-linux\" = {"));
         assert!(
-            out.contains("\"usb-iso\" = installer_usb.config.system.build.isoImage;"),
+            out.contains("\"usb-iso\" = image_usb.config.system.build.isoImage;"),
             "iso output: {out}"
         );
     }
 
     #[test]
-    fn no_installers_means_no_packages_output() {
-        let out = render_system_flake(&hosts(), &[], "25.05", "https://x/nixpkgs");
+    fn guest_lxc_emits_rootfs_and_metadata_outputs() {
+        use crate::project::ImageKind;
+        let images = vec![FlakeImage {
+            name: "llm".into(),
+            baseline_rev: "rev-lxc".into(),
+            module_path: "./guest-image/llm.nix".into(),
+            system: "x86_64-linux".into(),
+            kind: ImageKind::GuestLxc,
+        }];
+        let out = render_system_flake(&hosts(), &images, "25.05", "https://x/nixpkgs");
+        assert!(out.contains("\"llm\" = image_llm;"));
         assert!(
-            !out.contains("packages = {"),
-            "no packages when no installers"
+            out.contains("\"llm-lxc\" = image_llm.config.system.build.tarball;"),
+            "lxc rootfs output: {out}"
         );
+        assert!(
+            out.contains("\"llm-lxc-metadata\" = image_llm.config.system.build.metadata;"),
+            "lxc metadata output: {out}"
+        );
+    }
+
+    #[test]
+    fn two_images_on_one_system_share_a_single_packages_entry() {
+        use crate::project::ImageKind;
+        let images = vec![
+            FlakeImage {
+                name: "usb".into(),
+                baseline_rev: "r".into(),
+                module_path: "./installer/usb.nix".into(),
+                system: "x86_64-linux".into(),
+                kind: ImageKind::Installer,
+            },
+            FlakeImage {
+                name: "llm".into(),
+                baseline_rev: "r".into(),
+                module_path: "./guest-image/llm.nix".into(),
+                system: "x86_64-linux".into(),
+                kind: ImageKind::GuestLxc,
+            },
+        ];
+        let out = render_system_flake(&[], &images, "25.05", "https://x/nixpkgs");
+        // Exactly one `"x86_64-linux" = {` under packages, not one per image (which would be a
+        // duplicate attribute Nix rejects).
+        assert_eq!(
+            out.matches("\"x86_64-linux\" = {").count(),
+            1,
+            "one packages.<system> set: {out}"
+        );
+        assert!(out.contains("\"usb-iso\""));
+        assert!(out.contains("\"llm-lxc\""));
+    }
+
+    #[test]
+    fn no_images_means_no_packages_output() {
+        let out = render_system_flake(&hosts(), &[], "25.05", "https://x/nixpkgs");
+        assert!(!out.contains("packages = {"), "no packages when no images");
     }
 }
