@@ -92,15 +92,20 @@ One version bump drives everything: `workspace.package.version` in the root
 `Cargo.toml` at eval time) all follow it, so there is exactly one number to
 change.
 
-1. Bump `workspace.package.version` in `Cargo.toml`.
-2. `cargo test --workspace`. Also worth running `cargo fmt --all --check` and
+1. Write the `CHANGELOG.md` entry for `X.Y.Z`: turn the `[Unreleased]` section
+   into a dated `## [X.Y.Z] - YYYY-MM-DD` section, following the prompt and
+   template in `docs/release-changelog.md`. cargo-dist reads this file and uses
+   the matching section as the GitHub Release body, so an empty or sloppy entry
+   is what everyone sees on the release page.
+2. Bump `workspace.package.version` in `Cargo.toml`.
+3. `cargo test --workspace`. Also worth running `cargo fmt --all --check` and
    `cargo clippy --all-targets -- -D warnings` (what CI checks on every PR),
    since a release tag should not be the first place these run.
-3. Commit: `git commit -am "chore(release): vX.Y.Z"` (or however the version
+4. Commit: `git commit -am "chore(release): vX.Y.Z"` (or however the version
    bump was staged).
-4. Tag: `git tag vX.Y.Z`.
-5. Push both: `git push && git push --tags`.
-6. Watch the two workflows this triggers on the `v*` tag:
+5. Tag: `git tag vX.Y.Z`.
+6. Push both: `git push && git push --tags`.
+7. Watch the two workflows this triggers on the `v*` tag:
    - `release.yml` (`dist`-generated): builds the six target archives, the
      shell installer, and creates the GitHub Release.
    - `publish-crates.yml`: publishes all eight crates to crates.io in
@@ -108,7 +113,7 @@ change.
 
    `gh run watch` against the latest run for each workflow, or watch in the
    Actions tab.
-7. Verify the release actually landed:
+8. Verify the release actually landed:
    - crates.io: `curl -s -A "<contact>" https://crates.io/api/v1/crates/knixl
      | grep '"newest_version"'` shows `X.Y.Z`.
    - GitHub Release: `gh release view vX.Y.Z --repo 1stvamp/knixl`.
@@ -195,7 +200,8 @@ Both confirm the flake evaluates cleanly straight from the committed tree.
 
 ## Files this touches per release
 
-- `Cargo.toml` (`workspace.package.version`) : the only hand-edit.
+- `CHANGELOG.md` : the new version section (see `docs/release-changelog.md`).
+- `Cargo.toml` (`workspace.package.version`) : the version bump.
 - `Cargo.lock` : updates automatically on the next `cargo build`/`cargo test`
   after the bump; commit it alongside.
 - Everything else (`flake.lock`, the six `dist` archives, the GitHub Release,
