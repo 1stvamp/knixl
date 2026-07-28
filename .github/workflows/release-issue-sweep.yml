@@ -1,0 +1,43 @@
+# Sweep the issues a release referenced but did not close.
+#
+# knixl deliberately does not use GitHub's `Closes #NN` keyword: one issue is often finished
+# across several branches, so a close keyword fires on the first merge and closes the issue
+# while work is still outstanding. Commits reference issues as `(#NN)` instead, which means
+# nothing closes automatically and an issue can sit open after its work has shipped.
+#
+# So on a release tag, look at every issue referenced in the commit range since the previous
+# tag and report the ones still open. This never fails the release: it writes a list to the run
+# summary for a human to act on.
+name: Release issue sweep
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "Base ref to sweep from (default: the tag before `to`)"
+        required: false
+      to:
+        description: "Head ref to sweep to (default: the pushed tag, else HEAD)"
+        required: false
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history and tags: the range is computed from the previous tag.
+          fetch-depth: 0
+
+      - name: Sweep referenced issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_FROM: ${{ inputs.from }}
+          IN_TO: ${{ inputs.to }}
+        run: .github/scripts/issue-sweep.sh

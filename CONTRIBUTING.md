@@ -4,6 +4,18 @@ Read README.md, then docs/ in order, before writing code. `docs/adr/` records
 decisions that should not be quietly reversed; if a change seems to need one
 reversed, open an issue first rather than just doing it.
 
+## Referencing issues from commits and PRs
+
+Reference the issue a change belongs to as `(#NN)` in the commit subject or body,
+and do not use GitHub's closing keywords (`Closes #NN`, `Fixes #NN`). One issue
+is often finished across several branches, and a keyword closes it on the first
+merge while work is still outstanding.
+
+Nothing closes automatically as a result, so the `Release issue sweep` workflow
+runs on each release tag and lists any referenced issue still open in its run
+summary (see `.github/scripts/issue-sweep.sh`). Close them by hand once the work
+has actually shipped.
+
 ## Prerequisites
 
 - **Rust**, via rustup. The toolchain is pinned in `rust-toolchain.toml`
