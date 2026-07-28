@@ -47,17 +47,29 @@ fi
 refs="$(git log --no-merges --pretty='%s%n%b' "$range" 2>/dev/null \
   | grep -oE '#[0-9]+' | tr -d '#' | sort -un)"
 
-summary="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+# Compose the report once, then emit it to the job summary (where a human reads it) and to
+# stdout (so the run log carries it too: step summaries are not exposed over the REST API, and
+# a report you cannot retrieve afterwards is not much of a report).
+report_file="$(mktemp)"
+trap 'rm -f "$report_file"' EXIT
+
+emit() {
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    cat "$report_file" >>"$GITHUB_STEP_SUMMARY"
+  fi
+  cat "$report_file"
+}
 
 {
   echo "## Release issue sweep"
   echo
   echo "Range: ${range_label}"
   echo
-} >>"$summary"
+} >>"$report_file"
 
 if [ -z "$refs" ]; then
-  echo "No issue references (\`#NN\`) in this range." >>"$summary"
+  echo "No issue references (\`#NN\`) in this range." >>"$report_file"
+  emit
   exit 0
 fi
 
@@ -90,9 +102,9 @@ for n in $refs; do
 done
 
 if [ "$open_count" -eq 0 ]; then
-  {
-    echo "Checked ${checked} referenced issue(s); none are still open. :white_check_mark:"
-  } >>"$summary"
+  echo "Checked ${checked} referenced issue(s); none are still open. :white_check_mark:" \
+    >>"$report_file"
+  emit
   exit 0
 fi
 
@@ -103,6 +115,7 @@ fi
   echo
   echo "Close whichever are genuinely done. knixl does not auto-close by keyword, because an"
   echo "issue is often finished across several branches."
-} >>"$summary"
+} >>"$report_file"
 
+emit
 exit 0
