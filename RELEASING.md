@@ -105,15 +105,22 @@ change.
    bump was staged).
 5. Tag: `git tag vX.Y.Z`.
 6. Push both: `git push && git push --tags`.
-7. Watch the two workflows this triggers on the `v*` tag:
+7. Watch the workflows this triggers on the `v*` tag:
    - `release.yml` (`dist`-generated): builds the six target archives, the
-     shell installer, and creates the GitHub Release.
+     shell installer, and creates the GitHub Release (with the body taken from
+     this version's `CHANGELOG.md` section).
    - `publish-crates.yml`: publishes all eight crates to crates.io in
      dependency order via `cargo ws publish --from-git`.
+   - `release-issue-sweep.yml`: reports referenced-but-open issues (step 8).
 
    `gh run watch` against the latest run for each workflow, or watch in the
    Actions tab.
-8. Verify the release actually landed:
+8. Read the `Release issue sweep` run for the tag. It lists every issue the
+   range's commits referenced that is still open, since knixl does not close by
+   keyword (an issue is often finished across several branches, so a keyword
+   would close it on the first merge). Close whichever are genuinely done. The
+   sweep never fails the release, so it is easy to skip: read it anyway.
+9. Verify the release actually landed:
    - crates.io: `curl -s -A "<contact>" https://crates.io/api/v1/crates/knixl
      | grep '"newest_version"'` shows `X.Y.Z`.
    - GitHub Release: `gh release view vX.Y.Z --repo 1stvamp/knixl`.
