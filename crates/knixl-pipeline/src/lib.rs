@@ -369,6 +369,8 @@ pub fn generate_image_targets(
 
         let module = NixModule {
             header: image_target_header(),
+            // The emitter brackets a raw binary expression in list position, so this stays as
+            // written (#81).
             imports: vec![NixExpr::Raw(RawNix {
                 src: format!("modulesPath + \"/{}\"", target.kind.base_import()),
                 span: None,

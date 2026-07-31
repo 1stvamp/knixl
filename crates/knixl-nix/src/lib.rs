@@ -17,8 +17,10 @@ pub struct Formatter {
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
-    #[error("formatter exited non-zero: {0}")]
-    NonZero(i32),
+    // The formatter's own stderr is the diagnosis (a syntax error in the emitted module names
+    // its line and column), so it rides along with the exit code rather than being dropped.
+    #[error("formatter exited non-zero: {code}{}", detail(stderr))]
+    NonZero { code: i32, stderr: String },
     #[error("formatter emitted invalid UTF-8")]
     Utf8,
     #[error("formatter version mismatch: expected {expected}, found {found}")]
@@ -27,6 +29,17 @@ pub enum FormatError {
     NotFound(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+/// Render captured stderr as an indented block, or nothing at all when the formatter was
+/// silent (no stray colon on an already-complete message).
+fn detail(stderr: &str) -> String {
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        String::new()
+    } else {
+        format!("\n{stderr}")
+    }
 }
 
 impl FormatError {
@@ -82,14 +95,33 @@ impl Formatter {
 
         // Write the whole input, then drop stdin to signal EOF before reading stdout.
         // Emitted modules are small (well under a pipe buffer), so this cannot deadlock.
-        {
+        let written = {
             let mut stdin = child.stdin.take().expect("stdin was piped");
-            stdin.write_all(emitted.as_bytes())?;
-        }
+            stdin.write_all(emitted.as_bytes())
+        };
+
+        // A formatter that rejects its input can exit before reading all of it, which fails the
+        // write with EPIPE. Reporting that would bury the diagnosis, so wait for the child
+        // either way and let its exit status and stderr speak first.
+        let broken_pipe = match written {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Some(e),
+            other => {
+                other?;
+                None
+            }
+        };
 
         let output = child.wait_with_output()?;
         if !output.status.success() {
-            return Err(FormatError::NonZero(output.status.code().unwrap_or(-1)));
+            return Err(FormatError::NonZero {
+                code: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        // Exited clean but would not take the input: nothing sensible to return, so the write
+        // error stands after all.
+        if let Some(e) = broken_pipe {
+            return Err(FormatError::Io(e));
         }
         String::from_utf8(output.stdout).map_err(|_| FormatError::Utf8)
     }
@@ -106,7 +138,10 @@ impl Formatter {
         })
         .map_err(|e| FormatError::from_spawn(&self.bin, e))?;
         if !output.status.success() {
-            return Err(FormatError::NonZero(output.status.code().unwrap_or(-1)));
+            return Err(FormatError::NonZero {
+                code: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
         }
         let reported = String::from_utf8_lossy(&output.stdout);
         if reported.contains(&self.version) {
@@ -179,11 +214,37 @@ mod tests {
 
     #[test]
     fn format_reports_non_zero_exit() {
+        // `false` exits without reading stdin, so the write races with it and loses with EPIPE.
+        // The exit status is the real error and has to win that race, whichever way it goes.
         let f = formatter_with_bin("false");
-        assert!(matches!(
-            f.format("x").unwrap_err(),
-            FormatError::NonZero(_)
-        ));
+        for _ in 0..50 {
+            assert!(matches!(
+                f.format(&"x".repeat(128 * 1024)).unwrap_err(),
+                FormatError::NonZero { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn format_failure_carries_the_formatter_stderr() {
+        // `sh -` reads its input as a script, so it stands in for a formatter that consumes
+        // stdin, complains on stderr and exits non-zero. Every shell names the offending token
+        // it choked on, which is what has to survive into the message.
+        let f = formatter_with_bin("sh");
+        let msg = f
+            .format("{ imports = [ modulesPath + \"/x.nix\" ]; }\n")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("imports"), "stderr swallowed: {msg}");
+    }
+
+    #[test]
+    fn a_silent_failing_formatter_gets_no_trailing_punctuation() {
+        let f = formatter_with_bin("false");
+        assert_eq!(
+            f.format("x").unwrap_err().to_string(),
+            "formatter exited non-zero: 1"
+        );
     }
 
     /// Write a throwaway executable that mimics `nixfmt --version` and otherwise cats.
