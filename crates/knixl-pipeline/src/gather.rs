@@ -92,20 +92,16 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         },
     };
 
-    // Which hosts declare their own `oracle-modules` override (ADR 0008): a host with one
-    // replaces the project default rather than falling back to it, but ONLY when it also
-    // carries a baseline to store the resolved pins in (checked below, alongside the
-    // unresolved-release check).
+    // Hosts declaring their own `oracle-modules` override (ADR 0008; the requires-a-baseline
+    // rule is enforced below, alongside the unresolved-release check).
     let declared_oracle_hosts = declared_oracle_module_hosts(&hosts);
 
     // Resolve each host's oracle option set (issue #22, extended by #35/ADR 0008 to the
-    // augmented set: nixpkgs plus declared out-of-tree module pins). KNIXL_OPTIONS_JSON wins
-    // (explicit override, and the path tests use): every host maps to that one options file.
-    // Otherwise each host's rev is its lock baseline if declared, else the lock's default
-    // nixpkgs rev; its module pins are its own baseline's if it declares an override, else the
-    // project's `oracle.modules`; the set cached for that effective (rev, pins) key validates
-    // it. If nothing is cached for a host's effective set, that host is simply absent from the
-    // map: generation proceeds without option checks for it (best-effort, per host).
+    // augmented set). KNIXL_OPTIONS_JSON wins when set (explicit override, and what the path
+    // tests use): every host maps to that one options file. Otherwise each host's rev and
+    // module pins come from its own lock baseline where declared, else the project's defaults
+    // (ADR 0008); a host with nothing cached for its effective set is simply absent from the
+    // map, so generation proceeds without option checks for it.
     let names = host_names(&hosts);
     let oracles: BTreeMap<String, knixl_oracle::Oracle> = match std::env::var("KNIXL_OPTIONS_JSON")
     {
@@ -455,27 +451,22 @@ pub fn declared_oracle_module_hosts(hosts: &[HostSource]) -> BTreeSet<String> {
     out
 }
 
-/// Build just the module registry for `root` (built-ins, local, then the embedded stdlib).
-/// Unlike `gather` this needs no formatter or oracle, so listing modules works even where
-/// nix/nixfmt are absent; it also passes no declared sources/pins, so the fetched layer
-/// (issue #13) is empty here (that needs the lock read `gather` already does). Shadow
-/// notices and validation errors are dropped; callers that need them use `build_registry`
-/// directly.
+/// Just the module registry (built-ins, local, embedded stdlib): no formatter or oracle
+/// needed, so this works even without nix/nixfmt. Passes no declared sources/pins, so the
+/// fetched layer (issue #13) stays empty here; that needs the lock read `gather` already does.
+/// Drops shadow notices and validation errors; call `build_registry` directly for those.
 pub fn registry(root: &Path) -> Result<Registry, GatherError> {
     Ok(build_registry(root, &[], &[])?.0)
 }
 
-/// Layer the registry in precedence order: built-in, then local (`<root>/modules/*`, a hard
-/// error on a duplicate within this layer), then fetched (declared `modules {}` sources,
-/// issue #13, resolved through the lock's `pins` rather than the network, so this stays
-/// offline), then the embedded stdlib filling whatever node is still unclaimed.
+/// Layers the registry per ADR 0010 (built-in, local, fetched, embedded stdlib); see there for
+/// the precedence and shadow-notice rules. Fetched sources resolve through the lock's `pins`
+/// rather than the network (issue #13), so this stays offline.
 ///
-/// A declared source with no matching pin is a validation error (never a silent skip)
-/// naming `install`/`upgrade` as the fix, collected in the third element rather than
-/// returned as an `Err`, so every problem in a project surfaces together (mirroring the
-/// unresolved-baseline check in `gather`). A cached manifest whose hash no longer matches
-/// its pin IS a hard error: the cache may be corrupt or tampered, and it must never be
-/// silently refetched.
+/// An unresolved declared source is collected in the third element rather than returned as an
+/// `Err`, so every problem in a project surfaces together, mirroring the unresolved-baseline
+/// check in `gather`. A cached manifest whose hash no longer matches its pin is still a hard
+/// `Err`, never a silent refetch.
 ///
 /// Returns `(registry, shadow notices, validation errors)`.
 fn build_registry(

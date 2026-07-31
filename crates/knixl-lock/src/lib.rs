@@ -1,4 +1,4 @@
-//! Lockfile model and the reconcile state machine. SPEC-GRADE SKETCH.
+//! Lockfile model and the reconcile state machine.
 pub mod model;
 pub mod reconcile;
 

@@ -1,7 +1,5 @@
 //! `guest`: a NixOS system container whose config is a nested knixl module tree (ADR 0011).
-//! A built-in, not a declarative module: it lowers the `config { }` block's children through the
-//! normal module registry (a guest is a mini-host) and RE-ROOTS every resulting assignment under
-//! `containers.<name>.config`, which the template grammar cannot do.
+//! A built-in module; see docs/04-template-grammar.md for why.
 use crate::builtin::host::unit_default;
 use crate::{
     Bucket, Child, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, Unit, ValueTy,

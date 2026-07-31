@@ -45,7 +45,6 @@ impl HomeModel {
             .unwrap_or("quit")
     }
 
-    /// Reducer: navigation keys drive the list; Enter routes the selection; q/Esc quit.
     pub fn update(&mut self, msg: Msg, size: (u16, u16)) -> Step {
         let Some(key) = msg.downcast_ref::<KeyMsg>() else {
             let cmd = self.list.update(msg);

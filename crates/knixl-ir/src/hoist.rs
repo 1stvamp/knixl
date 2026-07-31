@@ -1,11 +1,6 @@
-//! let-hoisting: a generator pass (docs/03) that deduplicates repeated compound
-//! subexpressions within one file into top-level `let` bindings.
-//!
-//! A value is hoisted when it appears verbatim twice or more in the file and is
-//! compound (a non-empty attrset, a non-empty list, or an indented string). Equality
-//! is emitted-text equality, so the pass agrees with what the lock hashes. Hoisting is
-//! maximal: the largest repeated expression is bound and its interior is left literal,
-//! so bindings never reference other bindings.
+//! let-hoisting: see docs/01-architecture.md and
+//! docs/superpowers/specs/2026-07-14-let-hoisting-design.md. Equality here is emitted-text
+//! equality, so this pass agrees with what the lock hashes.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -62,7 +57,6 @@ fn is_eligible(expr: &NixExpr) -> bool {
     }
 }
 
-/// Count eligible nodes by emitted text, descending into every child.
 fn count(expr: &NixExpr, counts: &mut BTreeMap<String, usize>) {
     if is_eligible(expr) {
         *counts.entry(emit_key(expr)).or_insert(0) += 1;

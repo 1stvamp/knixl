@@ -1,5 +1,5 @@
 //! Formatter invocation (pinned nixfmt) and content hashing. Both sit on the
-//! reproducibility boundary. SPEC-GRADE SKETCH.
+//! reproducibility boundary.
 
 pub mod baseline;
 pub mod module;
@@ -31,8 +31,8 @@ pub enum FormatError {
     Io(#[from] std::io::Error),
 }
 
-/// Render captured stderr as an indented block, or nothing at all when the formatter was
-/// silent (no stray colon on an already-complete message).
+/// Indented stderr block, or empty so a silent formatter's message carries no trailing
+/// punctuation.
 fn detail(stderr: &str) -> String {
     let stderr = stderr.trim();
     if stderr.is_empty() {
@@ -43,7 +43,6 @@ fn detail(stderr: &str) -> String {
 }
 
 impl FormatError {
-    /// Turn a spawn/exec io error into a clear `NotFound` when the binary is missing.
     fn from_spawn(bin: &std::path::Path, e: std::io::Error) -> Self {
         if e.kind() == std::io::ErrorKind::NotFound {
             FormatError::NotFound(bin.display().to_string())

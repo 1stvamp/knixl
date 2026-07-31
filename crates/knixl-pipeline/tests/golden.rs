@@ -2,10 +2,9 @@
 //!
 //! Each `hosts/*.kdl` input, run through `generate`, must reproduce the corresponding
 //! `expected/*.nix` byte-for-byte (post-nixfmt), and the produced lock must match
-//! `knixl.lock.kdl`. These are `#[ignore]`d for now because the pipeline stages are
-//! still elided (see the crate docs): the whole point is that they turn green as Phase 1
-//! lands emit, determinism, and the formatter. Run them with `cargo test -- --ignored`
-//! to watch progress.
+//! `knixl.lock.kdl`. The byte-for-byte cases check `formatter_available()` first and skip
+//! themselves at runtime when no `nixfmt` is on PATH (set `KNIXL_FORMATTER` to point at one),
+//! so `cargo test` stays green without one.
 
 use std::fs;
 use std::path::{Path, PathBuf};

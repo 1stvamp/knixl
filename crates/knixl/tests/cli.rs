@@ -243,7 +243,6 @@ fn install_drafts_verifies_and_regenerates() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // The KDL gained the package, format otherwise intact.
     let kdl = fs::read_to_string(root.join("hosts/web.kdl")).unwrap();
     assert!(kdl.contains("package \"ripgrep\""), "kdl edited: {kdl}");
     assert!(
@@ -251,7 +250,6 @@ fn install_drafts_verifies_and_regenerates() {
         "existing content kept: {kdl}"
     );
 
-    // The generated file has the package in systemPackages.
     let nix = fs::read_to_string(root.join("generated/hosts/web.nix")).unwrap();
     assert!(
         nix.contains("environment.systemPackages"),
@@ -262,7 +260,6 @@ fn install_drafts_verifies_and_regenerates() {
         "package reference emitted: {nix}"
     );
 
-    // And the project reconciles clean.
     let check = Command::new(env!("CARGO_BIN_EXE_knixl"))
         .args(["check"])
         .current_dir(&root)
@@ -367,9 +364,8 @@ fn install_pkg_at_version_resolves_writes_the_pin_and_regenerates() {
     let root = temp_project("install-version-ok");
     let ok_eval = nix_shim("version-ok-eval", true); // package resolves + parses
     let resolver = resolver_shim("ok", "abc123", "", 0);
-    // A resolved rev differs from the (empty, fresh-project) baseline, so pin-strategy
-    // selection would otherwise build-test for real: shim the build oracle to say yes,
-    // deterministically choosing override (tried first) without touching the network.
+    // Shim the build oracle to succeed so strategy selection deterministically picks
+    // override (tried first) without a real network build.
     let ok_build = build_shim("version-ok-build", true);
     let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
         .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
@@ -445,8 +441,7 @@ fn install_pkg_at_version_reverts_the_pin_when_commit_fails_after_write_pin() {
     let root = temp_project("install-version-revert");
     let parse_fail_eval = nix_shim_parse_fails("revert");
     let resolver = resolver_shim("revert-ok", "abc123", "", 0);
-    // As above: shim the build oracle so strategy selection deterministically picks
-    // override (tried first) without a real (network-dependent) build test.
+    // As above: shim the build oracle so override is picked deterministically.
     let ok_build = build_shim("version-revert-build", true);
     let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
         .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
@@ -547,9 +542,8 @@ fn install_pkg_at_version_no_abi_check_skips_the_build_shim() {
     let root = temp_project("install-no-abi-check");
     let ok_eval = nix_shim("no-abi-check-eval", true); // package resolves + parses
     let resolver = resolver_shim("no-abi-check", "abc123", "", 0);
-    // A build shim that always fails: if --no-abi-check really skips the check, it is never
-    // invoked, and the install still succeeds with commit-mix (the run would exit 5 with
-    // both candidates failing if the shim were called).
+    // Always-failing shim: proves --no-abi-check truly skips the build (otherwise both
+    // candidates fail and exit 5).
     let never_build = build_shim("no-abi-check-build", false);
     let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
         .args([
@@ -1006,12 +1000,9 @@ fn upgrade_with_yes_writes_a_pending_oracle_module() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// #35 phase 3 review fix (finding 1): a project that deletes its declared `oracle-modules`
-/// block must GC the lock's stale pins, not leave them forever. `resolve_pending_project_modules`
-/// used to short-circuit to "nothing pending" whenever the declared set was empty, before ever
-/// comparing it against what the lock already held. Mirrors
-/// `upgrade_with_yes_writes_a_pending_oracle_module`, but removes the declaration on a second
-/// run instead of adding one, and asserts the previously recorded pin is gone.
+/// A project that deletes its declared `oracle-modules` block must GC the lock's stale pins,
+/// not leave them forever. Mirrors `upgrade_with_yes_writes_a_pending_oracle_module`, but
+/// removes the declaration on a second run instead of adding one.
 #[test]
 fn upgrade_with_yes_clears_oracle_modules_when_the_declaration_is_removed() {
     let root = temp_project("upgrade-oracle-module-removed");
@@ -1074,20 +1065,16 @@ fn upgrade_with_yes_clears_oracle_modules_when_the_declaration_is_removed() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// #35 phase 3 review fix (finding 3): a failed/cancelled install must RESTORE the lock's
-/// prior `oracle.modules` (the restore-prior logic in `write_oracle_modules`/
-/// `restore_oracle_modules`), never blank it and never leave the newly resolved value in its
-/// place. Mirrors `install_reverts_the_baseline_when_commit_fails_after_write_baseline`, but
-/// seeds an existing pin first, then changes the declared module set, so the revert has a
-/// genuine prior value to restore that is distinct from both "cleared" and "the new pin" --
-/// a blank-instead-of-restore bug or a restore-to-new-value bug would both pass a test that
-/// only checked for absence.
+/// A failed/cancelled install must restore the lock's prior `oracle.modules`, never blank it
+/// and never leave the newly resolved value in its place. Mirrors
+/// `install_reverts_the_baseline_when_commit_fails_after_write_baseline`, but seeds an
+/// existing pin first so the revert has a genuine prior value distinct from both "cleared"
+/// and "the new pin".
 #[test]
 fn install_reverts_the_oracle_modules_to_their_prior_value_when_commit_fails_after_write() {
     let root = temp_project("install-oracle-module-revert");
     assert_eq!(knixl(&root, &["generate"]).status.code(), Some(0));
 
-    // Seed a prior pin: "disko" resolved to "priorrev".
     declare_project_oracle_module(&root, "disko", "github:nix-community/disko");
     let seed_resolver = resolver_shim("oracle-module-revert-seed", "priorrev", "", 0);
     let seed = Command::new(env!("CARGO_BIN_EXE_knixl"))
@@ -1169,9 +1156,8 @@ fn declare_host_oracle_module(root: &Path, host: &str, name: &str, flake: &str) 
     fs::write(&path, edited).unwrap();
 }
 
-/// ADR 0008's fixed decision: a host may declare its own `oracle-modules` override only
-/// alongside a declared `nixpkgs release=`; one with no declared release has nowhere in the
-/// lock to carry its pins and must be refused, not silently ignored.
+/// ADR 0008: a host `oracle-modules` override requires a declared `nixpkgs release=`; refused
+/// otherwise.
 #[test]
 fn install_refuses_a_host_oracle_modules_override_without_a_declared_release() {
     let root = temp_project("host-oracle-module-no-release");
@@ -1239,11 +1225,11 @@ fn check_refuses_a_host_oracle_modules_override_without_a_declared_release() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// A host that declares BOTH a `nixpkgs release=` and its own `oracle-modules` override
-/// resolves and writes the module pin to its OWN `baseline.modules` (ADR 0008), not the
-/// project-wide `oracle.modules` (which stays empty here, since the project itself declares
-/// none). Mirrors `install_with_a_declared_oracle_module_resolves_and_writes_the_pin`, with a
-/// host-level override and a baseline resolved in the very same run.
+/// A host that declares both a `nixpkgs release=` and its own `oracle-modules` override
+/// writes the module pin to its own `baseline.modules` (ADR 0008); the project-wide
+/// `oracle.modules` stays empty here. Mirrors
+/// `install_with_a_declared_oracle_module_resolves_and_writes_the_pin`, with a host-level
+/// override and a baseline resolved in the same run.
 #[test]
 fn install_with_a_declared_host_oracle_module_resolves_and_writes_it_to_the_baseline() {
     let root = temp_project("install-host-oracle-module");

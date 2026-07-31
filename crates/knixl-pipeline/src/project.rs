@@ -1,6 +1,5 @@
-//! Parsing for the project-level `knixl.kdl` file: the default nixpkgs release and the
-//! project's default `oracle-modules` set. Pure parsing; nothing here is wired into the
-//! pipeline yet, later tasks read `ProjectConfig`/`OracleModule` to feed the oracle.
+//! Parsing for the project-level `knixl.kdl` file into `ProjectConfig`, which `gather` reads
+//! to build the registry, the oracle, and the optional system flake.
 
 use std::path::Path;
 
@@ -26,9 +25,7 @@ pub struct ModuleSource {
     pub path: String,
 }
 
-/// Parsed contents of `knixl.kdl`: the default nixpkgs release (if pinned), the
-/// project's default `oracle-modules` set, in source order, the optional `system {}`
-/// opt-in for emitting a bootable system flake, and the declared `modules {}` sources.
+/// Parsed contents of `knixl.kdl`.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct ProjectConfig {
     pub default_release: Option<String>,

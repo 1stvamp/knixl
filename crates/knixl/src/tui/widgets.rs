@@ -1,8 +1,6 @@
 //! Shared bubbletea-widgets (Bubbles) building blocks, styled to the Charm palette: a
 //! compact one-line list delegate, a chrome-free styled list, and a help footer built from
-//! key bindings. Screens drive real components (list, help, key, spinner, textinput,
-//! viewport) rather than hand-rolled state; the elements with no Bubbles equivalent (toggle,
-//! buttons, value cyclers) stay bespoke.
+//! key bindings.
 
 use bubbletea_rs::{Cmd, Msg};
 use bubbletea_widgets::help;

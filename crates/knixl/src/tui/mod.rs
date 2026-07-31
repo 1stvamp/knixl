@@ -5,8 +5,7 @@
 //! list, the entry point, and an injected verify function) is stashed in a `OnceLock` before
 //! the program runs. Each screen exposes a `update(msg, size) -> Step` reducer and a
 //! `view(size) -> String`; the bubbletea `Model` impl is a thin layer that forwards messages
-//! and turns a `Step` into a command. The pure decision logic inside each screen is unit
-//! tested; only the runtime glue (spawning the program, real key reads, async `Cmd`s) is not.
+//! and turns a `Step` into a command.
 
 mod author;
 mod browse;
@@ -70,9 +69,8 @@ pub enum PinOutcome {
 /// version was requested; `Send + Sync` so the Install screen runs it off the event loop.
 pub type PinFn = Arc<dyn Fn(&str, &str) -> PinOutcome + Send + Sync>;
 
-/// The result of deciding a pin strategy for `name` at a resolved commit (#28: this replaces
-/// the CLI's post-Apply, second build-test with a decision made once, inside the TUI, before
-/// commit time).
+/// The result of deciding a pin strategy for `name` at a resolved commit, made once inside
+/// the TUI before commit time (see `StrategyFn`).
 #[derive(Debug, Clone)]
 pub enum StrategyOutcome {
     /// A strategy was chosen; `label` is the same short phrase the `pinned ... via ...` status
@@ -86,10 +84,10 @@ pub enum StrategyOutcome {
 }
 
 /// Decides a pin strategy for `name@version` resolved to `rev`, against `host_name`'s own
-/// baseline (#28 review fix: the decision is host-dependent, since each host can declare its
-/// own nixpkgs baseline, so it must be recomputed for whichever host is currently selected
-/// rather than fixed at injection time). Injected only when a version was requested;
-/// `Send + Sync` so the Install screen runs it off the event loop.
+/// baseline. The decision is host-dependent (each host can declare its own nixpkgs baseline),
+/// so it must be recomputed for whichever host is currently selected, rather than fixed at
+/// injection time. Injected only when a version was requested; `Send + Sync` so the Install
+/// screen runs it off the event loop.
 pub type StrategyFn = Arc<dyn Fn(&str, &str, &str) -> StrategyOutcome + Send + Sync>;
 
 /// A registered module as the Browse screen sees it: its claimed node, a kind tag, the
@@ -119,8 +117,7 @@ pub enum Entry {
         host: Option<String>,
         version: Option<String>,
         /// Threaded from `install()`'s `--no-abi-check` flag, so the strategy build-gate is
-        /// honoured on the interactive path too (it was previously hardcoded to `false` at
-        /// commit time, silently ignoring the flag).
+        /// honoured on the interactive path too (previously hardcoded to `false` here).
         no_abi_check: bool,
     },
 }
@@ -140,14 +137,11 @@ pub enum Outcome {
         version: Option<String>,
         pin: Option<String>,
         no_abi_check: bool,
-        /// The strategy chosen by the Install screen's strategy-selection step (#28), for a
-        /// versioned install; `None` for an unversioned one. The CLI writes the pin with this
-        /// strategy directly, rather than build-testing a second time at commit.
+        /// Chosen strategy for a versioned install (see `StrategyFn`); `None` for an
+        /// unversioned one.
         strategy: Option<knixl_lock::model::PinStrategy>,
-        /// The reason the strategy was chosen (e.g. "build ok", "matches baseline"), the same
-        /// phrase `StrategyOutcome::Chosen` carried: threaded through so the committed status
-        /// line reads `pinned ... via ... (reason)`, matching the plain path's wording. `None`
-        /// for an unversioned install.
+        /// Why `strategy` was chosen, for the committed `pinned ... via ... (reason)` status
+        /// line.
         strategy_reason: Option<String>,
     },
     /// Scaffold this module's node into this host's KDL.
@@ -176,8 +170,7 @@ pub struct TuiConfig {
     pub modules: Vec<BrowseModule>,
     pub build: Option<BuildFn>,
     pub pin: Option<PinFn>,
-    /// Injected only when a version was requested (#28): decides the pin strategy inside the
-    /// Install screen's Apply-gated verify sequence, replacing the CLI's post-Apply build-test.
+    /// Injected only when a version was requested; see `StrategyFn`.
     pub strategy: Option<StrategyFn>,
 }
 
@@ -201,12 +194,10 @@ pub enum Nav {
         version: Option<String>,
         pin: Option<String>,
         no_abi_check: bool,
-        /// The strategy chosen by the Install screen's strategy-selection step (#28), for a
-        /// versioned install; `None` for an unversioned one. Threaded straight through to
-        /// `Outcome::Install`, for the CLI to pass to `commit_tui_install`.
+        /// Same as `Outcome::Install::strategy`, threaded through to it via
+        /// `commit_tui_install`.
         strategy: Option<knixl_lock::model::PinStrategy>,
-        /// The reason the strategy was chosen, threaded straight through to
-        /// `Outcome::Install` alongside `strategy` (#28 review fix).
+        /// Same as `Outcome::Install::strategy_reason`.
         strategy_reason: Option<String>,
     },
     /// Scaffold a module node into a host and end the session.
@@ -404,8 +395,7 @@ impl App {
     }
 }
 
-/// Run the TUI, returning what the session decided. Sets the config, builds a tokio runtime,
-/// drives the bubbletea program, and reads the outcome off the final model.
+/// Run the TUI, returning what the session decided.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     entry: Entry,

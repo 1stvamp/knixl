@@ -16,7 +16,6 @@ const AMBER: &str = "#FDBB4E";
 const GREEN: &str = "#56D364";
 const CORAL: &str = "#FF6188";
 
-/// Gradient stops for the wordmark ramp: pink -> violet -> cyan.
 const STOPS: [&str; 3] = [PINK, VIOLET, CYAN];
 
 /// The ANSI-Shadow block wordmark, coloured left-to-right with the gradient ramp.
@@ -53,7 +52,6 @@ pub fn bad() -> Style {
     Style::new().foreground(color(CORAL))
 }
 
-/// The focused/selected element: violet background, ink foreground.
 pub fn selected() -> Style {
     Style::new()
         .foreground(color(INK))
@@ -70,7 +68,6 @@ pub fn chip(label: &str) -> String {
         .render(label)
 }
 
-/// Rounded-border colour: pink when the panel is focused, violet otherwise.
 pub fn border(focused: bool) -> Color {
     color(if focused { PINK } else { BORDER_VIOLET })
 }

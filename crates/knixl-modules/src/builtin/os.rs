@@ -1,10 +1,5 @@
-//! `os`: core host configuration (identity, boot, and system tunables). A built-in, not a
-//! declarative module: it carries arbitrary-key attribute sets (`boot.kernel.sysctl`,
-//! `nix.settings`) and `pkgs` references (`boot.kernelPackages`, `environment.systemPackages`),
-//! none of which the single-level template grammar can express (see docs/04-template-grammar.md).
-//!
-//! `networking.hostName` is deliberately NOT here: it defaults to the host's label and is owned
-//! by the `host` module, which is the only one that knows the label (docs/03).
+//! `os`: core host configuration (identity, boot, and system tunables). A built-in module;
+//! see docs/04-template-grammar.md for why, and for where networking.hostName lives instead.
 use crate::builtin::host::unit_default;
 use crate::{
     Child, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, Unit, ValueTy,

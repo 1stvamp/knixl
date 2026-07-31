@@ -44,9 +44,8 @@ impl Module for Host {
                 NixExpr::Str(sys),
             )));
         }
-        // networking.hostName defaults to the host's label; a `hostname "x"` child overrides it.
-        // host owns this because only it knows the label, and every host gets a hostName even
-        // with no `os` block.
+        // host owns networking.hostName: only it knows the label, and every host gets one
+        // even with no `os` block.
         let host_name = child_arg_str(node, "hostname").or_else(|| knixl_kdl::first_arg_str(node));
         if let Some(name) = host_name {
             units.push(unit_default(assign(

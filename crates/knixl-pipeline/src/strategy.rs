@@ -1,8 +1,6 @@
-//! Automatic pin-strategy selection (#23). Given a candidate `nixpkgs-rev`, decide whether
-//! the pin can be emitted as `Override` (build the baseline package with the historical
-//! version+src) or must fall back to `CommitMix` (import the whole historical package). The
-//! decision is made by build-testing candidate Nix expressions; `build` is injected so this
-//! module stays free of a `knixl-nix` dependency and is trivially unit-testable.
+//! Automatic pin-strategy selection (ADR 0006, #23): candidate expressions and the choice
+//! between them. `build` is injected so this module stays free of a `knixl-nix` dependency
+//! and is trivially unit-testable.
 
 use knixl_lock::model::PinStrategy;
 
@@ -37,11 +35,8 @@ pub enum SelectError {
     NeitherBuilds { commit_mix: String, over: String },
 }
 
-/// Decide the strategy for pinning `name` at `rev`. Skips build-testing altogether (defaulting
-/// to `CommitMix`) when the caller opted out (`no_abi_check`), there is no `nix` to test with,
-/// or `rev` is already the baseline (nothing has moved, so there is nothing to test). Otherwise
-/// build-tests `override_test_expr` first (the preferred, smaller-diff strategy), falling back
-/// to `commit_mix_test_expr`, and fails only when neither builds.
+/// Selects `Override` versus `CommitMix` for pinning `name` at `rev`, per ADR 0006 (see there
+/// for the skip conditions and why `Override` is tried first).
 pub fn select_strategy(
     rev: &str,
     baseline_rev: &str,
@@ -78,7 +73,6 @@ mod tests {
         calls: RefCell<Vec<String>>,
     }
 
-    // A tiny alias so the struct field above reads clearly; just a map of expr -> result.
     type BTreeMapScript = std::collections::BTreeMap<String, Result<(), String>>;
 
     impl FakeBuilder {

@@ -1,8 +1,5 @@
-//! `disko`: declarative disk layout via disko. A built-in, not a declarative module: disko's
-//! config is a set of name-keyed attribute sets nested several levels deep with heterogeneous
-//! per-partition content, which the single-level template grammar cannot express (see
-//! docs/04-template-grammar.md). Each disk and each pool lowers to one assignment whose value
-//! is a fully-built attribute set.
+//! `disko`: declarative disk layout via disko. A built-in module; see
+//! docs/04-template-grammar.md for why.
 use crate::builtin::host::unit_default;
 use crate::{
     Child, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, Unit, ValueTy,

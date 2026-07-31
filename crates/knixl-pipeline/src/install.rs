@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use kdl::{KdlDocument, KdlNode};
 
-/// A host as seen by `install`: its name, whether it is marked default, and its file.
+/// A host as seen by `install`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostInfo {
     pub name: String,

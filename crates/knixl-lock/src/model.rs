@@ -80,11 +80,8 @@ pub struct Pin {
     pub strategy: PinStrategy,
 }
 
-/// How a pinned package is emitted from its `nixpkgs-rev`. `CommitMix` (the default) imports
-/// the whole package from the historical commit; `Override` builds the baseline package with
-/// the historical `version` and `src` via `overrideAttrs`. Both record the same rev; only the
-/// generated Nix differs. `Override` renders a `strategy="override"` attr; `CommitMix` renders
-/// no attr at all, so existing locks (predating this field) round-trip byte-for-byte.
+/// Nix emission strategy for a pin (see ADR 0006). CommitMix renders no `strategy` attr, so
+/// pre-existing locks round-trip byte-for-byte; Override renders `strategy="override"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinStrategy {
     CommitMix,

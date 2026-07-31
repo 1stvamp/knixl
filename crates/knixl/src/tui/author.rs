@@ -1,11 +1,6 @@
-//! Author screen: a full editor for a declarative module manifest. It collects a name, the
-//! claimed node, a summary, a structured schema (a list of arg/prop/child entries, each with a
-//! type, required/repeated flags, and, for children, its own sub-fields), and a free-text emit
-//! block. The draft is rendered to KDL and dry-type-checked on every edit, so the status line
-//! and the create gate stay live.
-//!
-//! The form logic (focus movement, the schema mutations, create gating, and the rendered
-//! manifest) is pure and unit tested; the textinput/textarea widgets carry editing.
+//! Author screen: editor for a declarative module manifest. The form logic (focus movement,
+//! the schema mutations, create gating, and the rendered manifest) is pure and unit tested;
+//! the textinput/textarea widgets carry editing.
 
 use bubbletea_rs::event::{KeyMsg, WindowSizeMsg};
 use bubbletea_rs::Msg;
@@ -472,7 +467,6 @@ impl AuthorModel {
         self.emit_view = self.emit.view();
     }
 
-    /// Create is allowed once the module name is non-empty and the draft dry-type-checks.
     fn can_create(&self) -> bool {
         !self.name.value().trim().is_empty() && self.status.is_ok()
     }
@@ -764,7 +758,6 @@ impl AuthorModel {
     }
 }
 
-/// Cycle `current` to the next (or, going backward, the previous) value in `order`, wrapping.
 fn cycle<T: Copy + PartialEq>(order: &[T], current: T, forward: bool) -> T {
     let n = order.len();
     let i = order.iter().position(|x| *x == current).unwrap_or(0);
@@ -950,7 +943,7 @@ mod tests {
     #[test]
     fn create_gated_on_name_and_validity() {
         let mut m = model();
-        m.name.set_value(""); // no name
+        m.name.set_value("");
         m.recompute_status();
         assert!(!m.can_create(), "empty name blocks create");
         m.name.set_value("cache");

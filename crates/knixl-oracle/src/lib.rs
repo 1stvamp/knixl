@@ -1,6 +1,6 @@
 //! Validate emitted option paths against the real NixOS option set (nixosOptionsDoc).
 //! Best-effort by design: catches unknown paths and gross type mismatches, punts on
-//! submodule interiors. The nixpkgs rev is pinned in the lock. SPEC-GRADE SKETCH.
+//! submodule interiors. The nixpkgs rev is pinned in the lock.
 
 pub mod nixtype;
 
