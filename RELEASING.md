@@ -103,7 +103,11 @@ change.
    since a release tag should not be the first place these run.
 4. Commit: `git commit -am "chore(release): vX.Y.Z"` (or however the version
    bump was staged).
-5. Tag: `git tag vX.Y.Z`.
+5. Tag the release commit by name: `git tag vX.Y.Z <sha>`, where `<sha>` is the
+   `chore(release)` commit on `main`. Do not rely on a bare `git tag vX.Y.Z`
+   tagging `HEAD`: under GitButler the working checkout sits on a workspace
+   commit, so `HEAD` is not the commit that was merged, and the tag would carry
+   the wrong tree to crates.io and the release archives.
 6. Push both: `git push && git push --tags`.
 7. Watch the workflows this triggers on the `v*` tag:
    - `release.yml` (`dist`-generated): builds the six target archives, the
