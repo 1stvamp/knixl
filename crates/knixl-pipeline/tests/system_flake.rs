@@ -137,8 +137,9 @@ fn installer_emits_a_module_file_and_an_iso_flake_output() {
         module.contains("modulesPath"),
         "installer formals: {module}"
     );
+    // Parenthesised: a bare `modulesPath + "..."` is not a valid list element (#81).
     assert!(
-        module.contains("installer/cd-dvd/installation-cd-minimal.nix"),
+        module.contains("(modulesPath + \"/installer/cd-dvd/installation-cd-minimal.nix\")"),
         "installation-cd import: {module}"
     );
     assert!(
@@ -226,7 +227,7 @@ fn guest_image_emits_an_lxc_module_and_flake_outputs() {
         });
     assert!(module.contains("modulesPath"), "formals: {module}");
     assert!(
-        module.contains("virtualisation/lxc-container.nix"),
+        module.contains("(modulesPath + \"/virtualisation/lxc-container.nix\")"),
         "lxc-container base import: {module}"
     );
     assert!(
@@ -259,6 +260,53 @@ fn guest_image_emits_an_lxc_module_and_flake_outputs() {
         !flake.contains("-iso"),
         "no ISO output for a guest image: {flake}"
     );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// The real formatter, honouring `KNIXL_FORMATTER` like the golden tests. `cat` cannot tell
+/// valid Nix from invalid, so only this catches an emitted module that does not parse.
+fn real_formatter() -> Formatter {
+    let bin = std::env::var("KNIXL_FORMATTER").unwrap_or_else(|_| "nixfmt-rfc-style".into());
+    Formatter::detect("nixfmt-rfc-style", PathBuf::from(bin), "0.6.0")
+}
+
+#[test]
+fn image_target_modules_parse_under_the_real_formatter() {
+    // Both image kinds shipped emitting invalid Nix (#81): every test formatted with `cat`, so
+    // nothing ever parsed the output. gather formats what it emits, so a syntax error in an
+    // image-target module is a gather failure here.
+    let formatter = real_formatter();
+    if formatter.format("{ }\n").is_err() {
+        eprintln!("skipping image_target_modules_parse_under_the_real_formatter: no formatter (set KNIXL_FORMATTER)");
+        return;
+    }
+
+    let root = temp_root("image-parse");
+    fs::write(
+        root.join("knixl.kdl"),
+        "installer \"usb\" system=\"x86_64-linux\" {\n    os {\n        state-version \"25.05\"\n    }\n}\nguest-image \"llm\" system=\"x86_64-linux\" {\n    os {\n        state-version \"25.05\"\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("hosts/web.kdl"),
+        "host \"web\" {\n    system \"x86_64-linux\"\n}\n",
+    )
+    .unwrap();
+
+    let project = gather(&root, &formatter, "0.3.1".parse().unwrap())
+        .expect("gather: an image-target module failed to format, so it is not valid Nix");
+
+    for name in [
+        "generated/installer/usb.nix",
+        "generated/guest-image/llm.nix",
+    ] {
+        assert!(
+            project.generated.contains_key(&PathBuf::from(name)),
+            "{name} missing: {:?}",
+            project.generated.keys().collect::<Vec<_>>()
+        );
+    }
 
     let _ = fs::remove_dir_all(&root);
 }

@@ -364,20 +364,94 @@ fn emit_raw(w: &mut Writer, r: &RawNix) {
 /// position). Function application and binding forms (`f x`, `let .. in ..`, lambdas) are not
 /// atoms, so they are parenthesised; everything else (refs, selects, literals, attrsets,
 /// lists) already stands alone. Without this, `[ import (fetchGit ..) ({..}).x ]` splits into
-/// separate list elements and `(import ..).x` loses its parens. `Raw` is opaque text and is
-/// emitted verbatim: if a caller ever puts a raw application in atom position it must include
-/// its own parens.
+/// separate list elements and `(import ..).x` loses its parens.
 fn emit_atom(w: &mut Writer, e: &NixExpr) {
-    if matches!(
-        e,
-        NixExpr::Apply(..) | NixExpr::Lambda { .. } | NixExpr::Let { .. }
-    ) {
+    let needs_parens = match e {
+        NixExpr::Apply(..) | NixExpr::Lambda { .. } | NixExpr::Let { .. } => true,
+        // `Raw` is opaque text, so its shape has to be read rather than known from the
+        // variant. This was verbatim-only until a raw `modulesPath + "/x.nix"` reached an
+        // imports list, where a bare binary expression splits into several elements and does
+        // not parse at all (#81).
+        NixExpr::Raw(r) => !raw_is_atom(&r.src),
+        _ => false,
+    };
+    if needs_parens {
         w.push("(");
         e.emit(w);
         w.push(")");
     } else {
         e.emit(w);
     }
+}
+
+/// Does this raw source already stand alone where a single atom is required? True for one
+/// unbroken token (an identifier, a select chain such as `config.sops.secrets."k".path`, a
+/// number, a path, a string) and for text a caller has already bracketed itself. False for
+/// anything else, notably a binary expression or an application.
+fn raw_is_atom(src: &str) -> bool {
+    let s = src.trim();
+    s.is_empty() || is_single_token(s) || is_wrapped(s)
+}
+
+/// One token: nothing in it can end a token and start the next. `.` `-` `_` `'` are identifier
+/// and select characters, and `/` `~` appear in paths (Nix wants spaces around division
+/// precisely so that `a/b` reads as a path). Whitespace and operators inside a `"` string do
+/// not split, so a quoted attr name with a space in it stays a single select chain.
+fn is_single_token(s: &str) -> bool {
+    let mut chars = s.chars();
+    let mut in_str = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if in_str => {
+                chars.next();
+            }
+            '"' => in_str = !in_str,
+            _ if in_str => {}
+            '+' | '*' | '<' | '>' | '=' | '!' | '&' | '|' | '?' | ':' | ';' | ',' | '(' | ')'
+            | '[' | ']' | '{' | '}' => return false,
+            c if c.is_whitespace() => return false,
+            _ => {}
+        }
+    }
+    !in_str
+}
+
+/// Text the caller already wrapped: one `( .. )` pair or one `'' .. ''` block enclosing the
+/// whole source. Checked so that a raw built with its own parens (as the `when` conditions in
+/// knixl-modules are) is not wrapped a second time.
+fn is_wrapped(s: &str) -> bool {
+    if let Some(inner) = s.strip_prefix("''").and_then(|r| r.strip_suffix("''")) {
+        return !inner.contains("''");
+    }
+    let Some(rest) = s.strip_prefix('(') else {
+        return false;
+    };
+    let n = rest.chars().count();
+    let mut depth = 1usize;
+    let mut in_str = false;
+    let mut skip = false;
+    for (i, c) in rest.chars().enumerate() {
+        if skip {
+            skip = false;
+            continue;
+        }
+        match c {
+            '\\' if in_str => skip = true,
+            '"' => in_str = !in_str,
+            _ if in_str => {}
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                // Closing before the end means the parens wrap only a prefix: `(a) + (b)` is
+                // two bracketed terms joined by an operator, not one wrapped expression.
+                if depth == 0 {
+                    return i + 1 == n;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn emit_header_comment(w: &mut Writer, p: &Provenance) {
@@ -720,6 +794,84 @@ mod tests {
             vec![NixExpr::Int(5)],
         );
         assert_eq!(capture(|w| expr.emit(w)), "({ x }: x) (5)");
+    }
+
+    // ---- raw in atom position ----
+
+    fn raw_element(src: &str) -> String {
+        let expr = NixExpr::List(vec![NixExpr::Raw(RawNix {
+            src: src.into(),
+            span: None,
+        })]);
+        capture(|w| expr.emit(w))
+    }
+
+    #[test]
+    fn raw_binary_expression_as_list_element_is_parenthesised() {
+        // The #81 shape: bare, `[ modulesPath + "/x.nix" ]` is three tokens and does not parse.
+        assert!(
+            raw_element("modulesPath + \"/virtualisation/lxc-container.nix\"")
+                .contains("(modulesPath + \"/virtualisation/lxc-container.nix\")"),
+            "got: {}",
+            raw_element("modulesPath + \"/virtualisation/lxc-container.nix\"")
+        );
+    }
+
+    #[test]
+    fn raw_select_chain_as_list_element_is_left_alone() {
+        // A secret reference is already one token; wrapping it would just add noise.
+        let out = raw_element("config.sops.secrets.\"tailscale-authkey\".path");
+        assert!(
+            !out.contains('('),
+            "select chain must not be parenthesised: {out}"
+        );
+    }
+
+    #[test]
+    fn raw_already_bracketed_is_not_wrapped_twice() {
+        // nixfmt does not collapse redundant parens, so a double wrap would ship in the
+        // generated source.
+        let out = raw_element("(config.a.enable) && (config.b.enable)");
+        assert!(
+            out.contains("((config.a.enable) && (config.b.enable))"),
+            "an operator at top level needs one wrap: {out}"
+        );
+        let already = raw_element("(modulesPath + \"/x.nix\")");
+        assert!(
+            already.contains("(modulesPath + \"/x.nix\")")
+                && !already.contains("((modulesPath + \"/x.nix\"))"),
+            "already-wrapped source must not gain a second pair: {already}"
+        );
+    }
+
+    #[test]
+    fn raw_atom_classification() {
+        for atom in [
+            "pkgs",
+            "pkgs.ripgrep",
+            "config.age.secrets.\"k\".path",
+            "config.a.\"with a space\".b",
+            "./relative.nix",
+            "/etc/nixos/thing.nix",
+            "42",
+            "\"a string with spaces\"",
+            "(a + b)",
+            "(f (x))",
+            "''\nmulti line\n''",
+        ] {
+            assert!(raw_is_atom(atom), "should stand alone as an atom: {atom}");
+        }
+        for wrap in [
+            "modulesPath + \"/x.nix\"",
+            "import ./foo.nix",
+            "a + b",
+            "(a) + (b)",
+            "(a) (b)",
+            "if x then y else z",
+            "with pkgs; [ hello ]",
+        ] {
+            assert!(!raw_is_atom(wrap), "should be parenthesised: {wrap}");
+        }
     }
 
     // ---- module let-block ----
