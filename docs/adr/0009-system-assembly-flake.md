@@ -36,9 +36,16 @@ hand-written seam.
   is dropped). A hand-edit is drift, not a silent overwrite.
 - **Pure and input-free**: `knixl.lock.kdl` remains the single lock; there is no `flake.lock`.
   For each host, nixpkgs is pinned to that host's baseline rev via `builtins.fetchGit { url;
-  rev; }` (a full rev is a pure pin, ADR 0005), and `nixosConfigurations.<host> = (that
-  nixpkgs).lib.nixosSystem { modules = [ ./hosts/<host>.nix ]; }`. The system architecture flows
-  through the module's `nixpkgs.hostPlatform`, already emitted from the host's `system` field.
+  rev; }` (a full rev is a pure pin, ADR 0005), and `nixosConfigurations.<host>` is built by
+  importing that nixpkgs' `nixos/lib/eval-config.nix` with `modules = [ ./hosts/<host>.nix ]`.
+  The system architecture flows through the module's `nixpkgs.hostPlatform`, already emitted
+  from the host's `system` field.
+
+  This originally specified `(that nixpkgs).lib.nixosSystem`, corrected during implementation:
+  `lib.nixosSystem` is a flake-only lib extension and is absent from a plainly imported nixpkgs
+  set, so it cannot be called here. `eval-config.nix` is the self-contained constructor, and a
+  regression test in `crates/knixl-pipeline/src/flake.rs` guards against reintroducing
+  `lib.nixosSystem`.
 - **The flake composes, it does not model deployment topology**: it imports each host's
   generated module set. Hardware, disko (issue #37), and secrets (issue #38) are generated
   modules a host produces, and the flake picks them up with no bespoke external-file import. A
