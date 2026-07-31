@@ -8,6 +8,23 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-31
+
+Image targets generate. Both kinds emitted invalid Nix in 1.2.0, so neither had
+ever worked.
+
+### Fixed
+- `installer` and `guest-image` targets now generate (#81). The base module
+  reached the generated `imports` list as a bare `modulesPath + "/..."`, which
+  cannot be a list element, so every run aborted at the formatter and wrote
+  nothing. Fixed in the emitter, so a raw seam holding a binary expression is
+  bracketed wherever a single value is required.
+- A formatter failure now reports what the formatter said (#81). `knixl plan`
+  gave only `formatter exited non-zero: 1` and swallowed the stderr naming the
+  line and column, which for the above meant the cause was invisible. A
+  formatter that rejects its input can also exit before reading all of it, and
+  the resulting broken pipe was reported in place of the real complaint.
+
 ## [1.2.0] - 2026-07-27
 
 Incus lxc guest images, and one image-target code path behind them.
@@ -87,7 +104,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/1stvamp/knixl/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/1stvamp/knixl/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/1stvamp/knixl/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/1stvamp/knixl/releases/tag/v1.0.0
