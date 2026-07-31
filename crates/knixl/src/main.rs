@@ -1,6 +1,4 @@
-//! knixl CLI. Every command is a thin policy over one Plan. Plan::compute is the only
-//! thing that inspects the world. Exit codes are stable so CI can branch on them.
-//! SPEC-GRADE SKETCH: Ctx::load and the write/report helpers are not written.
+//! knixl CLI entry point: argument parsing and the per-command policy functions.
 
 mod tui;
 
@@ -81,9 +79,8 @@ enum Code {
     RegenPending = 6,
 }
 
-/// Precedence, most severe first. Spelled out because severity != numeric order.
-/// Validation beats all (cannot trust a plan on invalid input). Drift beats skew
-/// (silent overwrite loses human edits). Skew beats plain regen-pending.
+/// Precedence, most severe first: severity does not follow the numeric `Code` order. Drift
+/// beats skew because a silent overwrite would lose a human edit.
 fn verdict(plan: &Plan) -> Code {
     if plan.has_validation_errors() {
         return Code::Validation;
@@ -101,14 +98,10 @@ fn verdict(plan: &Plan) -> Code {
 }
 
 fn run(cli: Cli, ctx: &Ctx) -> Code {
-    // #22: `install` and `upgrade` are the commands that resolve a declared-but-unresolved
-    // nixpkgs baseline (the validation error below names `upgrade` as the fix for every
-    // other command); this must run before the validation gate, or neither could ever reach
-    // its own remedy. Resolved IN MEMORY only (a network lookup is read-only, so that part is
-    // safe here) and never written: writing before the `--yes`/confirm gate let a preview
-    // mutate the lock and a cancelled install leave a baseline behind with no revert (review
-    // finding on #22). `pending` carries what would be written; `Cmd::Upgrade` writes it on
-    // `--yes`, `install`/`commit_install` write it in the confirmed, revertable commit path.
+    // `install`/`upgrade` resolve a declared-but-unresolved nixpkgs baseline before the
+    // validation gate, since they are its only remedy. Resolved in memory only; `pending` is
+    // written by `Cmd::Upgrade` on `--yes`, or by `install`/`commit_install` in the confirmed,
+    // revertable commit path.
     let pending: BTreeMap<String, HostBaseline> =
         if matches!(cli.cmd, Cmd::Upgrade { .. } | Cmd::Install { .. }) {
             match resolve_pending_baselines(ctx) {
@@ -132,11 +125,9 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             None
         };
 
-    // ADR 0008: a host's own `oracle-modules` override resolves the same way, alongside the
-    // project-wide pass above (in memory only, never written here; see
-    // `resolve_pending_host_modules`). Unlike the project pass this can refuse the whole run
-    // (`Err(Code::Validation)`) rather than just resolving to `None`: a host that declares an
-    // override with no declared `nixpkgs release=` has nowhere in the lock to carry its pins.
+    // ADR 0008: a host's own `oracle-modules` override resolves the same way (in memory only;
+    // see `resolve_pending_host_modules`), but can refuse the whole run since a host override
+    // with no declared `nixpkgs release=` has nowhere in the lock to carry its pins.
     let pending_host_modules: BTreeMap<String, Vec<OracleModulePin>> =
         if matches!(cli.cmd, Cmd::Upgrade { .. } | Cmd::Install { .. }) {
             match resolve_pending_host_modules(ctx) {
@@ -298,7 +289,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                 println!("already up to date");
                 return Code::Clean;
             }
-            print_migration_notes(&plan, &ctx.registry); // per (module, version delta)
+            print_migration_notes(&plan, &ctx.registry);
             print_plan(&plan, cli.json);
             if !yes {
                 for (host, b) in &pending {
@@ -689,11 +680,6 @@ fn install(
     code
 }
 
-// `pending_modules` is `None` for the interactive/TUI install paths (#35 phase 3 only wires
-// the plain, non-interactive `install`/`upgrade` paths; the TUI's own commit path does not
-// resolve or write project oracle-module pins yet -- see `commit_tui_install`'s call site).
-// `host_modules_pending` (ADR 0008, the host-override counterpart) and `pending_module_sources`
-// (task 5b) are `None` there too, for the same reason.
 #[allow(clippy::too_many_arguments)]
 fn commit_install(
     chosen: &knixl_pipeline::install::HostInfo,
@@ -921,8 +907,7 @@ fn remove_pin(host: &str, package: &str) {
     write_lock(&ctx, &lock);
 }
 
-/// Insert or replace the resolved baseline for `host` in the lock, then write it back to
-/// disk. Mirrors `write_pin`.
+/// Mirrors `write_pin`, but for the host baseline.
 fn write_baseline(host: &str, release: &str, rev: &str, options_hash: &str) {
     let ctx = Ctx::load();
     let mut lock = ctx.lock.clone();
@@ -938,11 +923,8 @@ fn write_baseline(host: &str, release: &str, rev: &str, options_hash: &str) {
     write_lock(&ctx, &lock);
 }
 
-/// Undo `write_baseline`: drop the baseline for `host`, then write the lock back. Mirrors
-/// `remove_pin`. Called on `commit_install`'s revert path (a validation, parse, or drift
-/// failure after the baseline was already written, or a plain disk-write failure), so a
-/// cancelled/failed install never leaves a freshly resolved baseline dangling. A no-op when
-/// no baseline exists for that host.
+/// Undo `write_baseline` on `commit_install`'s revert path, so a cancelled/failed install
+/// never leaves a freshly resolved baseline dangling. Mirrors `remove_pin`.
 fn remove_baseline(host: &str) {
     let ctx = Ctx::load();
     let mut lock = ctx.lock.clone();
@@ -950,9 +932,8 @@ fn remove_baseline(host: &str) {
     write_lock(&ctx, &lock);
 }
 
-/// Replace the lock's project-wide `oracle.modules` pins with `pins`, then write it back to
-/// disk. Unlike `write_pin`/`write_baseline` (keyed per host) this is a single, project-wide
-/// list resolved from `knixl.kdl`'s `oracle-modules` block.
+/// Unlike `write_pin`/`write_baseline` (keyed per host), this is a single, project-wide list
+/// resolved from `knixl.kdl`'s `oracle-modules` block.
 fn write_oracle_modules(pins: &[OracleModulePin]) {
     let ctx = Ctx::load();
     let mut lock = ctx.lock.clone();
@@ -974,13 +955,9 @@ fn restore_oracle_modules(prior: &[OracleModulePin]) {
     write_lock(&ctx, &lock);
 }
 
-/// Set `host`'s baseline `.modules` to `pins`, leaving the rest of its baseline unchanged,
-/// then write the lock back. Mirrors `write_oracle_modules` but per host (ADR 0008 host
-/// override). A no-op if `host` has no baseline yet: the caller
-/// (`resolve_pending_host_modules`) already refuses a host that declares an `oracle-modules`
-/// override with no declared `nixpkgs release=` before this could ever be reached, and
-/// `commit_install` always calls `write_baseline` first when a release also resolved in this
-/// same run, so the baseline this sets `.modules` on already exists by the time it runs.
+/// Set `host`'s baseline `.modules` to `pins` (ADR 0008 host override), leaving the rest of
+/// the baseline unchanged. Mirrors `write_oracle_modules`, but per host. A no-op if `host`
+/// has no baseline yet.
 fn write_host_oracle_modules(host: &str, pins: &[OracleModulePin]) {
     let ctx = Ctx::load();
     let mut lock = ctx.lock.clone();
@@ -1012,13 +989,9 @@ fn write_module_sources(pins: &[ModuleSourcePin]) {
     write_lock(&ctx, &lock);
 }
 
-/// Undo `write_module_sources`: restore `module_sources` to `prior` (captured by
-/// `commit_install` before it wrote the pending resolution), then write the lock back. Mirrors
-/// `restore_oracle_modules`. Deliberately does not touch any cache file `write_module_source_
-/// caches` may already have written for a freshly resolved source: the cache is
-/// content-addressed (keyed on `(url, rev, path)`), so a stray cache entry left behind by an
-/// aborted install is harmless, exactly as `build_and_cache_options`'s options.json cache is
-/// never deleted on any of the other revert paths here.
+/// Undo `write_module_sources`: restore `module_sources` to `prior`, then write the lock
+/// back. Mirrors `restore_oracle_modules`. Leaves any cache file a resolve may have written
+/// untouched: the cache is content-addressed, so a stray entry is harmless.
 fn restore_module_sources(prior: &[ModuleSourcePin]) {
     let ctx = Ctx::load();
     let mut lock = ctx.lock.clone();
@@ -1407,10 +1380,9 @@ fn build_and_cache_options(
     modules: &[OracleModulePin],
     strict: bool,
 ) -> Result<Option<String>, Code> {
-    // Fetching and building the BASE (no-modules) set stays a manual step (docs/06): only the
-    // AUGMENTED set (ADR 0008) is automated here. Without this guard, resolving a plain
-    // per-host baseline with no module pins (ADR 0007, already working, deliberately manual)
-    // would start trying to build and fetch real nixpkgs for every baseline resolution.
+    // Base set fetch/build stays manual (docs/06, ADR 0007); only the augmented set (ADR 0008)
+    // is built here. Guards a plain baseline resolution (no module pins) from triggering a
+    // real nixpkgs fetch.
     if rev.is_empty() || modules.is_empty() {
         return Ok(None);
     }
@@ -1577,21 +1549,14 @@ fn patch_inputs_for_pending(
     }
 }
 
-/// Turn the TUI's `Outcome::Install` pin payload (the rev as a plain string, since the TUI
-/// module stays decoupled from `knixl_nix`) into `commit_install`'s `version_pin` argument,
-/// and commit `baseline_pending` (already resolved in memory by the caller: `run`'s pre-pass
-/// for the interactive-install branch, `finish_tui_outcome`'s own resolve for the Hub flow,
-/// which has no pre-pass) alongside it. The strategy for a versioned install was already
-/// chosen inside the TUI's Apply-gated verify sequence (#28 Task 2), so this writes it
-/// straight to the lock rather than build-testing a second time (the double-build issue #28
-/// fixes). `strategy` is `None` only for an unversioned install: Apply is gated on a chosen
-/// strategy whenever a version was requested (see `InstallModel::apply_allowed`), so a
-/// versioned install here always carries `Some` (and `strategy_reason` alongside it, #28
-/// review fix: threaded through so this prints the same `via ... (reason)` form the plain
-/// path's status line does, rather than dropping the reason). `no_abi_check` is unused now
-/// that the strategy decision has already been made by the time this runs; it stays a
-/// parameter for symmetry with `Outcome::Install`'s other fields. Shared by the interactive
-/// `install` branch and the Hub flow.
+/// Turn the TUI's `Outcome::Install` pin payload into `commit_install`'s `version_pin`
+/// argument, and commit `baseline_pending` alongside it. `strategy` was already chosen
+/// inside the TUI's Apply-gated verify sequence, so this writes it straight to the lock
+/// rather than build-testing again; it is `None` only for an unversioned install (Apply
+/// gates on a chosen strategy whenever a version was requested, see
+/// `InstallModel::apply_allowed`). `no_abi_check` is unused here since the strategy decision
+/// is already made; kept for parameter symmetry with `Outcome::Install`. Shared by the
+/// interactive `install` branch and the Hub flow.
 #[allow(clippy::too_many_arguments)]
 fn commit_tui_install(
     host: knixl_pipeline::install::HostInfo,
@@ -1899,16 +1864,11 @@ fn strategy_outcome(
     }
 }
 
-/// Builds the TUI's strategy-selection closure (#28): given `(name, rev, host_name)`, computes
+/// Builds the TUI's strategy-selection closure: given `(name, rev, host_name)`, computes
 /// `host_name`'s own baseline (reproducing `effective_baseline_rev`'s logic against data
-/// captured once, up front, rather than a fixed baseline decided before the TUI ran), then runs
-/// the same decision `choose_strategy` runs for the plain path. Closes over the host list (to
-/// look up `host_name`'s path, for `declared_release`), the lock's recorded baselines, the
-/// global oracle rev, any pending per-host baseline resolutions, and `no_abi_check`. Injected
-/// into `TuiConfig` for a versioned interactive install, replacing the CLI's old second,
-/// redundant build-test at commit time. Host-aware (#28 review fix) so a host switch inside the
-/// TUI re-fires this against the newly selected host's baseline, not the one selected when the
-/// TUI opened.
+/// captured once, up front) and runs the same decision `choose_strategy` runs for the plain
+/// path. Host-aware: a host switch inside the TUI re-fires this against the newly selected
+/// host's baseline, not the one selected when the TUI opened.
 fn make_strategy(
     hosts: Vec<knixl_pipeline::install::HostInfo>,
     baselines: BTreeMap<String, HostBaseline>,
@@ -1942,7 +1902,6 @@ fn strategy_label(strategy: knixl_lock::model::PinStrategy) -> &'static str {
     }
 }
 
-/// The lock's pinned nixpkgs rev for `root`, or empty if unavailable.
 fn read_pinned_rev(root: &std::path::Path) -> String {
     let formatter = default_formatter();
     let tool: semver::Version = env!("CARGO_PKG_VERSION")
@@ -2016,7 +1975,6 @@ fn systempackages_snippet(nix: &str) -> String {
     }
 }
 
-/// Parse a generated file's text with nix, mapping to the TUI's `Parse` status.
 fn parse_text(nix: &str) -> tui::Parse {
     use knixl_nix::nixeval::{NixError, NixEval};
     let tmp = std::env::temp_dir().join(format!("knixl-tui-parse-{}.nix", std::process::id()));
@@ -2240,8 +2198,6 @@ fn commit_insert(host: &knixl_pipeline::install::HostInfo, node: &str, skeleton:
         }
     }
 }
-
-// ---- everything below: NOT written. Wiring for the next session. ----
 
 struct Ctx {
     inputs: knixl_lock::reconcile::Inputs,
@@ -2579,11 +2535,10 @@ mod tests {
         }
     }
 
-    /// #28 review fix: `make_strategy` must decide against WHICHEVER host is named at call
-    /// time, not a baseline fixed once when the closure was built. Two hosts declare the same
-    /// nixpkgs release but have different recorded baselines; the same `(name, rev)` pair
-    /// matches host b's baseline exactly (skipped, no build) but not host a's (build-tested),
-    /// proving the baseline lookup is keyed on the `host_name` argument.
+    /// `make_strategy` must decide against whichever host is named at call time, not a
+    /// baseline fixed when the closure was built. Two hosts share a nixpkgs release but have
+    /// different recorded baselines, so the same `(name, rev)` matches one host's baseline
+    /// (skipped) but not the other's (build-tested).
     #[test]
     fn make_strategy_recomputes_the_baseline_for_the_selected_host() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -2701,12 +2656,10 @@ mod tests {
         }
     }
 
-    /// #28: `commit_tui_install` used to re-derive the pin strategy itself (`choose_strategy`,
-    /// deleted in Task 3), build-testing a second time even though the TUI's own verify
-    /// sequence had already chosen one. This proves the fix by handing it a strategy directly
-    /// with a build shim that always fails: if `commit_tui_install` still build-tested (the
-    /// bug this closes), both candidates would fail and the install would exit `Validation`
-    /// rather than commit `Override` (the passed-in choice, not what the shim would pick).
+    /// `commit_tui_install` must use the strategy the TUI already chose, not re-derive it via
+    /// a second build test. Proven with an always-failing build shim: if it still
+    /// build-tested, both candidates would fail and the install would exit `Validation`
+    /// instead of committing the passed-in `Override`.
     #[test]
     fn commit_tui_install_reuses_the_chosen_strategy_without_a_second_build() {
         use knixl_lock::model::PinStrategy;

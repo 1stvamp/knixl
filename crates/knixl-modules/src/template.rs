@@ -1,6 +1,5 @@
-//! EmitTemplate: the substitution grammar for declarative modules. Parsed once from a
-//! module's `emit { }` block, interpreted per-node against a bindings tree built from the
-//! validated input. Five statement forms (set, when-flag, when-config, for-each, list). SPEC-GRADE SKETCH.
+//! EmitTemplate: the substitution grammar for declarative modules. See
+//! docs/04-template-grammar.md for the grammar reference.
 
 use crate::{Bucket, Child, Field, LowerError, LowerOutput, NodeSchema, Unit, ValueTy};
 use knixl_ir::{Assignment, AttrKey, AttrPath, NixExpr, RawNix};
@@ -211,8 +210,7 @@ impl EmitTemplate {
         Ok(LowerOutput::units(units))
     }
 
-    // self only recurses today; kept as a method so template state stays reachable
-    // once bind/interpret are fleshed out.
+    // self is only used for recursion here, which is why the lint below is allowed.
     #[allow(clippy::only_used_in_recursion)]
     fn run(
         &self,

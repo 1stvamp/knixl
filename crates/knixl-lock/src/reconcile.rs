@@ -1,25 +1,23 @@
-//! Reconcile: three concerns kept as separate axes (per-file drift, version skew, orphans).
-//! Plan is a PURE function of (inputs, on-disk files, lock, running versions). No writes.
+//! Reconcile: FileState/VersionSkew derivation (see docs/02-reproducibility-and-taint.md,
+//! ADR 0004). `Plan::compute` is pure; it does no I/O.
 use crate::model::{FormatterPin, Hash, Lock, OraclePin, OutputEntry};
 use semver::Version;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-/// Per-output-file state, derived from three hashes:
-/// lock_hash (recorded), disk_hash (current), expected_hash (freshly generated).
+/// Per-output-file state (see docs/02-reproducibility-and-taint.md, ADR 0004).
 pub enum FileState {
-    /// disk == lock == expected.
     Clean,
-    /// disk == lock, expected != lock. Inputs or module logic changed the output. Silent path.
-    Stale { expected_hash: Hash },
-    /// disk != lock. The generated file was hand-edited. TAINTED. No silent overwrite.
+    Stale {
+        expected_hash: Hash,
+    },
     Drifted {
         disk_hash: Hash,
         expected_hash: Hash,
     },
-    /// In lock, absent on disk.
-    Missing { expected_hash: Hash },
-    /// On disk (knixl header present) but not in lock.
+    Missing {
+        expected_hash: Hash,
+    },
     Orphaned,
 }
 
@@ -35,7 +33,7 @@ impl FileState {
     }
 }
 
-/// Version skew is ORTHOGONAL to file state: it is about WHY expected differs.
+/// Orthogonal to FileState; see docs/02-reproducibility-and-taint.md.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionSkew {
     pub tool: Option<Delta<Version>>,

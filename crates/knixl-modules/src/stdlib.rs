@@ -1,6 +1,5 @@
-//! The curated declarative modules embedded into the binary. Source of truth is the repo
-//! `modules/` tree (golden-tested); this bundles it so any project has the stdlib offline,
-//! with no local copy.
+//! The curated declarative modules embedded into the binary. See
+//! docs/adr/0010-module-distribution.md.
 use crate::registry::Registry;
 use crate::template::DeclarativeModule;
 use crate::{Module, ModuleLayer, ShadowNotice};

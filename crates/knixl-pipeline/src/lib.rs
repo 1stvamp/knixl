@@ -6,8 +6,9 @@
 //! reaches disk.
 //!
 //! The pipeline runs end to end (parse, dispatch, lower, emit, format). The byte-for-byte
-//! golden tests additionally need `nixfmt` on PATH and regenerated `examples/expected/`,
-//! so they stay `#[ignore]`d; the interpreter and reconcile logic are covered by unit tests.
+//! golden tests additionally need `nixfmt` on PATH and regenerated `examples/expected/`, so
+//! they skip themselves at runtime when no formatter is found; the interpreter and reconcile
+//! logic are covered by unit tests regardless.
 
 pub mod flake;
 pub mod gather;
@@ -185,10 +186,7 @@ fn generate_one(
         let mut errors = Vec::new();
         for body in files.values() {
             for a in body {
-                // Paths inside a guest's nested config (containers.<name>.config.*) are exempt:
-                // nixosOptionsDoc types `containers.<name>.config` as one submodule, so its inner
-                // paths are not keys in the option set and would all falsely fail. Opaque, like
-                // raw-nix (ADR 0011).
+                // Guest nested config is exempt from oracle validation, see is_guest_config_path.
                 if is_guest_config_path(&a.path) {
                     continue;
                 }

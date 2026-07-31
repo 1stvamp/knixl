@@ -1,9 +1,7 @@
-//! Install screen: pick a host, edit the package name, toggle `--strict`, watch the nix
-//! verify run (async, with a spinner), scroll the generated `.nix`, and Apply or Cancel.
-//!
-//! The reducer is split so the decision logic (focus movement, host switch, apply gating,
-//! verify-result handling) is pure and unit-tested, while the parts that spawn async `Cmd`s
-//! (the nix verify, the spinner tick) read the injected `config()` and stay as thin glue.
+//! Install screen. The reducer is split so the decision logic (focus movement, host switch,
+//! apply gating, verify-result handling) is pure and unit-tested, while the parts that spawn
+//! async `Cmd`s (the nix verify, the spinner tick) read the injected `config()` and stay as
+//! thin glue.
 
 use bubbletea_rs::event::{KeyMsg, WindowSizeMsg};
 use bubbletea_rs::{command, Cmd, Model as BubbleTeaModel, Msg};
@@ -72,7 +70,7 @@ struct PinDone {
     outcome: PinOutcome,
 }
 
-/// The pin-strategy selection status (#28). `Off` covers both "no version requested" and "a
+/// The pin-strategy selection status. `Off` covers both "no version requested" and "a
 /// version was requested but the pin has not resolved yet"; like `PinState::Off`, it never
 /// gates apply. `Selecting` replaces the ambient `--build` check for a versioned install once
 /// the pin resolves a rev.
@@ -114,11 +112,9 @@ pub struct InstallModel {
     hosts: Vec<HostInfo>,
     host_sel: usize,
     strict: bool,
-    /// Threaded from the entry point (`--no-abi-check`), carried unchanged through to
-    /// `Nav::Apply`/`Outcome::Install`. Strategy selection itself already closed over the
-    /// CLI's own copy of this flag before the TUI started (`make_strategy`, #28 Task 3); this
-    /// copy is carried along for symmetry with the other `Entry::Install` fields. Never
-    /// toggled from within the screen: there is no UI control for it.
+    /// Threaded from the entry point (`--no-abi-check`) through to `Nav::Apply`/
+    /// `Outcome::Install`, unchanged and never toggled from within the screen (no UI control
+    /// for it): strategy selection already closed over its own copy before the TUI started.
     no_abi_check: bool,
     focus: Focus,
     resolves: Resolve,
@@ -246,9 +242,8 @@ impl InstallModel {
 
     // ---- pure decision logic (unit-tested) ----
 
-    /// Apply is allowed only when no verify is in flight, the package resolves (or the check
-    /// was skipped without `--strict`), and the parse did not fail (nor was skipped under
-    /// `--strict`).
+    /// Apply is allowed only when no verify is in flight and each of resolve, parse, build,
+    /// pin and strategy is `Ok`/`Chosen`/`Off`, or `Skipped` without `--strict`.
     fn apply_allowed(&self) -> bool {
         if self.hosts.is_empty() || self.verifying {
             return false;
@@ -333,7 +328,6 @@ impl InstallModel {
         self.preview_text = text;
     }
 
-    /// Mark a new verify as started and return its sequence token.
     fn mark_verifying(&mut self) -> u64 {
         self.seq += 1;
         self.verifying = true;
@@ -341,7 +335,6 @@ impl InstallModel {
         self.seq
     }
 
-    /// Mark a new build as started and return its sequence token.
     fn mark_building(&mut self) -> u64 {
         self.build_seq += 1;
         self.build = BuildState::Building;
@@ -361,7 +354,6 @@ impl InstallModel {
         };
     }
 
-    /// Mark a new pin resolve as started and return its sequence token.
     fn mark_resolving(&mut self) -> u64 {
         self.pin_seq += 1;
         self.pin = PinState::Resolving;
@@ -385,7 +377,6 @@ impl InstallModel {
         }
     }
 
-    /// Mark a new strategy selection as started and return its sequence token.
     fn mark_selecting(&mut self) -> u64 {
         self.strategy_seq += 1;
         self.strategy = StrategyState::Selecting;
@@ -469,10 +460,8 @@ impl InstallModel {
     /// Start strategy selection for the resolved pin, if a strategy fn was injected. Called
     /// from `update`'s `PinDone` handling once the pin resolves a rev for a versioned install
     /// (replacing the ambient build there), and again from the `Focus::Host` handlers on a
-    /// host switch (#28 review fix: the decision is host-dependent, so it must be re-run
-    /// against whichever host is selected now, not the one selected when the pin resolved).
-    /// Always reads the *current* `host_sel`, so a re-fire after a host switch forwards the
-    /// newly selected host's name to the injected `StrategyFn`.
+    /// host switch. Always reads the *current* `host_sel` (see `StrategyFn` for why the
+    /// decision is host-dependent).
     fn begin_strategy(&mut self, rev: String) -> Option<Cmd> {
         config().strategy.as_ref()?; // None => no version requested (unversioned installs skip this)
         let seq = self.mark_selecting();
@@ -484,12 +473,9 @@ impl InstallModel {
         ]))
     }
 
-    /// Re-verify after a host switch, and, for a versioned install whose pin has already
-    /// resolved, re-fire strategy selection for the newly selected host too (#28 review fix):
-    /// `make_strategy`'s decision depends on the target host's own baseline, so a switch away
-    /// from the host the strategy was last decided against leaves a stale decision otherwise.
-    /// If the pin has not resolved yet, strategy selection will fire from the eventual
-    /// `PinDone` using whatever host is selected by then, so only re-verify here.
+    /// Re-verify after a host switch, and re-fire strategy selection too if the pin has
+    /// already resolved (see `begin_strategy` for why the decision is host-dependent). If
+    /// not, strategy selection will fire from the eventual `PinDone` instead.
     fn on_host_changed(&mut self) -> Option<Cmd> {
         let verify = self.begin_verify();
         let strategy = (self.pin == PinState::Resolved)
@@ -914,8 +900,8 @@ fn pin_cmd(seq: u64, pkg: String, version: String) -> Cmd {
 /// The strategy selection, off the event-loop thread. Resolves to a `StrategyDone` with the
 /// token so a stale selection (package/version edited again, or a host switch, before this one
 /// returned) is discarded. Only called when `config().strategy` is `Some` and a pin has
-/// resolved. `host` is the currently selected host's name: the decision is host-dependent
-/// (#28 review fix), so it is forwarded rather than fixed at injection time.
+/// resolved. `host` is forwarded rather than fixed at injection time; see `begin_strategy` for
+/// why the decision is host-dependent.
 fn strategy_cmd(seq: u64, pkg: String, rev: String, host: String) -> Cmd {
     let strategy = config()
         .strategy
@@ -1438,10 +1424,10 @@ mod tests {
         }
     }
 
-    /// #28 review fix: switching the target host for a versioned install whose pin has
-    /// already resolved must re-fire strategy selection (not just re-verify), and discard a
-    /// stale `StrategyDone` from the host that was selected before the switch, since the
-    /// decision is host-dependent (each host can have its own baseline).
+    /// Host switch for a versioned install with an already-resolved pin must re-fire strategy
+    /// selection (not just re-verify) and discard a stale `StrategyDone` from the host
+    /// selected before the switch (see `begin_strategy` for why the decision is
+    /// host-dependent).
     #[test]
     fn host_switch_refires_strategy_selection_for_a_resolved_pin() {
         with_strategy_config();
@@ -1500,12 +1486,10 @@ mod tests {
         );
     }
 
-    /// #28 review fix: the injected `StrategyFn` must actually be called with the newly
-    /// selected host's name, not the host that was selected when the pin resolved. Drives the
-    /// real `Cmd` `begin_strategy` returns (via the `with_strategy_config` stub, which echoes
-    /// its `host` argument back as the outcome's `label`) instead of only inspecting model
-    /// state, so this proves the host argument itself is forwarded correctly, not just that a
-    /// re-fire was scheduled.
+    /// The injected `StrategyFn` must be called with the newly selected host's name, not the
+    /// host selected when the pin resolved. Drives the real `Cmd` via `with_strategy_config`'s
+    /// stub (which echoes `host` back as the outcome's `label`), so this proves the host
+    /// argument is forwarded, not just that a re-fire was scheduled.
     #[test]
     fn begin_strategy_forwards_the_currently_selected_host() {
         with_strategy_config();

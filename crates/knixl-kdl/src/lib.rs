@@ -1,6 +1,5 @@
 //! Input parsing over the `kdl` crate (v2 by default). Thin: parse to KdlDocument,
 //! carry spans for diagnostics. Small helpers modules use to read args/props/children.
-//! SPEC-GRADE SKETCH.
 
 use kdl::{KdlDocument, KdlNode};
 

@@ -1,8 +1,4 @@
-//! `incus`: an Incus host. A built-in, not a declarative module: the daemon preseed is
-//! name-keyed attribute sets with optional per-network fields (ipv6), plus a firewall and an
-//! optional runtime API-listener oneshot, none of which the single-level template grammar can
-//! express (see docs/04-template-grammar.md). Each concern lowers to one assignment whose value
-//! is a fully-built attribute set.
+//! `incus`: an Incus host. A built-in module; see docs/04-template-grammar.md for why.
 use crate::builtin::host::unit_default;
 use crate::{
     Child, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, Unit, ValueTy,

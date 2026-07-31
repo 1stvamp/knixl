@@ -1,6 +1,6 @@
 //! The Module trait and everything it needs. A built-in Rust module and a runtime-loaded
 //! KDL module are indistinguishable to the generator: the declarative loader is itself
-//! one Module impl. SPEC-GRADE SKETCH.
+//! one Module impl.
 
 pub mod builtin;
 pub mod registry;

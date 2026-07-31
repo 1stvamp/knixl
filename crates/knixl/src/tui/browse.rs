@@ -102,8 +102,6 @@ impl BrowseModel {
         }
     }
 
-    /// The navigation intent for the focused action. In list mode `insert` opens the host
-    /// picker (unless there are no modules or hosts); in pick mode it commits.
     fn activate(&mut self) -> Nav {
         match self.mode {
             Mode::List => {
@@ -149,7 +147,6 @@ impl BrowseModel {
                         None => Step::stay(),
                     }
                 }
-                // PgUp/PgDn scroll the doc; everything else drives the module list.
                 KeyCode::PageUp | KeyCode::PageDown => {
                     let cmd = self.doc.update(msg);
                     Step {
@@ -335,7 +332,7 @@ mod tests {
             Nav::Stay
         ));
         assert_eq!(m.mode, Mode::PickHost);
-        m.update(key(KeyCode::Down), (120, 30)); // pick the second host
+        m.update(key(KeyCode::Down), (120, 30));
         assert_eq!(m.host_list.cursor(), 1);
         match m.update(key(KeyCode::Enter), (120, 30)).nav {
             Nav::Insert {
@@ -362,7 +359,7 @@ mod tests {
             m.update(key(KeyCode::Char('e')), (120, 30)).nav,
             Nav::Stay
         ));
-        m.update(key(KeyCode::Down), (120, 30)); // select the declarative module
+        m.update(key(KeyCode::Down), (120, 30));
         match m.update(key(KeyCode::Char('e')), (120, 30)).nav {
             Nav::EditModule { manifest } => {
                 assert_eq!(

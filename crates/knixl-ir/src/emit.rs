@@ -1,6 +1,5 @@
 //! The emitter. Deliberately not pretty: it produces structurally correct, stable Nix,
 //! and a pinned nixfmt (knixl-nix) owns final layout. Only post-format text is hashed.
-//! SPEC-GRADE SKETCH: escaping/float/attr-path helpers are declared, not written.
 
 use crate::expr::{AttrKey, AttrPath, Formals, NixExpr, Priority, RawNix};
 use crate::module::{Assignment, NixModule, Provenance};
@@ -235,8 +234,6 @@ impl Emit for NixModule {
     }
 }
 
-// ---- helpers: declared, NOT written. These are the fiddly-but-boring bits. ----
-
 fn fmt_nix_float(f: f64) -> String {
     // The IR contract rejects non-finite at lower() time (Nix has no inf/nan); assert
     // here so a bug upstream fails loudly rather than emitting invalid Nix.
@@ -368,10 +365,7 @@ fn emit_raw(w: &mut Writer, r: &RawNix) {
 fn emit_atom(w: &mut Writer, e: &NixExpr) {
     let needs_parens = match e {
         NixExpr::Apply(..) | NixExpr::Lambda { .. } | NixExpr::Let { .. } => true,
-        // `Raw` is opaque text, so its shape has to be read rather than known from the
-        // variant. This was verbatim-only until a raw `modulesPath + "/x.nix"` reached an
-        // imports list, where a bare binary expression splits into several elements and does
-        // not parse at all (#81).
+        // Raw is opaque text, so its shape has to be read from the source itself (#81).
         NixExpr::Raw(r) => !raw_is_atom(&r.src),
         _ => false,
     };
@@ -384,10 +378,7 @@ fn emit_atom(w: &mut Writer, e: &NixExpr) {
     }
 }
 
-/// Does this raw source already stand alone where a single atom is required? True for one
-/// unbroken token (an identifier, a select chain such as `config.sops.secrets."k".path`, a
-/// number, a path, a string) and for text a caller has already bracketed itself. False for
-/// anything else, notably a binary expression or an application.
+/// True when `src` already stands alone as an atom: empty, one token, or already bracketed.
 fn raw_is_atom(src: &str) -> bool {
     let s = src.trim();
     s.is_empty() || is_single_token(s) || is_wrapped(s)
