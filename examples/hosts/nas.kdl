@@ -10,12 +10,24 @@ host "nas" {
         locale "en_GB.UTF-8"
         mutable-users #false
         sysctl "net.ipv4.ip_forward"=1 "vm.swappiness"=10
+        kernel-module "br_netfilter"
+        sysctl "net.bridge.bridge-nf-call-iptables"=1
+        tmpfiles-rule "/var/lib/bench" type="d" mode="0755" user="wes" group="users"
+        tmpfiles-rule "/tmp/scratch" type="d" mode="1777" age="10d"
+        session-variable "KDIR"="/var/lib/bench/kdir"
         experimental-feature "nix-command"
         experimental-feature "flakes"
         trusted-user "wes"
         nix-setting "max-jobs"=4
         system-package "vim"
         system-package "git"
+    }
+
+    nix-ld {
+        library "stdenv.cc.cc.lib"
+        library "zlib"
+        library "zstd"
+        library "elfutils"
     }
 
     zfs "8425e349" {

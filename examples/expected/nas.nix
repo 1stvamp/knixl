@@ -15,9 +15,17 @@
   boot.loader.efi.canTouchEfiVariables = true;
   boot.kernelPackages = pkgs.linuxPackages_6_18;
   boot.kernel.sysctl = {
+    "net.bridge.bridge-nf-call-iptables" = 1;
     "net.ipv4.ip_forward" = 1;
     "vm.swappiness" = 10;
   };
+  boot.kernelModules = [
+    "br_netfilter"
+  ];
+  systemd.tmpfiles.rules = [
+    "d /var/lib/bench 0755 wes users - -"
+    "d /tmp/scratch 1777 - - 10d -"
+  ];
   time.timeZone = "Europe/London";
   i18n.defaultLocale = "en_GB.UTF-8";
   users.mutableUsers = false;
@@ -32,6 +40,16 @@
   environment.systemPackages = [
     pkgs.vim
     pkgs.git
+  ];
+  environment.sessionVariables = {
+    KDIR = "/var/lib/bench/kdir";
+  };
+  programs.nix-ld.enable = true;
+  programs.nix-ld.libraries = [
+    pkgs.stdenv.cc.cc.lib
+    pkgs.zlib
+    pkgs.zstd
+    pkgs.elfutils
   ];
   networking.hostId = "8425e349";
   boot.supportedFilesystems.zfs = true;

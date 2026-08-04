@@ -145,7 +145,29 @@ The module sets `virtualisation.incus.enable = true`, enables the web UI via `vi
 
 `os` claims the `os` node: core host configuration (identity, boot, and system tunables). It is built-in because it carries arbitrary-key attribute sets (`boot.kernel.sysctl`, `nix.settings`) and `pkgs` references (`boot.kernelPackages`, `environment.systemPackages`), which the declarative grammar cannot express.
 
-Node shape (all children optional): `state-version "25.11"` (`system.stateVersion`), `boot-loader "systemd-boot"` (`boot.loader.systemd-boot.enable`; only systemd-boot today), `efi-can-touch-variables #true` (`boot.loader.efi.canTouchEfiVariables`), `kernel-package "linuxPackages_6_18"` (`boot.kernelPackages = pkgs.<name>`), `timezone "Europe/London"` (`time.timeZone`), `locale "en_GB.UTF-8"` (`i18n.defaultLocale`), `mutable-users #false` (`users.mutableUsers`), `sysctl "<key>"=<value> ...` (a prop map, `boot.kernel.sysctl`, values kept native), repeated `experimental-feature "<name>"` and `trusted-user "<name>"` (`nix.settings.experimental-features` / `trusted-users` lists), `nix-setting "<key>"=<value> ...` (a prop map of scalar `nix.settings.<key>` entries), and repeated `system-package "<name>"` (`environment.systemPackages = [ pkgs.<name> ... ]`).
+Node shape (all children optional): `state-version "25.11"` (`system.stateVersion`), `boot-loader "systemd-boot"` (`boot.loader.systemd-boot.enable`; only systemd-boot today), `efi-can-touch-variables #true` (`boot.loader.efi.canTouchEfiVariables`), `kernel-package "linuxPackages_6_18"` (`boot.kernelPackages = pkgs.<name>`), `timezone "Europe/London"` (`time.timeZone`), `locale "en_GB.UTF-8"` (`i18n.defaultLocale`), `mutable-users #false` (`users.mutableUsers`), `sysctl "<key>"=<value> ...` (a prop map, `boot.kernel.sysctl`, values kept native), repeated `kernel-module "<name>"` (`boot.kernelModules`), repeated `tmpfiles-rule` (see below), repeated `experimental-feature "<name>"` and `trusted-user "<name>"` (`nix.settings.experimental-features` / `trusted-users` lists), `nix-setting "<key>"=<value> ...` (a prop map of scalar `nix.settings.<key>` entries), repeated `system-package "<name>"` (`environment.systemPackages = [ pkgs.<name> ... ]`), and `session-variable "<NAME>"="<value>" ...` (a prop map, `environment.sessionVariables`).
+
+`kernel-module` and `sysctl` are a pair in practice: a sysctl often only exists once its module is loaded, so `net.bridge.bridge-nf-call-iptables` needs `kernel-module "br_netfilter"` alongside it to be settable at boot.
+
+`session-variable` writes `environment.sessionVariables`, which NixOS puts in `/etc/pam/environment` for `pam_env` to load into every session, including a non-interactive `ssh host cmd`. `environment.variables` reaches interactive shells only, so it is not offered here. A name that is a valid bare Nix attribute renders unquoted (`KDIR = "..."`); anything else is quoted by the emitter.
+
+`tmpfiles-rule "<path>" type="<t>" [mode=] [user=] [group=] [age=] [argument=]` emits one `systemd.tmpfiles.rules` line, with the fields named rather than positional, because the bare tmpfiles line is not readable. `type` is required; every other field defaults to `-`, tmpfiles' own "leave this to the default" marker, so all seven columns are always present:
+
+```kdl
+os {
+    tmpfiles-rule "/var/lib/bench" type="d" mode="0755" user="wes" group="users"
+    tmpfiles-rule "/tmp/scratch" type="d" mode="1777" age="10d"
+}
+```
+
+```nix
+systemd.tmpfiles.rules = [
+  "d /var/lib/bench 0755 wes users - -"
+  "d /tmp/scratch 1777 - - 10d -"
+];
+```
+
+Rules keep KDL source order, since tmpfiles applies them in order.
 
 `networking.hostName` is NOT part of `os`: the `host` module sets it to the host's label by default, overridable with a `hostname "x"` child on `host` (only `host` knows the label, and every host gets a hostName even with no `os` block). `mutable-users` here is the host-level half of enforcing a declarative password (the per-user `hashedPassword` lives on the `user` module).
 
@@ -156,6 +178,31 @@ Node shape (all children optional): `state-version "25.11"` (`system.stateVersio
 Node shape: a required name, envelope children `autostart`/`ephemeral`/`private-network` (bool flags), `host-address`/`local-address` (strings), repeated `bind-mount "/mount" host-path="..." [read-only=#true]`, and a `config { }` block holding ordinary knixl module nodes (`os`, `user`, `openssh`, `web-service`, ...). Envelope children map to `containers.<name>.<opt>` (`autoStart`, `privateNetwork`, `hostAddress`, `bindMounts`, ...); the config block's modules are lowered and re-rooted, so `web-service` inside a guest emits `containers.<name>.config.services.nginx.enable = true`.
 
 Paths inside `containers.*.config` are exempt from oracle validation: `nixosOptionsDoc` types the container config as one submodule, so its interior is not in the flat option set (ADR 0011), the same opaque treatment `raw-nix` gets. In v1 the config block re-roots normal (`Bucket::Default`) assignments only; a nested module that emits a side-file or raw-nix is rejected.
+
+### nix-ld
+
+`nix-ld` claims the `nix-ld` node: running prebuilt dynamically linked binaries (`programs.nix-ld`). It is built-in because the library list is `pkgs` references, which the declarative grammar cannot express (interpolation stringifies).
+
+It comes up whenever a host runs binaries it did not build: a rustup toolchain a project pins for itself, or prebuilt binaries from a GitHub release. `/lib64/ld-linux-x86-64.so.2` on NixOS is `stub-ld`, so without nix-ld none of them execute at all.
+
+Node shape: repeated `library "<name>"`, each a `pkgs` attr, dotted names allowed. The node's presence is the opt-in, so there is no `enable` child:
+
+```kdl
+nix-ld {
+    library "stdenv.cc.cc.lib"
+    library "zlib"
+}
+```
+
+```nix
+programs.nix-ld.enable = true;
+programs.nix-ld.libraries = [
+  pkgs.stdenv.cc.cc.lib
+  pkgs.zlib
+];
+```
+
+The library list is the part worth having typed: it is per-host, discovered by running `ldd` against the actual binaries, and it is what you come back and edit. Libraries keep KDL source order.
 
 ## Declarative modules shipped with knixl
 
