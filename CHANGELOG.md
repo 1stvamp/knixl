@@ -8,6 +8,23 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+### Changed
+- KDL that knixl cannot fully interpret now refuses to generate, with exit 5
+  (#85). A node no module claims, or an unknown child of a claimed one, was a
+  warning at any depth below the top level, so a typo (`timezon` for `timezone`)
+  was dropped from the emitted Nix while `generate` wrote the file and `check`
+  exited 0. The lock records the emitted Nix rather than the intent of the KDL, so
+  nothing downstream could see the loss. `docs/05-cli.md` already documented exit
+  5 as covering a KDL schema error; only the top-level path honoured it. There is
+  no flag to downgrade this: an escape hatch would restore exactly the
+  silently-wrong output. **A project carrying a stray or misspelt node has been
+  generating without it and will now fail until the node is fixed or removed.**
+- `--json` carries diagnostics: `{"files":[...],"warnings":[...]}` normally, and
+  `{"validation":[...]}` when validation refused (#85). Both only existed on
+  stderr, so CI could not branch on them.
+- A top-level unclaimed node reports exit 5 rather than exit 1 (#85). It was
+  raised as an internal error, when a typo in the input is validation.
+
 ## [1.3.0] - 2026-08-04
 
 Four knobs that previously needed `raw-nix`, and an oracle that was rejecting

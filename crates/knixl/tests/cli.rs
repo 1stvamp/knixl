@@ -37,6 +37,72 @@ fn knixl(root: &Path, args: &[&str]) -> std::process::Output {
         .expect("run knixl")
 }
 
+/// #85: a typo used to be a warning, so `check` exited 0 with the option missing from the
+/// generated Nix. These pin the exit code and the machine-readable output at the CLI boundary,
+/// which is where the issue was actually felt.
+#[test]
+fn a_typo_in_a_host_refuses_with_the_validation_exit_code() {
+    let root = temp_project("typo-exit");
+    fs::write(
+        root.join("hosts/typo.kdl"),
+        "host \"typo\" {\n    system \"x86_64-linux\"\n    os {\n        timezon \"Europe/London\"\n    }\n}\n",
+    )
+    .unwrap();
+
+    let gen = knixl(&root, &["generate"]);
+    assert_eq!(
+        gen.status.code(),
+        Some(5),
+        "generate must refuse: {}",
+        String::from_utf8_lossy(&gen.stderr)
+    );
+    assert!(
+        !root.join("generated/hosts/typo.nix").exists(),
+        "nothing should be written from KDL knixl cannot fully interpret"
+    );
+
+    let check = knixl(&root, &["check"]);
+    assert_eq!(check.status.code(), Some(5), "check must refuse too");
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(
+        stderr.contains("timezon") && stderr.contains("hosts/typo.kdl"),
+        "the error should name the child and locate the file: {stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn json_check_carries_validation_errors() {
+    let root = temp_project("json-validation");
+    fs::write(
+        root.join("hosts/typo.kdl"),
+        "host \"typo\" {\n    system \"x86_64-linux\"\n    mystery-service\n}\n",
+    )
+    .unwrap();
+
+    let out = knixl(&root, &["--json", "check"]);
+    assert_eq!(out.status.code(), Some(5));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"validation\"") && stdout.contains("mystery-service"),
+        "--json must carry the error, not just stderr: {stdout}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn json_plan_carries_warnings_alongside_files() {
+    let root = temp_project("json-warnings");
+    let out = knixl(&root, &["--json", "plan"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"files\"") && stdout.contains("\"warnings\""),
+        "the plan object should carry both keys: {stdout}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn doc_prints_a_typed_reference() {
     let root = temp_project("doc");

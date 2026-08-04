@@ -320,10 +320,13 @@ fn child_line(c: &Child) -> String {
     format!("  {} : {}{}  {}\n", c.name, ty_str(&c.ty), flags, c.doc)
 }
 
+/// Every schema violation is an Error: a wrong type, a missing value, or an unknown child all
+/// mean the node cannot be lowered as written.
 fn diag_at(span: SourceSpan, message: String) -> Diagnostic {
     Diagnostic {
         span: Some(span),
         message,
+        severity: Severity::Error,
     }
 }
 
@@ -456,17 +459,29 @@ impl<'a> LowerCtx<'a> {
                         out.attribute(&module_name);
                         outputs.push(out);
                     }
-                    None => self.lint(child.span(), format!("no module claims node `{name}`")),
+                    None => self.reject(child.span(), format!("no module claims node `{name}`")),
                 }
             }
         }
         Ok(outputs)
     }
 
+    /// Note something worth saying that does not change what the KDL asked for.
     pub fn lint(&mut self, span: SourceSpan, msg: impl Into<String>) {
         self.diags.push(Diagnostic {
             span: Some(span),
             message: msg.into(),
+            severity: Severity::Warning,
+        });
+    }
+
+    /// Refuse the input: the caller found something it cannot lower as written, so generation
+    /// must not produce a file from it.
+    pub fn reject(&mut self, span: SourceSpan, msg: impl Into<String>) {
+        self.diags.push(Diagnostic {
+            span: Some(span),
+            message: msg.into(),
+            severity: Severity::Error,
         });
     }
 }
@@ -535,6 +550,18 @@ pub enum Bucket {
 pub struct Diagnostic {
     pub span: Option<SourceSpan>,
     pub message: String,
+    pub severity: Severity,
+}
+
+/// Whether a diagnostic means the emitted Nix would not be what the KDL asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// The input is defective, so nothing should be emitted from it: an unclaimed node, an
+    /// unknown child, a wrongly-typed value. Dropping these silently produces a host config
+    /// that looks generated and checked while missing what was written (#85).
+    Error,
+    /// Worth saying, and the output is still what the KDL asked for.
+    Warning,
 }
 
 #[derive(Debug, thiserror::Error)]

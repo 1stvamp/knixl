@@ -13,7 +13,7 @@ use knixl_lock::Lock;
 use knixl_modules::builtin::register_builtins;
 use knixl_modules::Registry;
 use knixl_nix::Formatter;
-use knixl_pipeline::{generate, HostSource};
+use knixl_pipeline::{generate, GenerateError, HostSource};
 
 fn examples_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
@@ -122,38 +122,97 @@ fn gather_and_plan_report_missing_when_disk_is_empty() {
     let _ = fs::remove_dir_all(&root);
 }
 
-#[test]
-fn unknown_child_node_surfaces_as_a_warning_not_an_error() {
-    // `host` has open_children, so an unclaimed child passes schema validation and is
-    // linted during lowering. That lint must reach the generated file as a warning
-    // rather than being silently dropped.
-    let src = "host \"web\" {\n    system \"x86_64-linux\"\n    mystery-service\n}".to_string();
+/// Generate one host from KDL source, for the refusal cases below.
+fn generate_src(
+    path: &str,
+    src: &str,
+) -> Result<Vec<knixl_pipeline::GeneratedFile>, GenerateError> {
     let tool = "0.3.1".parse().unwrap();
-    let no_pins = std::collections::BTreeMap::new();
-    let no_oracles = std::collections::BTreeMap::new();
-    let files = generate(
+    generate(
         &[HostSource {
-            path: PathBuf::from("hosts/web.kdl"),
-            src,
+            path: PathBuf::from(path),
+            src: src.to_string(),
         }],
         &build_registry(),
         &identity_formatter(),
         &tool,
-        &no_oracles,
-        &no_pins,
+        &std::collections::BTreeMap::new(),
+        &std::collections::BTreeMap::new(),
         knixl_modules::SecretsBackend::default(),
     )
-    .expect("generate");
+}
 
-    assert_eq!(files.len(), 1);
-    assert!(
-        files[0]
-            .warnings
-            .iter()
-            .any(|w| w.contains("mystery-service")),
-        "unknown child should surface as a warning, got {:?}",
-        files[0].warnings
+/// The validation messages from a generate that must have refused.
+fn refusal(path: &str, src: &str) -> Vec<String> {
+    match generate_src(path, src) {
+        Err(GenerateError::Validation(errs)) => errs,
+        Err(other) => panic!("expected Validation, got {other:?}"),
+        // GeneratedFile has no Debug, so report the paths rather than the files.
+        Ok(files) => panic!(
+            "expected a refusal, but generate produced {:?}",
+            files.iter().map(|f| f.path.clone()).collect::<Vec<_>>()
+        ),
+    }
+}
+
+#[test]
+fn an_unclaimed_child_node_refuses_to_generate() {
+    // #85 case 1: `host` has open_children, so an unclaimed child passes schema validation and
+    // was only linted during lowering. A warning left the node dropped from the emitted Nix
+    // while every gate stayed green, so it now refuses.
+    let errs = refusal(
+        "hosts/web.kdl",
+        "host \"web\" {\n    system \"x86_64-linux\"\n    mystery-service\n}",
     );
+    assert!(
+        errs.iter().any(|e| e.contains("mystery-service")),
+        "the error should name the node: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("hosts/web.kdl")),
+        "the error should locate the file: {errs:?}"
+    );
+}
+
+#[test]
+fn a_typo_in_a_claimed_module_refuses_to_generate() {
+    // #85 case 2: one character off `timezone` dropped time.timeZone from the host and left
+    // `check` at exit 0. `os` is a delegated child of `host`, which is the path that used to
+    // downgrade a schema error to a warning.
+    let errs = refusal(
+        "hosts/type40.kdl",
+        "host \"type40\" {\n    system \"x86_64-linux\"\n    os {\n        timezon \"Europe/London\"\n    }\n}",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("timezon")),
+        "the error should name the misspelt child: {errs:?}"
+    );
+}
+
+#[test]
+fn a_top_level_typo_refuses_as_validation_not_an_internal_error() {
+    // A top-level unknown node already failed, but as UnknownNode, which the CLI reported as
+    // exit 1. docs/05-cli.md documents exit 5 for a KDL schema error, so it is Validation now.
+    let errs = refusal(
+        "hosts/web.kdl",
+        "hots \"web\" {\n    system \"x86_64-linux\"\n}",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("hots")),
+        "the error should name the node: {errs:?}"
+    );
+}
+
+#[test]
+fn a_genuine_warning_still_only_warns() {
+    // The promotion is scoped to input defects. A value conflict between two modules is a
+    // warning about output knixl did produce, so it must not start refusing.
+    let files = generate_src(
+        "hosts/web.kdl",
+        "host \"web\" {\n    system \"x86_64-linux\"\n    openssh {\n        port 22\n    }\n}",
+    )
+    .expect("a clean host still generates");
+    assert_eq!(files.len(), 1);
 }
 
 #[test]

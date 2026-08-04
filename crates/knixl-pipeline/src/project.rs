@@ -49,7 +49,7 @@ pub enum ImageKind {
 
 impl ImageKind {
     /// The KDL top-level node name that declares this kind.
-    fn node_name(self) -> &'static str {
+    pub fn node_name(self) -> &'static str {
         match self {
             ImageKind::Installer => "installer",
             ImageKind::GuestLxc => "guest-image",
