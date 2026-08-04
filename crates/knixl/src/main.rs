@@ -227,7 +227,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
 
     match cli.cmd {
         Cmd::Plan { detailed_exitcode } => {
-            print_plan(&plan, cli.json);
+            print_plan(&plan, cli.json, &ctx.warnings);
             if detailed_exitcode {
                 verdict(&plan)
             } else {
@@ -236,7 +236,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
         }
 
         Cmd::Check => {
-            print_plan(&plan, cli.json);
+            print_plan(&plan, cli.json, &ctx.warnings);
             verdict(&plan)
         }
 
@@ -290,7 +290,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                 return Code::Clean;
             }
             print_migration_notes(&plan, &ctx.registry);
-            print_plan(&plan, cli.json);
+            print_plan(&plan, cli.json, &ctx.warnings);
             if !yes {
                 for (host, b) in &pending {
                     println!(
@@ -2291,20 +2291,27 @@ fn state_label(state: &FileState) -> &'static str {
     }
 }
 
-fn print_plan(p: &Plan, json: bool) {
+fn print_plan(p: &Plan, json: bool, warnings: &[String]) {
     if json {
         let files: Vec<String> = p
             .files
             .iter()
             .map(|f| {
                 format!(
-                    "{{\"path\":{:?},\"state\":{:?}}}",
-                    f.path.display().to_string(),
-                    state_label(&f.state)
+                    "{{\"path\":{},\"state\":{}}}",
+                    json_str(&f.path.display().to_string()),
+                    json_str(state_label(&f.state))
                 )
             })
             .collect();
-        println!("{{\"files\":[{}]}}", files.join(","));
+        // Warnings ride in the object so CI can fail on them: they only existed on stderr
+        // before, which left `--json` unable to report anything but file states (#85).
+        let warned: Vec<String> = warnings.iter().map(|w| json_str(w)).collect();
+        println!(
+            "{{\"files\":[{}],\"warnings\":[{}]}}",
+            files.join(","),
+            warned.join(",")
+        );
         return;
     }
     if p.files.is_empty() {
@@ -2348,10 +2355,36 @@ fn print_doc(ctx: &Ctx, node: &str, _json: bool) {
     }
 }
 
-fn report_validation(errors: &[String], _json: bool) {
+fn report_validation(errors: &[String], json: bool) {
+    if json {
+        // Emitted on stdout as the run's only object: this path returns Code::Validation
+        // immediately, so no plan object follows it.
+        let errs: Vec<String> = errors.iter().map(|e| json_str(e)).collect();
+        println!("{{\"validation\":[{}]}}", errs.join(","));
+    }
     for e in errors {
         eprintln!("validation: {e}");
     }
+}
+
+/// A JSON string literal. `{:?}` on a Rust string is close but emits `\u{XX}` for some
+/// characters, which no JSON parser accepts, and these strings carry user-supplied node names.
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn report_warnings(warnings: &[String]) {

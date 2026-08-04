@@ -49,8 +49,8 @@ pub struct GeneratedFile {
 pub enum GenerateError {
     #[error(transparent)]
     Parse(#[from] ParseError),
-    #[error("no module claims node '{0}'")]
-    UnknownNode(String),
+    // An unclaimed node used to have its own variant, which the CLI reported as an internal
+    // error. It is defective input, so it is a Validation now (#85).
     #[error("input validation failed:\n{}", .0.join("\n"))]
     Validation(Vec<String>),
     #[error(transparent)]
@@ -137,14 +137,23 @@ fn generate_one(
 
     for node in doc.nodes() {
         let name = node.name().value();
-        let module = registry
-            .get(name)
-            .ok_or_else(|| GenerateError::UnknownNode(name.to_string()))?;
+        // Validation, not UnknownNode: a typo at the top level is defective input like any
+        // other, so it earns the documented exit 5 rather than being reported as an internal
+        // error (#85).
+        let module = registry.get(name).ok_or_else(|| {
+            GenerateError::Validation(vec![format!(
+                "{}: no module claims node `{name}`",
+                host.path.display()
+            )])
+        })?;
 
-        module
-            .schema()
-            .validate(node)
-            .map_err(|ds| GenerateError::Validation(ds.into_iter().map(|d| d.message).collect()))?;
+        module.schema().validate(node).map_err(|ds| {
+            GenerateError::Validation(
+                ds.into_iter()
+                    .map(|d| format!("{}: {}", host.path.display(), d.message))
+                    .collect(),
+            )
+        })?;
 
         let module_name = module.id().name;
 
@@ -182,6 +191,19 @@ fn generate_one(
     let module_versions = registry.module_versions();
 
     // Oracle: validate every emitted option path against this host's real NixOS option set.
+    // An input defect refuses before anything is emitted (#85). A dropped node is invisible to
+    // the lock, which records the emitted Nix rather than the intent of the KDL, so a warning
+    // here would leave a host config that looks generated and checked while missing what was
+    // written. Reported per source file, since a typo needs locating.
+    let input_errors: Vec<String> = diags
+        .iter()
+        .filter(|d| d.severity == knixl_modules::Severity::Error)
+        .map(|d| format!("{}: {}", host.path.display(), d.message))
+        .collect();
+    if !input_errors.is_empty() {
+        return Err(GenerateError::Validation(input_errors));
+    }
+
     if let Some(oracle) = oracles.get(&host_name) {
         let mut errors = Vec::new();
         for body in files.values() {
@@ -210,7 +232,12 @@ fn generate_one(
     // Host-level lints (e.g. an unclaimed child node) are not tied to one output file.
     // They ride on the host's own file; if the host emits only side-files, the first
     // generated file carries them instead so they are never dropped.
-    let mut host_lints: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
+    // Errors already returned above, so only warnings are left to carry.
+    let mut host_lints: Vec<String> = diags
+        .iter()
+        .filter(|d| d.severity == knixl_modules::Severity::Warning)
+        .map(|d| d.message.clone())
+        .collect();
 
     let mut generated = Vec::new();
     for key in &keys {
@@ -348,7 +375,29 @@ pub fn generate_image_targets(
             }
         }
 
-        let warnings: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
+        // Same refusal as a host's (#85). This is the `hostname` case from that issue: valid on
+        // `host`, claimed by nothing inside an image target, and silently dropped before.
+        let input_errors: Vec<String> = diags
+            .iter()
+            .filter(|d| d.severity == knixl_modules::Severity::Error)
+            .map(|d| {
+                format!(
+                    "knixl.kdl: {} `{}`: {}",
+                    target.kind.node_name(),
+                    target.name,
+                    d.message
+                )
+            })
+            .collect();
+        if !input_errors.is_empty() {
+            return Err(GenerateError::Validation(input_errors));
+        }
+
+        let warnings: Vec<String> = diags
+            .iter()
+            .filter(|d| d.severity == knixl_modules::Severity::Warning)
+            .map(|d| d.message.clone())
+            .collect();
         merge_list_assignments(&mut body);
         let lets = knixl_ir::hoist::hoist(&mut body);
 

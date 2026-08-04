@@ -43,7 +43,7 @@ Every command discovers its project root by walking up from the current director
   A host may also declare a baseline nixpkgs release: `nixpkgs release="<rel>"` as a child node of `host` (e.g. `nixpkgs release="25.05"`). It is metadata only, never emitted into the generated `.nix`. It resolves to a commit only at `install`/`upgrade` time (via the same built-in resolver, `git ls-remote` against the `nixos-<rel>` branch with a GitHub API fallback, or `KNIXL_BASELINE_RESOLVER` for an external override), and is recorded as a `baseline release="<rel>" nixpkgs-rev="<commit>" options-hash="<hash>"` line per host in the lock, beside that host's `pin` lines. That baseline drives both the host's oracle validation and its pin-strategy feasibility test. A declared release with no resolved lock entry refuses (exit 5), the same as an unresolved package pin.
 - `knixl tui` : the interactive hub (bubbletea + lipgloss). Home routes to three screens: Install (as above), Browse (list registered modules built-in and declarative, read a module's schema doc, and scaffold its node into a host), and New module (author a declarative module: build its schema (args, props, children, including structured children with nested sub-fields) and a free-text emit template, validated live against the dry type-pass as you type, then write it to `modules/<name>/knixl-module.kdl`). A movable focus selector drives every control, the layout resizes to the terminal, and it refuses to launch on a non-TTY rather than hanging.
 
-`--json` is global for machine-readable output.
+`--json` is global for machine-readable output. One object per run: `{"files":[{"path","state"}],"warnings":[...]}` normally, or `{"validation":[...]}` when validation refused (that path returns before a plan exists). Warnings are in the object as well as on stderr, so CI can branch on them rather than scraping the log.
 
 ## Environment variables
 
@@ -66,7 +66,7 @@ One enum, precedence spelled out (severity order is not numeric order):
 - `2 Usage` : clap default.
 - `3 Drift` : a generated file was hand-edited (tainted).
 - `4 NeedsAck` : version skew would change output; needs `upgrade` or `--yes`.
-- `5 Validation` : KDL schema error or oracle type / unknown-option error.
+- `5 Validation` : KDL schema error or oracle type / unknown-option error. Includes a node no module claims and an unknown child of a claimed one, at any depth: knixl refuses to emit from KDL it cannot fully interpret, because the lock records the emitted Nix rather than the intent of the KDL, so a dropped node is invisible to every later gate (#85). There is no flag to downgrade it.
 - `6 RegenPending` : `Stale`/`Missing`/`Orphaned`; inputs changed, regeneration owed.
 
 Precedence, most severe first: `Validation` beats everything (you cannot trust a plan built on invalid input). `Drift` beats skew (silent overwrite would lose human edits). Skew (`NeedsAck`) beats plain `RegenPending` (a version bump is a bigger claim than an input edit).
