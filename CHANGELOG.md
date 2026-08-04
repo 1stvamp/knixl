@@ -8,6 +8,17 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-04
+
+A breaking change, released as a minor deliberately: KDL that knixl cannot fully
+interpret is now refused instead of being silently dropped.
+
+Read the first entry below before upgrading. A project carrying a stray or
+misspelt node has been generating without it and will start failing, which is the
+point of the change. Anyone resolving these crates as `^1` picks this up
+automatically, both the CLI behaviour and the library API changes noted at the
+end.
+
 ### Changed
 - KDL that knixl cannot fully interpret now refuses to generate, with exit 5
   (#85). A node no module claims, or an unknown child of a claimed one, was a
@@ -24,6 +35,11 @@ see `docs/release-changelog.md` for how each entry is written.
   stderr, so CI could not branch on them.
 - A top-level unclaimed node reports exit 5 rather than exit 1 (#85). It was
   raised as an internal error, when a typo in the input is validation.
+- Library API, for anyone using the crates directly rather than the CLI:
+  `knixl_modules::Diagnostic` gains a `severity` field (so constructing one by
+  literal no longer compiles; a new `Severity` enum accompanies it), and
+  `knixl_pipeline::GenerateError::UnknownNode` is removed in favour of
+  `Validation` (#85).
 
 ## [1.3.0] - 2026-08-04
 
@@ -160,7 +176,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/1stvamp/knixl/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/1stvamp/knixl/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/1stvamp/knixl/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/1stvamp/knixl/compare/v1.1.0...v1.2.0
