@@ -264,6 +264,14 @@ fn nas_pipeline_produces_expected_structure() {
         "boot.kernelPackages = pkgs.linuxPackages_6_18",
         "boot.kernel.sysctl",
         "\"net.ipv4.ip_forward\" = 1",
+        "boot.kernelModules",
+        "\"br_netfilter\"",
+        "systemd.tmpfiles.rules",
+        "\"d /var/lib/bench 0755 wes users - -\"",
+        "environment.sessionVariables",
+        "KDIR = \"/var/lib/bench/kdir\"",
+        "programs.nix-ld.enable = true",
+        "pkgs.stdenv.cc.cc.lib",
         "time.timeZone = \"Europe/London\"",
         "users.mutableUsers = false",
         "nix.settings.experimental-features",
@@ -298,7 +306,7 @@ fn nas_pipeline_produces_expected_structure() {
 fn nas_file_attributes_every_contributing_module() {
     let files = generate_host("nas.kdl");
     let nas = &files[0];
-    for m in ["host", "zfs", "user", "openssh"] {
+    for m in ["host", "zfs", "user", "openssh", "nix-ld"] {
         assert!(
             nas.modules.contains(&m.to_string()),
             "nas.nix should list {m}, got {:?}",

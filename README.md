@@ -113,7 +113,8 @@ knixl ships a curated set of modules (built-in Rust and declarative KDL alike), 
 - **tailscale** : Tailscale with an auth key pulled from a named secret.
 - **incus** : an Incus host, enable plus the web UI, the storage/network/profile preseed (with optional bridge ipv6), an optional API listener (static or bound to an interface's address at runtime), and host-firewall integration.
 - **home-manager** : per-user home-manager with the "Words of warning" guardrails (required `stateVersion`, safe `useUserPackages`, `nix.gc` left to NixOS) baked in.
-- **os** : core host config, hostName, stateVersion, boot loader and kernel, timezone/locale, sysctl, nix.settings, and systemPackages.
+- **os** : core host config, hostName, stateVersion, boot loader and kernel, timezone/locale, sysctl and kernel modules, nix.settings, systemPackages, session variables, and tmpfiles rules.
+- **nix-ld** : run prebuilt dynamically linked binaries (a pinned rustup toolchain, a GitHub release binary) with the library list declared per host.
 - **guest** : a NixOS system container whose config is a nested knixl module tree (`web-service` inside a guest just works, re-rooted under `containers.<name>.config`).
 - **host**, **postgres**, **backups**, **package**, **raw-nix**, **security-headers** : the rest of the built-ins.
 
@@ -169,7 +170,7 @@ A generated file that someone hand-edited is **tainted**. knixl tells drift apar
 
 ## Status
 
-1.1.0 is released (on crates.io, with prebuilt binaries). `check`, `plan`, `generate`, `upgrade`, `doc`, `install`, and `tui` work; every example host reproduces byte-for-byte through the pinned nixfmt; the oracle validates emitted paths against the NixOS option set; and the module set covers disks (disko), ZFS, users, OpenSSH, Tailscale, Incus, home-manager, nginx, and core host config (os: hostName, boot, kernel, sysctl, nix.settings, packages), plus nested NixOS system containers (guest), installer-media/ISO generation, and lxc guest images for Incus (guest-image). On top of that: opt-in bootable-system flake emission, reference-by-name secrets, and flake-based fetched modules. Design specs are under `docs/superpowers/specs/`; new work is tracked in GitHub issues.
+1.1.0 is released (on crates.io, with prebuilt binaries). `check`, `plan`, `generate`, `upgrade`, `doc`, `install`, and `tui` work; every example host reproduces byte-for-byte through the pinned nixfmt; the oracle validates emitted paths against the NixOS option set; and the module set covers disks (disko), ZFS, users, OpenSSH, Tailscale, Incus, home-manager, nginx, and core host config (os: hostName, boot, kernel, sysctl and kernel modules, nix.settings, packages, session variables, tmpfiles rules), plus nested NixOS system containers (guest), installer-media/ISO generation, lxc guest images for Incus (guest-image), and nix-ld for prebuilt binaries. On top of that: opt-in bootable-system flake emission, reference-by-name secrets, and flake-based fetched modules. Design specs are under `docs/superpowers/specs/`; new work is tracked in GitHub issues.
 
 ## Prior art
 

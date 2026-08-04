@@ -85,6 +85,27 @@ impl Module for Os {
             )));
         }
 
+        let modules: Vec<String> = children_named(node, "kernel-module")
+            .filter_map(first_arg_str)
+            .collect();
+        if !modules.is_empty() {
+            units.push(unit_default(assign(
+                idents(&["boot", "kernelModules"]),
+                NixExpr::List(modules.iter().map(|m| s(m)).collect()),
+            )));
+        }
+
+        let mut rules: Vec<NixExpr> = Vec::new();
+        for child in children_named(node, "tmpfiles-rule") {
+            rules.push(s(&tmpfiles_line(child)?));
+        }
+        if !rules.is_empty() {
+            units.push(unit_default(assign(
+                idents(&["systemd", "tmpfiles", "rules"]),
+                NixExpr::List(rules),
+            )));
+        }
+
         if let Some(tz) = child_arg_str(node, "timezone") {
             units.push(unit_default(assign(idents(&["time", "timeZone"]), s(&tz))));
         }
@@ -137,6 +158,20 @@ impl Module for Os {
             units.push(unit_default(assign(
                 idents(&["environment", "systemPackages"]),
                 NixExpr::List(packages.iter().map(|p| pkg(p)).collect()),
+            )));
+        }
+
+        let session = collect_prop_map(node, "session-variable");
+        if !session.is_empty() {
+            let mut m: BTreeMap<AttrKey, NixExpr> = BTreeMap::new();
+            for (k, v) in &session {
+                // Ident, so a conventional NAME renders bare; the emitter quotes anything that
+                // is not a valid bare attribute name.
+                m.insert(AttrKey::Ident(k.clone()), scalar_expr(v));
+            }
+            units.push(unit_default(assign(
+                idents(&["environment", "sessionVariables"]),
+                NixExpr::AttrSet(m),
             )));
         }
 
@@ -199,6 +234,40 @@ fn collect_prop_map(node: &KdlNode, name: &str) -> BTreeMap<String, kdl::KdlValu
     map
 }
 
+/// Compose one `systemd.tmpfiles.rules` line: `type path mode user group age argument`. Unset
+/// fields become `-`, which is tmpfiles' own "leave this to the default" marker, so the seven
+/// columns are always present and the line stays readable next to the KDL that produced it.
+fn tmpfiles_line(child: &KdlNode) -> Result<String, LowerError> {
+    let path = first_arg_str(child).ok_or_else(|| {
+        LowerError::Other(
+            "os: tmpfiles-rule needs a path argument, e.g. tmpfiles-rule \"/var/lib/x\" type=\"d\""
+                .into(),
+        )
+    })?;
+    let ty = opt_prop(child, "type").ok_or_else(|| {
+        LowerError::Other(format!(
+            "os: tmpfiles-rule \"{path}\" needs type=, e.g. type=\"d\" for a directory"
+        ))
+    })?;
+    let field = |name: &str| opt_prop(child, name).unwrap_or_else(|| "-".into());
+    Ok([
+        ty,
+        path,
+        field("mode"),
+        field("user"),
+        field("group"),
+        field("age"),
+        field("argument"),
+    ]
+    .join(" "))
+}
+
+fn opt_prop(node: &KdlNode, key: &str) -> Option<String> {
+    node.get(key)
+        .and_then(|v| v.as_string())
+        .map(str::to_string)
+}
+
 fn scalar_expr(v: &kdl::KdlValue) -> NixExpr {
     if let Some(b) = v.as_bool() {
         NixExpr::Bool(b)
@@ -244,6 +313,16 @@ fn schema() -> NodeSchema {
                 "boot.kernel.sysctl entries as props, e.g. sysctl \"net.ipv4.ip_forward\"=1.",
             ),
             node_child(
+                "kernel-module",
+                ValueTy::Str,
+                "boot.kernelModules entry, e.g. \"br_netfilter\". Repeatable.",
+            ),
+            node_child(
+                "tmpfiles-rule",
+                ValueTy::Node,
+                "systemd.tmpfiles.rules entry: a path plus type= and optional mode=/user=/group=/age=/argument=. Repeatable.",
+            ),
+            node_child(
                 "experimental-feature",
                 ValueTy::Str,
                 "nix.settings.experimental-features entry. Repeatable.",
@@ -262,6 +341,11 @@ fn schema() -> NodeSchema {
                 "system-package",
                 ValueTy::Str,
                 "environment.systemPackages entry, a pkgs attr. Repeatable.",
+            ),
+            node_child(
+                "session-variable",
+                ValueTy::Node,
+                "environment.sessionVariables entries as props, e.g. session-variable \"EDITOR\"=\"vim\".",
             ),
         ],
         open_children: false,
@@ -408,5 +492,68 @@ mod tests {
     #[test]
     fn empty_os_emits_nothing() {
         assert!(lower_ok("os {\n}").is_empty());
+    }
+
+    #[test]
+    fn kernel_modules_lower_to_a_string_list_in_source_order() {
+        let units =
+            lower_ok("os {\n    kernel-module \"br_netfilter\"\n    kernel-module \"overlay\"\n}");
+        let NixExpr::List(mods) = find(&units, "boot.kernelModules").unwrap() else {
+            panic!("kernelModules is not a list")
+        };
+        assert!(matches!(&mods[0], NixExpr::Str(s) if s == "br_netfilter"));
+        assert!(matches!(&mods[1], NixExpr::Str(s) if s == "overlay"));
+    }
+
+    #[test]
+    fn session_variables_render_bare_when_the_name_allows() {
+        let units = lower_ok(
+            "os {\n    session-variable \"KDIR\"=\"/var/lib/bench/kdir\" \"EDITOR\"=\"vim\"\n}",
+        );
+        let NixExpr::AttrSet(m) = find(&units, "environment.sessionVariables").unwrap() else {
+            panic!("sessionVariables is not an attrset")
+        };
+        assert!(
+            matches!(m.get(&AttrKey::Ident("KDIR".into())), Some(NixExpr::Str(s)) if s == "/var/lib/bench/kdir")
+        );
+        assert!(
+            matches!(m.get(&AttrKey::Ident("EDITOR".into())), Some(NixExpr::Str(s)) if s == "vim")
+        );
+    }
+
+    #[test]
+    fn tmpfiles_rules_fill_every_column_and_default_to_dash() {
+        let units = lower_ok(
+            "os {\n    tmpfiles-rule \"/var/lib/bench\" type=\"d\" mode=\"0755\" user=\"wes\" group=\"users\"\n    tmpfiles-rule \"/tmp/scratch\" type=\"d\" mode=\"1777\" age=\"10d\"\n    tmpfiles-rule \"/etc/foo.conf\" type=\"L\" argument=\"/nix/store/x-foo.conf\"\n}",
+        );
+        let NixExpr::List(rules) = find(&units, "systemd.tmpfiles.rules").unwrap() else {
+            panic!("tmpfiles.rules is not a list")
+        };
+        let line = |i: usize| match &rules[i] {
+            NixExpr::Str(s) => s.clone(),
+            other => panic!("rule {i} is not a string: {other:?}"),
+        };
+        assert_eq!(line(0), "d /var/lib/bench 0755 wes users - -");
+        assert_eq!(line(1), "d /tmp/scratch 1777 - - 10d -");
+        assert_eq!(line(2), "L /etc/foo.conf - - - - /nix/store/x-foo.conf");
+    }
+
+    #[test]
+    fn a_tmpfiles_rule_without_a_type_is_an_error() {
+        let m = Os::new();
+        let reg = Registry::new();
+        let mut diags = Vec::new();
+        let mut ctx = LowerCtx::new(Scope { host: "nas".into() }, &reg, &mut diags, vec![]);
+        // LowerOutput has no Debug impl, so match rather than expect_err.
+        match m.lower(
+            &node("os {\n    tmpfiles-rule \"/var/lib/bench\"\n}"),
+            &mut ctx,
+        ) {
+            Err(e) => assert!(
+                e.to_string().contains("needs type="),
+                "error should name the missing field: {e}"
+            ),
+            Ok(_) => panic!("a rule with no type cannot be composed"),
+        }
     }
 }

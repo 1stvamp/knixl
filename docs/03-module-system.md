@@ -53,7 +53,9 @@ A module says only "main file" (`Bucket::Default`) or "a named side-file" (`Buck
 
 - **Built-in (Rust)** when the module needs logic or structure a template cannot express. Two triggers, both real:
   - **Logic:** `postgres` is the canonical case: "force the override only if the user's input conflicts with the base preset" is conditional priority computation. See `builtin/postgres.rs`.
-  - **Structure the single-level grammar cannot reach:** name-keyed attribute sets nested several levels deep (`disko`), arbitrary-key attribute sets and `pkgs` references (`os`'s `boot.kernel.sysctl`/`nix.settings`/`boot.kernelPackages`), optional per-item fields plus a runtime oneshot (`incus`), or re-rooting a whole module tree under a sub-path (`guest`, containers.<name>.config, ADR 0011). These lower to fully-built attribute sets a `set`/`for-each`/`list` template cannot produce.
+  - **Structure the single-level grammar cannot reach:** name-keyed attribute sets nested several levels deep (`disko`), arbitrary-key attribute sets and `pkgs` references (`os`'s `boot.kernel.sysctl`/`nix.settings`/`boot.kernelPackages`/`environment.sessionVariables`, `nix-ld`'s `programs.nix-ld.libraries`), optional per-item fields plus a runtime oneshot (`incus`), or re-rooting a whole module tree under a sub-path (`guest`, containers.<name>.config, ADR 0011). These lower to fully-built attribute sets a `set`/`for-each`/`list` template cannot produce.
+
+  A list of `pkgs` references is the smallest case that forces Rust: interpolation stringifies, so a declarative `library "zlib"` could only ever emit `"zlib"`, never `pkgs.zlib`. `nix-ld` exists as a built-in for that one reason.
 - **Declarative (KDL)** when it is straight-line substitution. `web-service` qualifies; its whole definition is data in `crates/knixl-modules/stdlib/web-service/knixl-module.kdl`, interpreted by one `DeclarativeModule` that impls the same trait.
 
 State the boundary in contributor docs on day one, or declarative modules will quietly reach for logic the interpreter keeps having to grow to meet. A declarative module can only:
