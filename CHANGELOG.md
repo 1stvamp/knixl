@@ -8,6 +8,45 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-04
+
+Four knobs that previously needed `raw-nix`, and an oracle that was rejecting
+values NixOS accepts.
+
+### Added
+- `os` gains `session-variable "<NAME>"="<value>"`, a prop map emitting
+  `environment.sessionVariables` (#86). NixOS writes those into
+  `/etc/pam/environment`, which `pam_env` loads for every session including a
+  non-interactive `ssh host cmd`; `environment.variables` reaches interactive
+  shells only, so it is not offered. A name that is a valid bare Nix attribute
+  renders unquoted.
+- `os` gains repeated `kernel-module "<name>"` (`boot.kernelModules`), the other
+  half of the existing `sysctl` child: a sysctl often only exists once its module
+  is loaded, so `net.bridge.bridge-nf-call-iptables` needs `br_netfilter`
+  alongside it (#87).
+- `os` gains repeated `tmpfiles-rule "<path>" type="d" [mode=] [user=] [group=]
+  [age=] [argument=]` (`systemd.tmpfiles.rules`), with the fields named because
+  the bare tmpfiles line is not readable (#88). `type` is required; the rest
+  default to `-`, tmpfiles' own leave-this-to-the-default marker. Rules keep KDL
+  source order, since tmpfiles applies them in order.
+- `nix-ld` module: repeated `library "<name>"` emitting `programs.nix-ld.enable`
+  and `programs.nix-ld.libraries` (#89), for hosts that run binaries they did not
+  build (a project-pinned rustup toolchain, a prebuilt release binary), where
+  `/lib64/ld-linux-x86-64.so.2` is NixOS's `stub-ld`. The node's presence is the
+  opt-in, so there is no `enable` child. Dotted names work, so
+  `library "stdenv.cc.cc.lib"` emits `pkgs.stdenv.cc.cc.lib`.
+
+### Fixed
+- The oracle no longer rejects a legitimate value for an option whose type is a
+  top-level union, which is how `nixosOptionsDoc` renders an `either` (#86, #87).
+  `environment.sessionVariables` was typed as an integer and `boot.kernelModules`
+  as an attribute set that refuses the list form, so both failed validation with
+  `WrongType`. Any project setting an option of that shape, through knixl's own
+  modules or a fetched one, was blocked.
+- The oracle no longer panics on an option whose type description carries a
+  multibyte character, such as nixpkgs' `3×3 matrix of floating point numbers`.
+  Every command that loads the option set was affected.
+
 ## [1.2.1] - 2026-07-31
 
 Image targets generate. Both kinds emitted invalid Nix in 1.2.0, so neither had
@@ -104,7 +143,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/1stvamp/knixl/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/1stvamp/knixl/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/1stvamp/knixl/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/1stvamp/knixl/compare/v1.0.0...v1.1.0
