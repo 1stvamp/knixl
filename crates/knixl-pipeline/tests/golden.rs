@@ -5,6 +5,10 @@
 //! `knixl.lock.kdl`. The byte-for-byte cases check `formatter_available()` first and skip
 //! themselves at runtime when no `nixfmt` is on PATH (set `KNIXL_FORMATTER` to point at one),
 //! so `cargo test` stays green without one.
+//!
+//! `KNIXL_BLESS=1` rewrites the goldens from current output instead of checking them, which is
+//! what `mise run bless` runs. It insists on a formatter that actually formats, so a bless can
+//! never record the emitter's pre-format text as the expected output.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -630,6 +634,78 @@ fn formatter_available() -> bool {
     formatter().format("{ }\n").is_ok()
 }
 
+/// Whether the byte-exact goldens can run at all: they need a real nixfmt. Absent one they skip,
+/// except under `KNIXL_BLESS`, where skipping would write nothing and still report success.
+fn goldens_runnable(test: &str) -> bool {
+    if blessing() {
+        assert!(
+            formatter_reformats(),
+            "KNIXL_BLESS needs a formatter that actually formats (set KNIXL_FORMATTER to nixfmt); \
+             {test} would have written the emitter's pre-format output as the golden"
+        );
+        return true;
+    }
+    if formatter_available() {
+        return true;
+    }
+    eprintln!("skipping {test}: no formatter (set KNIXL_FORMATTER)");
+    false
+}
+
+/// A formatter that actually reformats, rather than one that merely runs. `formatter_available`
+/// cannot tell nixfmt from the identity formatter, since `cat` exits 0 on anything, so blessing
+/// needs the stronger probe: ugly-but-valid Nix has to come back changed.
+fn formatter_reformats() -> bool {
+    let ugly = "{ a=1; }\n";
+    matches!(formatter().format(ugly), Ok(out) if out != ugly)
+}
+
+/// Whether this run is rewriting the goldens rather than checking them (`KNIXL_BLESS=1`).
+fn blessing() -> bool {
+    matches!(
+        std::env::var("KNIXL_BLESS").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+/// Compare `actual` against the golden at `expected_path`, or rewrite it under `KNIXL_BLESS`.
+///
+/// Blessing refuses without a real formatter: the identity formatter (`cat`) would write the
+/// emitter's pre-format output as the golden, which then disagrees with every real run. A
+/// panic is the point, since a bless that silently wrote nothing reads as success.
+fn assert_or_bless(expected_path: &Path, actual: &str, what: &str) {
+    if blessing() {
+        assert!(
+            formatter_reformats(),
+            "KNIXL_BLESS needs a formatter that actually formats (set KNIXL_FORMATTER to nixfmt); \
+             refusing to write {what} through the identity formatter"
+        );
+        let previous = fs::read_to_string(expected_path).unwrap_or_default();
+        if previous == actual {
+            return;
+        }
+        fs::write(expected_path, actual)
+            .unwrap_or_else(|e| panic!("write {}: {e}", expected_path.display()));
+        // Named on stderr so a bless run says what it changed, rather than passing quietly.
+        // Canonicalised because examples_dir() reaches out of the crate with `../..`.
+        let shown = expected_path
+            .canonicalize()
+            .unwrap_or_else(|_| expected_path.to_path_buf());
+        eprintln!("blessed {}", shown.display());
+        return;
+    }
+    let expected = fs::read_to_string(expected_path).unwrap_or_else(|_| {
+        panic!(
+            "no expected output at {}; run `mise run bless` if this file is new",
+            expected_path.display()
+        )
+    });
+    assert_eq!(
+        actual, expected,
+        "{what} does not match its golden; run `mise run bless` if the change is intended"
+    );
+}
+
 /// Generate `host_file` and assert every produced file matches `expected/<basename>`.
 fn assert_host_matches(host_file: &str) {
     let examples = examples_dir();
@@ -658,21 +734,13 @@ fn assert_host_matches(host_file: &str) {
     for f in files {
         let basename = f.path.file_name().expect("output has a file name");
         let expected_path = examples.join("expected").join(basename);
-        let expected = fs::read_to_string(&expected_path)
-            .unwrap_or_else(|_| panic!("no expected output at {}", expected_path.display()));
-        assert_eq!(
-            f.text,
-            expected,
-            "generated {} does not match golden",
-            f.path.display()
-        );
+        assert_or_bless(&expected_path, &f.text, &f.path.display().to_string());
     }
 }
 
 #[test]
 fn web_matches_golden() {
-    if !formatter_available() {
-        eprintln!("skipping web_matches_golden: no formatter (set KNIXL_FORMATTER)");
+    if !goldens_runnable("web_matches_golden") {
         return;
     }
     assert_host_matches("web.kdl");
@@ -680,8 +748,7 @@ fn web_matches_golden() {
 
 #[test]
 fn db_matches_golden() {
-    if !formatter_available() {
-        eprintln!("skipping db_matches_golden: no formatter (set KNIXL_FORMATTER)");
+    if !goldens_runnable("db_matches_golden") {
         return;
     }
     assert_host_matches("db.kdl");
@@ -689,8 +756,7 @@ fn db_matches_golden() {
 
 #[test]
 fn nas_matches_golden() {
-    if !formatter_available() {
-        eprintln!("skipping nas_matches_golden: no formatter (set KNIXL_FORMATTER)");
+    if !goldens_runnable("nas_matches_golden") {
         return;
     }
     assert_host_matches("nas.kdl");
@@ -698,8 +764,7 @@ fn nas_matches_golden() {
 
 #[test]
 fn vault_matches_golden() {
-    if !formatter_available() {
-        eprintln!("skipping vault_matches_golden: no formatter (set KNIXL_FORMATTER)");
+    if !goldens_runnable("vault_matches_golden") {
         return;
     }
     assert_host_matches("vault.kdl");
@@ -709,8 +774,7 @@ fn vault_matches_golden() {
 fn shared_matches_golden() {
     // Exercises let-hoisting through the full pipeline and the pinned nixfmt: the shared
     // security-headers block is bound once and referenced at both vhosts.
-    if !formatter_available() {
-        eprintln!("skipping shared_matches_golden: no formatter (set KNIXL_FORMATTER)");
+    if !goldens_runnable("shared_matches_golden") {
         return;
     }
     assert_host_matches("shared.kdl");
@@ -718,8 +782,7 @@ fn shared_matches_golden() {
 
 #[test]
 fn gateway_matches_golden() {
-    if !formatter_available() {
-        eprintln!("skipping gateway_matches_golden: no formatter (set KNIXL_FORMATTER)");
+    if !goldens_runnable("gateway_matches_golden") {
         return;
     }
     assert_host_matches("gateway.kdl");
@@ -727,8 +790,7 @@ fn gateway_matches_golden() {
 
 #[test]
 fn vmhost_matches_golden() {
-    if !formatter_available() {
-        eprintln!("skipping vmhost_matches_golden: no formatter (set KNIXL_FORMATTER)");
+    if !goldens_runnable("vmhost_matches_golden") {
         return;
     }
     assert_host_matches("vmhost.kdl");
@@ -736,8 +798,7 @@ fn vmhost_matches_golden() {
 
 #[test]
 fn workstation_matches_golden() {
-    if !formatter_available() {
-        eprintln!("skipping workstation_matches_golden: no formatter (set KNIXL_FORMATTER)");
+    if !goldens_runnable("workstation_matches_golden") {
         return;
     }
     assert_host_matches("workstation.kdl");
@@ -745,8 +806,7 @@ fn workstation_matches_golden() {
 
 #[test]
 fn generate_is_byte_identical_across_runs() {
-    if !formatter_available() {
-        eprintln!("skipping determinism golden: no formatter (set KNIXL_FORMATTER)");
+    if !goldens_runnable("determinism golden") {
         return;
     }
     let examples = examples_dir();
@@ -798,8 +858,7 @@ fn pinned_pins() -> std::collections::BTreeMap<String, Vec<knixl_lock::model::Pi
 
 #[test]
 fn pinned_matches_golden() {
-    if !formatter_available() {
-        eprintln!("skipping pinned_matches_golden: no formatter (set KNIXL_FORMATTER)");
+    if !goldens_runnable("pinned_matches_golden") {
         return;
     }
     let examples = examples_dir();
@@ -821,15 +880,16 @@ fn pinned_matches_golden() {
     .expect("generate");
 
     assert_eq!(files.len(), 1, "pinned host has no side-files");
-    let expected = fs::read_to_string(examples.join("expected/pinned.nix"))
-        .expect("no expected output at examples/expected/pinned.nix");
-    assert_eq!(files[0].text, expected, "pinned.nix does not match golden");
+    assert_or_bless(
+        &examples.join("expected/pinned.nix"),
+        &files[0].text,
+        "pinned.nix",
+    );
 }
 
 #[test]
 fn pinned_generate_is_byte_identical_across_runs() {
-    if !formatter_available() {
-        eprintln!("skipping pinned determinism golden: no formatter (set KNIXL_FORMATTER)");
+    if !goldens_runnable("pinned determinism golden") {
         return;
     }
     let examples = examples_dir();
@@ -870,8 +930,7 @@ fn pinned_generate_is_byte_identical_across_runs() {
 /// against the historical `src`/`version` rather than imported wholesale.
 #[test]
 fn pinned_override_matches_golden() {
-    if !formatter_available() {
-        eprintln!("skipping pinned_override_matches_golden: no formatter (set KNIXL_FORMATTER)");
+    if !goldens_runnable("pinned_override_matches_golden") {
         return;
     }
     let examples = examples_dir();
@@ -893,11 +952,10 @@ fn pinned_override_matches_golden() {
     .expect("generate");
 
     assert_eq!(files.len(), 1, "pinned-override host has no side-files");
-    let expected = fs::read_to_string(examples.join("expected/pinned-override.nix"))
-        .expect("no expected output at examples/expected/pinned-override.nix");
-    assert_eq!(
-        files[0].text, expected,
-        "pinned-override.nix does not match golden"
+    assert_or_bless(
+        &examples.join("expected/pinned-override.nix"),
+        &files[0].text,
+        "pinned-override.nix",
     );
 }
 
