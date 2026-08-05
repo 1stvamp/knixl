@@ -18,6 +18,20 @@ run = "cargo build --release"
 description = "Run all tests"
 run = "cargo test"
 
+[tasks.bless]
+description = "Rewrite the examples/expected/ goldens from current output (needs nixfmt)"
+run = """
+if [ -z "${KNIXL_FORMATTER:-}" ] && ! command -v nixfmt-rfc-style >/dev/null && ! command -v nixfmt >/dev/null; then
+  echo "bless needs nixfmt on PATH, or KNIXL_FORMATTER pointing at one" >&2
+  echo "a golden written through the identity formatter disagrees with every real run" >&2
+  exit 1
+fi
+# --nocapture so each rewritten path is named; the harness swallows test stderr otherwise.
+KNIXL_BLESS=1 cargo test -p knixl-pipeline --test golden -- --nocapture 2>&1 | grep -E '^blessed |^test result'
+echo
+echo "review the diff before committing: git diff examples/expected/"
+"""
+
 [tasks.lint]
 description = "Clippy across the workspace, warnings as errors"
 run = "cargo clippy --all-targets -- -D warnings"

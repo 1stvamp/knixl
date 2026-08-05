@@ -56,6 +56,11 @@ If a change alters generated output, update the relevant `examples/` fixtures
 in the same PR and explain why in the description. An unexplained golden diff
 will be treated as a regression, not a feature.
 
+`mise run bless` rewrites the fixtures from current output, then prints each file
+it changed so you can read the diff before committing. It needs a real nixfmt and
+refuses without one: a golden written through the identity formatter (`cat`)
+records the emitter's pre-format text and then disagrees with every real run.
+
 Determinism matters as much as correctness here: generation is deterministic
 to the byte (no `HashMap` iteration in emit paths, a defined attr sort order,
 stable list order from KDL source order), because the lockfile depends on it.
