@@ -197,3 +197,69 @@ fn real_options_json_loads_when_provided() {
         .unwrap_err();
     assert!(matches!(err, TypeMismatch::UnknownOption { .. }));
 }
+
+fn quoted_path(segs: &[&str], quoted: &[usize]) -> AttrPath {
+    AttrPath(
+        segs.iter()
+            .enumerate()
+            .map(|(i, s)| {
+                if quoted.contains(&i) {
+                    AttrKey::Quoted((*s).to_string())
+                } else {
+                    AttrKey::Ident((*s).to_string())
+                }
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn accepts_freeform_keys_under_a_freeform_option() {
+    let oracle = fixture();
+    // nix.settings is an open submodule: only some of its keys are declared options.
+    let features = quoted_path(&["nix", "settings", "experimental-features"], &[2]);
+    assert!(oracle
+        .check(
+            &features,
+            &NixExpr::List(vec![NixExpr::Str("flakes".into())])
+        )
+        .is_ok());
+    assert!(oracle
+        .check(
+            &ident_path(&["nixpkgs", "config", "allowUnfree"]),
+            &NixExpr::Bool(true)
+        )
+        .is_ok());
+    // A declared child of a freeform option keeps its own type check.
+    let err = oracle
+        .check(
+            &ident_path(&["nix", "settings", "cores"]),
+            &NixExpr::Str("x".into()),
+        )
+        .unwrap_err();
+    assert!(matches!(err, TypeMismatch::WrongType { .. }), "{err:?}");
+}
+
+#[test]
+fn accepts_paths_inside_an_attrs_of_module_option() {
+    let oracle = fixture();
+    let state_version = quoted_path(
+        &["home-manager", "users", "wes", "home", "stateVersion"],
+        &[2],
+    );
+    assert!(oracle
+        .check(&state_version, &NixExpr::Str("25.11".into()))
+        .is_ok());
+}
+
+#[test]
+fn a_path_under_a_scalar_option_is_still_unknown() {
+    let oracle = fixture();
+    let err = oracle
+        .check(
+            &ident_path(&["services", "nginx", "enable", "extra"]),
+            &NixExpr::Bool(true),
+        )
+        .unwrap_err();
+    assert!(matches!(err, TypeMismatch::UnknownOption { .. }), "{err:?}");
+}
