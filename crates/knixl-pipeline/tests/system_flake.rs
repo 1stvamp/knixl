@@ -724,3 +724,43 @@ fn sops_wiring_without_its_input_is_refused() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn an_image_target_imports_a_hand_written_module_after_its_base() {
+    let root = temp_root("image-import");
+    fs::write(
+        root.join("knixl.kdl"),
+        "installer \"usb\" system=\"x86_64-linux\" {\n    import \"installer/iso.nix\"\n}\n",
+    )
+    .unwrap();
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    assert!(
+        project.inputs.validation_errors.is_empty(),
+        "{:?}",
+        project.inputs.validation_errors
+    );
+    let module = &project.generated[&PathBuf::from("generated/installer/usb.nix")];
+    let base = module
+        .find("installation-cd-minimal.nix")
+        .expect("base import");
+    let own = module
+        .find("../../installer/iso.nix")
+        .expect("the import, relative to generated/installer/");
+    assert!(base < own, "{module}");
+
+    fs::write(
+        root.join("knixl.kdl"),
+        "guest-image \"llm\" {\n    import \"../outside.nix\"\n}\n",
+    )
+    .unwrap();
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    assert!(
+        project.inputs.validation_errors.iter().any(|e| e.contains(
+            "guest-image `llm`: import \"../outside.nix\": the path leaves the project root"
+        )),
+        "{:?}",
+        project.inputs.validation_errors
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}

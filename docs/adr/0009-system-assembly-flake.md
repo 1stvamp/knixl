@@ -5,7 +5,7 @@ Status: accepted
 Relates to: ADR 0001 (KDL is authoritative), ADR 0002 (emit source, not values), ADR 0005
 (package version pinning), ADR 0007 (per-host baseline nixpkgs rev).
 
-Superseded in part by: ADR 0014 (proposed, 2026-09-29): a `system {}` that declares flake
+Superseded in part by: ADR 0014 (accepted, 2026-09-29): a `system {}` that declares flake
 inputs replaces the "Pure and input-free" emission and the `fetchGit` nixpkgs pin with flake
 inputs pinned by the lock and `nixpkgs.lib.nixosSystem`.
 
