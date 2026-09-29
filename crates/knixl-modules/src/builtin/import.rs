@@ -1,6 +1,7 @@
-//! `import`: a hand-written NixOS module the host file imports, for what no node expresses.
-//! The path is relative to the host's KDL file; the pipeline rewrites it relative to the
-//! generated file and merges it into the same `imports` list as the host's side-files.
+//! `import`: a hand-written NixOS module a host or image target imports, for what no node
+//! expresses. The path is relative to the KDL file that declares it (a host's own file, or
+//! knixl.kdl for an image target); the pipeline rewrites it relative to the generated file and
+//! merges it into that file's `imports` list.
 use crate::{
     Field, ImportUnit, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, ValueTy,
 };
@@ -56,7 +57,7 @@ fn check_path(path: &str) -> Result<(), &'static str> {
         return Err("the path is empty");
     }
     if path.starts_with('/') {
-        return Err("the path must be relative to the host's KDL file");
+        return Err("the path must be relative to the KDL file declaring it");
     }
     if !path
         .chars()
@@ -69,13 +70,14 @@ fn check_path(path: &str) -> Result<(), &'static str> {
 
 fn schema() -> NodeSchema {
     NodeSchema {
-        summary: "Import a hand-written NixOS module into the host file.".into(),
+        summary: "Import a hand-written NixOS module into a host or image target.".into(),
         args: vec![Field {
             name: "path".into(),
             ty: ValueTy::Str,
             required: true,
-            doc: "Path to a .nix file or a directory with a default.nix, relative to the host's \
-                  KDL file. It must stay inside the project."
+            doc: "Path to a .nix file or a directory with a default.nix, relative to the KDL \
+                  file declaring it (a host's own file, or knixl.kdl for an image target). It \
+                  must stay inside the project."
                 .into(),
         }],
         props: vec![],

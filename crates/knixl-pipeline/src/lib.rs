@@ -386,6 +386,12 @@ pub fn generate_image_targets(
         }];
         let mut raw: Vec<RawNix> = Vec::new();
         let mut modules: BTreeSet<String> = BTreeSet::new();
+        // The emitter brackets a raw binary expression in list position, so the base import
+        // stays as written (#81).
+        let mut imports = vec![NixExpr::Raw(RawNix {
+            src: format!("modulesPath + \"/{}\"", target.kind.base_import()),
+            span: None,
+        })];
 
         let mut ctx = LowerCtx::new(
             Scope {
@@ -413,12 +419,22 @@ pub fn generate_image_targets(
                 modules.insert(r.module);
                 raw.push(r.raw);
             }
-            if !out.imports.is_empty() {
-                return Err(GenerateError::Validation(vec![format!(
-                    "{} `{}`: `import` is only supported on a host",
-                    target.kind.output_dir(),
-                    target.name
-                )]));
+            // An image target is declared in knixl.kdl at the project root, and its module is
+            // written to generated/<dir>/<name>.nix, two levels down.
+            for i in out.imports {
+                modules.insert(i.module);
+                let parts = project_relative(std::path::Path::new(""), &i.path).map_err(|why| {
+                    GenerateError::Validation(vec![format!(
+                        "{} `{}`: import \"{}\": {why}",
+                        target.kind.output_dir(),
+                        target.name,
+                        i.path
+                    )])
+                })?;
+                imports.push(NixExpr::Path(PathBuf::from(format!(
+                    "../../{}",
+                    parts.join("/")
+                ))));
             }
         }
 
@@ -463,12 +479,7 @@ pub fn generate_image_targets(
 
         let module = NixModule {
             header: image_target_header(),
-            // The emitter brackets a raw binary expression in list position, so this stays as
-            // written (#81).
-            imports: vec![NixExpr::Raw(RawNix {
-                src: format!("modulesPath + \"/{}\"", target.kind.base_import()),
-                span: None,
-            })],
+            imports,
             lets,
             body,
             raw,

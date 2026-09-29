@@ -92,7 +92,7 @@ host "db" {
 }
 ```
 
-The path is relative to the host's KDL file, so knixl rewrites it relative to `generated/hosts/<host>.nix` and adds it to the same `imports` list as the host's side-files (see `examples/hosts/db.kdl`). A raw-nix `imports = [ ... ]` would clash with that list once the host has a side-file, which is why this is a node. The path has to stay inside the project (the flake can't see anything outside it) and may only use the characters a bare Nix path literal allows. knixl doesn't hash the imported file and the oracle doesn't see the options it declares, same as raw-nix. `import` is host-only for now: inside a `guest` config or an image target it's refused.
+The path is relative to the host's KDL file, so knixl rewrites it relative to `generated/hosts/<host>.nix` and adds it to the same `imports` list as the host's side-files (see `examples/hosts/db.kdl`). A raw-nix `imports = [ ... ]` would clash with that list once the host has a side-file, which is why this is a node. The path has to stay inside the project (the flake can't see anything outside it) and may only use the characters a bare Nix path literal allows. knixl doesn't hash the imported file and the oracle doesn't see the options it declares, same as raw-nix. An `installer` or `guest-image` target in `knixl.kdl` takes `import` too, with the path relative to `knixl.kdl`, merged into the image module's `imports` after its base module (e.g. an installer module that reads `builtins.getEnv` in a `let`, which raw-nix can't express). Inside a `guest` config it's refused, since the path can't be re-rooted there.
 
 ## Module sources and precedence
 
