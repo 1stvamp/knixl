@@ -90,6 +90,7 @@ That is still most of the value. Do not over-invest in parsing every type descri
   - `WrongType` if the parsed `NixType` rejects the value,
   - `Ok` if the type is `Unknown` (punt) or accepts the value,
   - `Ok` if the path is not itself a leaf option but is a strict prefix of a real one: an intermediate attrset such as a dynamic-key submodule root (e.g. `services.restic.backups.<name>`), detected via `is_option_prefix`. The interior stays unchecked; a genuine typo has no known children and is still rejected.
+  - `Ok` if the path sits inside a known option whose type holds its own attributes: a freeform submodule such as `nix.settings` or `nixpkgs.config`, or an `attrsOf` a module type such as `home-manager.users`. Their keys aren't in the option set, so this is the same punt as a submodule interior. A declared child such as `nix.settings.cores` is still type-checked, and a path under a scalar option (`services.nginx.enable.x`) is still `UnknownOption`.
 - `NixType::parse_description(s)` is best-effort: `"boolean"` -> `Bool`, `"list of string"` -> `List(Str)`, `"null or (attribute set of package)"` -> `NullOr(AttrsOf(Package))`, `"one of ..."` -> `Enum`, anything else -> `Unknown(s)`.
 
 ## Secret references

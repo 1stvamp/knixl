@@ -98,6 +98,11 @@ impl Oracle {
             // children are known options, e.g. services.restic.backups.<name>); the interior
             // is left unchecked. A genuine typo has no known children and is still rejected.
             None if self.is_option_prefix(&key) => Ok(()),
+            // Inside a known option that takes arbitrary attributes (a freeform submodule
+            // such as nix.settings, nixpkgs.config, or an attrsOf a module type such as
+            // home-manager.users): its children are not in the option set, so punt like a
+            // submodule interior. Under a scalar option the path is still a typo.
+            None if self.has_open_ancestor(&key) => Ok(()),
             None => Err(TypeMismatch::UnknownOption { key }),
             Some(info) if info.read_only => Err(TypeMismatch::ReadOnly { key }),
             Some(info) => info
@@ -111,11 +116,38 @@ impl Oracle {
         }
     }
 
+    /// True if some strict ancestor of `key` is a known option whose type can hold attributes
+    /// of its own (anything but a scalar, list or enum), so `key` is inside that option's value.
+    fn has_open_ancestor(&self, key: &str) -> bool {
+        let mut end = 0;
+        while let Some(dot) = key[end..].find('.') {
+            end += dot;
+            if self
+                .options
+                .get(&key[..end])
+                .is_some_and(|info| holds_attrs(&info.ty))
+            {
+                return true;
+            }
+            end += 1;
+        }
+        false
+    }
+
     /// True if `key` is a strict prefix of some known option path (so `key` names an
     /// intermediate attribute set that contains real options).
     fn is_option_prefix(&self, key: &str) -> bool {
         let prefix = format!("{key}.");
         self.options.keys().any(|k| k.starts_with(&prefix))
+    }
+}
+
+fn holds_attrs(ty: &NixType) -> bool {
+    match ty {
+        NixType::AttrsOf(_) | NixType::Submodule | NixType::Unknown(_) => true,
+        NixType::NullOr(inner) => holds_attrs(inner),
+        NixType::OneOf(types) => types.iter().any(holds_attrs),
+        _ => false,
     }
 }
 
