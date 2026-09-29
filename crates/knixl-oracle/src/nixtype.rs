@@ -58,11 +58,14 @@ impl NixType {
                 other => inner.accepts(other),
             },
             NixType::OneOf(types) => {
-                if types.iter().any(|t| t.accepts(v).is_ok()) {
-                    Ok(())
-                } else {
-                    Err("one of several types".to_string())
+                let mut expected = Vec::new();
+                for t in types {
+                    match t.accepts(v) {
+                        Ok(()) => return Ok(()),
+                        Err(e) => expected.push(e),
+                    }
                 }
+                Err(expected.join(" or "))
             }
         }
     }
@@ -169,6 +172,15 @@ fn parse_type_desc(s: &str) -> Option<NixType> {
     if let Some(rest) = s.strip_prefix("attribute set of ") {
         return Some(NixType::AttrsOf(Box::new(NixType::parse_description(rest))));
     }
+    // `types.enum [ "x" ]` renders as `value "x" (singular enum)`, most often as one side of a
+    // union such as `value "auto" (singular enum) or (positive integer, meaning >0)`. Left
+    // unparsed it is Unknown, which makes the whole union accept anything.
+    if let Some(v) = s
+        .strip_prefix("value \"")
+        .and_then(|rest| rest.strip_suffix("\" (singular enum)"))
+    {
+        return Some(NixType::Enum(vec![v.to_string()]));
+    }
     if s.starts_with("one of ") {
         // Variants are the double-quoted tokens: `one of "a", "b"`.
         let variants: Vec<String> = s
@@ -232,6 +244,17 @@ mod tests {
         assert!(NixType::List(Box::new(NixType::Str))
             .accepts(&NixExpr::List(vec![NixExpr::Int(1)]))
             .is_err());
+    }
+
+    /// The real `virtualisation.diskSize` description: a string other than "auto" is refused.
+    #[test]
+    fn a_singular_enum_in_a_union_rejects_other_strings() {
+        let ty = NixType::parse_description(
+            "value \"auto\" (singular enum) or (positive integer, meaning >0)",
+        );
+        assert!(ty.accepts(&NixExpr::Str("auto".into())).is_ok());
+        assert!(ty.accepts(&NixExpr::Int(16384)).is_ok());
+        assert!(ty.accepts(&NixExpr::Str("16384".into())).is_err());
     }
 
     /// The real `environment.sessionVariables` description. Before unions were split, the

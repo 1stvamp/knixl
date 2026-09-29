@@ -6,5 +6,8 @@
   "nix.settings": { "type": "open submodule of attribute set of (Nix config atom (null, bool, int, float, str, path or package) or list of (Nix config atom (null, bool, int, float, str, path or package)))", "declarations": ["nixos/modules/config/nix.nix"] },
   "nix.settings.cores": { "type": "signed integer", "declarations": ["nixos/modules/config/nix.nix"] },
   "nixpkgs.config": { "type": "nixpkgs config", "declarations": ["nixos/modules/misc/nixpkgs.nix"] },
-  "home-manager.users": { "type": "attribute set of (Home Manager module)", "declarations": ["home-manager/nixos"] }
+  "home-manager.users": { "type": "attribute set of (Home Manager module)", "declarations": ["home-manager/nixos"] },
+  "virtualisation.vmVariant": { "type": "submodule", "declarations": ["nixos/modules/virtualisation/build-vm.nix"] },
+  "virtualisation.diskSize": { "type": "value \"auto\" (singular enum) or (positive integer, meaning >0)", "declarations": ["nixos/modules/virtualisation/qemu-vm.nix"] },
+  "specialisation.<name>.configuration": { "type": "submodule", "declarations": ["nixos/modules/system/activation/specialisation.nix"] }
 }

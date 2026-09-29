@@ -263,3 +263,46 @@ fn a_path_under_a_scalar_option_is_still_unknown() {
         .unwrap_err();
     assert!(matches!(err, TypeMismatch::UnknownOption { .. }), "{err:?}");
 }
+
+#[test]
+fn checks_a_vm_variant_path_against_the_host_option_set() {
+    let oracle = fixture();
+    let disk = ident_path(&["virtualisation", "vmVariant", "virtualisation", "diskSize"]);
+    assert!(oracle.check(&disk, &NixExpr::Int(16384)).is_ok());
+    let err = oracle
+        .check(&disk, &NixExpr::Str("16384".into()))
+        .unwrap_err();
+    assert!(matches!(err, TypeMismatch::WrongType { .. }), "{err:?}");
+    // The variant imports modules the host doesn't (qemu-vm.nix declares memorySize), so a
+    // path the host set doesn't know is left unchecked rather than refused.
+    let memory = ident_path(&[
+        "virtualisation",
+        "vmVariant",
+        "virtualisation",
+        "memorySize",
+    ]);
+    assert!(oracle.check(&memory, &NixExpr::Str("x".into())).is_ok());
+}
+
+#[test]
+fn checks_a_specialisation_path_against_the_host_option_set() {
+    let oracle = fixture();
+    let enable = quoted_path(
+        &[
+            "specialisation",
+            "gaming",
+            "configuration",
+            "services",
+            "nginx",
+            "enable",
+        ],
+        &[1],
+    );
+    assert!(oracle.check(&enable, &NixExpr::Bool(true)).is_ok());
+    assert!(matches!(
+        oracle
+            .check(&enable, &NixExpr::Str("yes".into()))
+            .unwrap_err(),
+        TypeMismatch::WrongType { .. }
+    ));
+}
