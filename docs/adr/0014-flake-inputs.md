@@ -141,9 +141,9 @@ them, emission is unchanged.
   supports it: a generated input-mode host pinned to `241313f4e8e5` evaluates
   `system.nixos.version` to `26.11.20260719.241313f` and `system.nixos.revision` to the full rev,
   which is what a flake-built system on that commit reports. If the toplevels
-  still differ, the gap gets written down here before this moves to accepted. The same test
-  should confirm that a `default-file` outside `generated/` is reachable from a flake rooted
-  there.
+  still differ, the gap gets written down here before this moves to accepted. A
+  `default-file` outside `generated/` is reachable: the flake is a git flake with
+  `?dir=generated`, so nix copies the whole repository and `../secrets/<host>.yaml` resolves.
 - Local module imports (a host `import "<path>"` node) are related but designed separately.
 - Still deferred: merging per-host input modules with the project set (ADR 0008's
   replace-not-merge rule stands), passing `specialArgs` or `inputs` to modules, inputs that

@@ -43,6 +43,9 @@ pub struct GeneratedFile {
     pub from: PathBuf,         // the KDL input it derived from
     pub modules: Vec<String>,  // modules that contributed (drives the lock entry)
     pub warnings: Vec<String>, // non-fatal lints: unclaimed nodes, value conflicts
+    /// sops-nix secret names the host references through `(secret)`, sorted; set on the host's
+    /// own file only, for the flake's sops wiring (ADR 0014).
+    pub secrets: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -240,6 +243,16 @@ fn generate_one(
         }
     }
 
+    let mut secrets = BTreeSet::new();
+    if secrets_backend == knixl_modules::SecretsBackend::SopsNix {
+        for a in files.values().flatten() {
+            // A guest's (secret) resolves against the guest's own config, not the host's.
+            if !is_guest_config_path(&a.path) {
+                collect_sops_secrets(&a.value, &mut secrets);
+            }
+        }
+    }
+
     // Every output file: any bucket that produced assignments or raw passthrough.
     let mut keys: BTreeSet<String> = files.keys().cloned().collect();
     keys.extend(raw_files.keys().cloned());
@@ -327,6 +340,11 @@ fn generate_one(
             from: host.path.clone(),
             modules: file_module_names,
             warnings,
+            secrets: if *key == host_name {
+                secrets.iter().cloned().collect()
+            } else {
+                Vec::new()
+            },
         });
     }
 
@@ -475,6 +493,7 @@ pub fn generate_image_targets(
             from: PathBuf::from("knixl.kdl"),
             modules: module_names,
             warnings,
+            secrets: Vec::new(),
         });
     }
     Ok(generated)
@@ -600,15 +619,56 @@ fn exact_path_key(path: &knixl_ir::AttrPath) -> String {
         .join(".")
 }
 
+/// The secret names in `(secret)` references under `expr`. A reference lowers to exactly
+/// `config.sops.secrets."<escaped name>".path` (see the template interpreter), so this reads
+/// that form back and undoes the escaping.
+fn collect_sops_secrets(expr: &NixExpr, out: &mut BTreeSet<String>) {
+    match expr {
+        NixExpr::Raw(r) => {
+            if let Some(name) = r
+                .src
+                .strip_prefix("config.sops.secrets.\"")
+                .and_then(|rest| rest.strip_suffix("\".path"))
+            {
+                out.insert(
+                    name.replace("\\${", "${")
+                        .replace("\\\"", "\"")
+                        .replace("\\\\", "\\"),
+                );
+            }
+        }
+        NixExpr::Select(e, _) => collect_sops_secrets(e, out),
+        NixExpr::List(items) => items.iter().for_each(|e| collect_sops_secrets(e, out)),
+        NixExpr::AttrSet(m) => m.values().for_each(|e| collect_sops_secrets(e, out)),
+        NixExpr::Apply(f, args) => {
+            collect_sops_secrets(f, out);
+            args.iter().for_each(|e| collect_sops_secrets(e, out));
+        }
+        NixExpr::Lambda { body, .. } => collect_sops_secrets(body, out),
+        NixExpr::Let { bindings, body } => {
+            bindings
+                .iter()
+                .for_each(|b| collect_sops_secrets(&b.value, out));
+            collect_sops_secrets(body, out);
+        }
+        _ => {}
+    }
+}
+
 /// Rewrite an `import` path, written relative to the host's KDL file, so it resolves from the
 /// host's generated file (`generated/hosts/<h>.nix`). Resolution is lexical so the result is a
 /// pure function of the KDL; a path that climbs out of the project root is refused because
 /// the flake cannot see it.
 fn import_from_generated(source: &std::path::Path, path: &str) -> Result<PathBuf, String> {
-    let mut parts: Vec<String> = source
-        .parent()
-        .into_iter()
-        .flat_map(|p| p.components())
+    let parts = project_relative(source.parent().unwrap_or(std::path::Path::new("")), path)?;
+    Ok(PathBuf::from(format!("../../{}", parts.join("/"))))
+}
+
+/// `path`, written relative to `base` (itself relative to the project root), as root-relative
+/// segments. Lexical only; refuses a path that leaves the root or names the root itself.
+pub(crate) fn project_relative(base: &std::path::Path, path: &str) -> Result<Vec<String>, String> {
+    let mut parts: Vec<String> = base
+        .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect();
     for seg in path.split('/') {
@@ -625,7 +685,7 @@ fn import_from_generated(source: &std::path::Path, path: &str) -> Result<PathBuf
     if parts.is_empty() {
         return Err("the path is the project root itself".into());
     }
-    Ok(PathBuf::from(format!("../../{}", parts.join("/"))))
+    Ok(parts)
 }
 
 fn bucket_key(bucket: &Bucket, host_name: &str) -> String {
