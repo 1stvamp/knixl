@@ -653,3 +653,74 @@ fn an_input_module_naming_an_undeclared_input_is_refused() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn sops_wiring_imports_sops_nix_and_declares_each_referenced_secret() {
+    let root = input_mode_root("sops");
+    let kdl = fs::read_to_string(root.join("knixl.kdl"))
+        .unwrap()
+        .replace(
+            "    input \"disko\"",
+            "    input \"sops-nix\" url=\"github:Mic92/sops-nix\" {\n        follows nixpkgs=\"nixpkgs\"\n    }\n    input \"disko\"",
+        );
+    fs::write(
+        root.join("knixl.kdl"),
+        format!("{kdl}secrets backend=\"sops-nix\" input=\"sops-nix\" {{\n    default-file \"secrets/type40.yaml\"\n    ssh-key-paths \"/etc/ssh/ssh_host_ed25519_key\"\n}}\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("hosts/type40.kdl"),
+        format!("host \"type40\" {{\n    system \"x86_64-linux\"\n    nixpkgs release=\"unstable\" rev=\"{NIXPKGS_REV}\"\n    tailscale {{\n        auth-key secret=\"tailscale-authkey\"\n    }}\n}}\n"),
+    )
+    .unwrap();
+    seed_lock(
+        &root,
+        vec![
+            disko_pin(),
+            knixl_lock::model::FlakeInputPin {
+                name: "sops-nix".into(),
+                url: "github:Mic92/sops-nix".into(),
+                rev: "f1406619a3884cd5c47992a70b8b35c9c0fcb4c9".into(),
+            },
+        ],
+    );
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    assert!(
+        project.inputs.validation_errors.is_empty(),
+        "{:?}",
+        project.inputs.validation_errors
+    );
+    let flake = &project.generated[&PathBuf::from("generated/flake.nix")];
+    assert!(
+        flake.contains("            inputs.\"sops-nix\".nixosModules.\"sops\"\n            ./hosts/type40.nix\n            { sops.defaultSopsFile = ../secrets/type40.yaml; sops.age.sshKeyPaths = [ \"/etc/ssh/ssh_host_ed25519_key\" ]; sops.secrets.\"tailscale-authkey\" = { }; }\n"),
+        "{flake}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn sops_wiring_without_its_input_is_refused() {
+    let root = input_mode_root("sops-no-input");
+    let kdl = fs::read_to_string(root.join("knixl.kdl")).unwrap();
+    fs::write(
+        root.join("knixl.kdl"),
+        format!("{kdl}secrets backend=\"sops-nix\" input=\"sops-nix\"\n"),
+    )
+    .unwrap();
+    seed_lock(&root, vec![disko_pin()]);
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    assert!(
+        project
+            .inputs
+            .validation_errors
+            .iter()
+            .any(|e| e.starts_with("secrets input=\"sops-nix\" is not a flake input")),
+        "{:?}",
+        project.inputs.validation_errors
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}

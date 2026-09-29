@@ -28,6 +28,16 @@ pub struct ModuleSource {
     pub path: String,
 }
 
+/// `secrets backend="sops-nix" input="<name>" { default-file ".."; ssh-key-paths ".." }`
+/// (ADR 0014): the flake imports sops-nix from `input` into every host and sets these, along
+/// with a `sops.secrets` entry per referenced secret. `default_file` is relative to knixl.kdl.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SopsWiring {
+    pub input: String,
+    pub default_file: Option<String>,
+    pub ssh_key_paths: Vec<String>,
+}
+
 /// Parsed contents of `knixl.kdl`.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct ProjectConfig {
@@ -35,6 +45,7 @@ pub struct ProjectConfig {
     pub oracle_modules: Vec<OracleModule>,
     pub system: Option<SystemConfig>,
     pub secrets_backend: knixl_modules::SecretsBackend,
+    pub sops: Option<SopsWiring>,
     pub module_sources: Vec<ModuleSource>,
     pub image_targets: Vec<ImageTarget>,
 }
@@ -204,6 +215,11 @@ pub fn parse_project(root: &Path) -> Result<ProjectConfig, ProjectError> {
         },
     };
 
+    let sops = match doc.nodes().iter().find(|n| n.name().value() == "secrets") {
+        Some(node) => sops_wiring(node, secrets_backend)?,
+        None => None,
+    };
+
     let module_sources = match doc.nodes().iter().find(|n| n.name().value() == "modules") {
         None => Vec::new(),
         Some(node) => module_sources_from_node(node)?,
@@ -234,9 +250,45 @@ pub fn parse_project(root: &Path) -> Result<ProjectConfig, ProjectError> {
         oracle_modules,
         system,
         secrets_backend,
+        sops,
         module_sources,
         image_targets,
     })
+}
+
+fn sops_wiring(
+    node: &KdlNode,
+    backend: knixl_modules::SecretsBackend,
+) -> Result<Option<SopsWiring>, ProjectError> {
+    let bad = |m: &str| ProjectError::InvalidInput(format!("secrets: {m}"));
+    let Some(input) = node.get("input").and_then(|v| v.as_string()) else {
+        return Ok(None);
+    };
+    if backend != knixl_modules::SecretsBackend::SopsNix {
+        return Err(bad("input= is only supported with backend=\"sops-nix\""));
+    }
+    let default_file = knixl_kdl::child_arg_str(node, "default-file");
+    if let Some(f) = &default_file {
+        if f.starts_with('/')
+            || !f
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '/'))
+        {
+            return Err(bad(
+                "default-file must be a relative path of letters, digits, `.`, `_`, `-`, `+` and `/`",
+            ));
+        }
+    }
+    let ssh_key_paths = children_named(node, "ssh-key-paths")
+        .flat_map(|n| n.entries().iter())
+        .filter(|e| e.name().is_none())
+        .filter_map(|e| e.value().as_string().map(str::to_string))
+        .collect();
+    Ok(Some(SopsWiring {
+        input: input.to_string(),
+        default_file,
+        ssh_key_paths,
+    }))
 }
 
 /// The effective module set for a host: its own `oracle-modules` block (replace) if
@@ -494,6 +546,38 @@ mod tests {
             let err = system_err(&body);
             assert!(err.contains(needle), "{body}: {err}");
         }
+    }
+
+    #[test]
+    fn secrets_input_reads_sops_wiring() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("knixl.kdl"),
+            "secrets backend=\"sops-nix\" input=\"sops-nix\" {\n    default-file \"secrets/type40.yaml\"\n    ssh-key-paths \"/etc/ssh/ssh_host_ed25519_key\"\n}\n",
+        )
+        .unwrap();
+        let sops = parse_project(dir.path()).unwrap().sops.unwrap();
+        assert_eq!(sops.input, "sops-nix");
+        assert_eq!(sops.default_file.as_deref(), Some("secrets/type40.yaml"));
+        assert_eq!(sops.ssh_key_paths, ["/etc/ssh/ssh_host_ed25519_key"]);
+    }
+
+    #[test]
+    fn secrets_without_input_has_no_wiring_and_agenix_input_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("knixl.kdl"),
+            "secrets backend=\"sops-nix\"\n",
+        )
+        .unwrap();
+        assert!(parse_project(dir.path()).unwrap().sops.is_none());
+        std::fs::write(
+            dir.path().join("knixl.kdl"),
+            "secrets backend=\"agenix\" input=\"agenix\"\n",
+        )
+        .unwrap();
+        let err = parse_project(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("only supported with backend"), "{err}");
     }
 
     #[test]

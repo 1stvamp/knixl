@@ -163,6 +163,8 @@ pub fn gather_with_lock(
     };
 
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
+    // Referenced sops secrets per host, for the flake's sops wiring (ADR 0014).
+    let mut host_secrets: BTreeMap<String, Vec<String>> = BTreeMap::new();
     // Shadowed stdlib modules are non-fatal: fold into the same warnings channel as the
     // generate-path lints, so shadowing is reported but never gates.
     let mut warnings: Vec<String> = module_notices.iter().map(|n| n.message()).collect();
@@ -179,6 +181,10 @@ pub fn gather_with_lock(
             let expected = files
                 .into_iter()
                 .map(|f| {
+                    if !f.secrets.is_empty() {
+                        let host = f.path.file_stem().unwrap_or_default().to_string_lossy();
+                        host_secrets.insert(host.into_owned(), f.secrets.clone());
+                    }
                     generated.insert(f.path.clone(), f.text.clone());
                     warnings.extend(
                         f.warnings
@@ -281,6 +287,16 @@ pub fn gather_with_lock(
         .iter()
         .flat_map(|s| s.inputs.iter().map(|i| i.name.as_str()))
         .collect();
+    // ADR 0014: sops-nix wiring names the input its module comes from, so it needs input mode.
+    if let Some(w) = &project.sops {
+        if !declared_inputs.contains(w.input.as_str()) {
+            validation_errors.push(format!(
+                "secrets input=\"{}\" is not a flake input declared in system {{}}",
+                w.input
+            ));
+        }
+    }
+
     let host_overrides = hosts
         .iter()
         .filter_map(|h| crate::project::parse_host_oracle_modules(&h.src));
@@ -316,6 +332,7 @@ pub fn gather_with_lock(
                     module_path: format!("./hosts/{name}.nix"),
                     system: None,
                     input_modules: Vec::new(),
+                    inline_modules: Vec::new(),
                 }),
                 _ => {
                     missing = true;
@@ -360,9 +377,30 @@ pub fn gather_with_lock(
         } else {
             let systems = host_systems(&hosts);
             let input_modules = host_input_modules(&hosts, &project.oracle_modules);
+            let sops = match &project.sops {
+                Some(w) => match sops_module(w) {
+                    Ok(m) => Some((w, m)),
+                    Err(e) => {
+                        validation_errors.push(e);
+                        None
+                    }
+                },
+                None => None,
+            };
             for h in &mut flake_hosts {
                 h.system = systems.get(&h.name).cloned();
                 h.input_modules = input_modules.get(&h.name).cloned().unwrap_or_default();
+                if let Some((w, settings)) = &sops {
+                    let import = format!("inputs.\"{}\".nixosModules.\"sops\"", esc(&w.input));
+                    if !h.input_modules.contains(&import) {
+                        h.input_modules.push(import);
+                    }
+                    let mut body = settings.clone();
+                    for name in host_secrets.get(&h.name).into_iter().flatten() {
+                        body.push(format!("sops.secrets.\"{}\" = {{ }};", esc(name)));
+                    }
+                    h.inline_modules.push(format!("{{ {} }}", body.join(" ")));
+                }
             }
             input_mode_flake(
                 system,
@@ -543,6 +581,33 @@ fn host_input_modules(
             Some((name, modules))
         })
         .collect()
+}
+
+/// The settings half of the sops-nix wiring, as Nix assignments (ADR 0014). `default-file` is
+/// written relative to knixl.kdl and rewritten relative to generated/flake.nix.
+fn sops_module(w: &crate::project::SopsWiring) -> Result<Vec<String>, String> {
+    let mut body = Vec::new();
+    if let Some(file) = &w.default_file {
+        let parts = crate::project_relative(Path::new(""), file)
+            .map_err(|why| format!("secrets default-file \"{file}\": {why}"))?;
+        body.push(format!("sops.defaultSopsFile = ../{};", parts.join("/")));
+    }
+    if !w.ssh_key_paths.is_empty() {
+        let paths: Vec<String> = w
+            .ssh_key_paths
+            .iter()
+            .map(|p| format!("\"{}\"", esc(p)))
+            .collect();
+        body.push(format!("sops.age.sshKeyPaths = [ {} ];", paths.join(" ")));
+    }
+    Ok(body)
+}
+
+/// Escape a value spliced into a Nix double-quoted string literal.
+fn esc(v: &str) -> String {
+    v.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace("${", "\\${")
 }
 
 /// Each host's declared `system` double, keyed by host name.
