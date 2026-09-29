@@ -5,6 +5,9 @@ Status: accepted
 Refines: ADR 0003 (validate against real NixOS options) and ADR 0007 (per-host baseline
 nixpkgs rev). Relates to: ADR 0005 (pinning).
 
+Refined by: ADR 0014 (proposed, 2026-09-29): an `oracle-modules` entry may name a declared
+flake input, so one declaration drives both validation and the host's imported modules.
+
 ## Context
 
 The oracle (ADR 0003) validates every emitted option path against the NixOS option set for

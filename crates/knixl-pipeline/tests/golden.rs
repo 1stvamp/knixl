@@ -269,6 +269,63 @@ fn db_pipeline_produces_two_files_with_mkif_backup() {
 }
 
 #[test]
+fn an_import_joins_the_side_files_in_the_host_imports() {
+    let files = generate_host("db.kdl");
+    let db = files
+        .iter()
+        .find(|f| f.path.file_name().unwrap() == "db.nix")
+        .expect("db.nix");
+    // Side-files first, then imports in source order, all in one list: a raw-nix `imports`
+    // beside knixl's own would be a duplicate attribute.
+    let side = db.text.find("./db-backup.nix").expect("side-file import");
+    let local = db
+        .text
+        .find("../../local/pg-tuning.nix")
+        .expect("the import, rewritten relative to generated/hosts/");
+    assert!(side < local, "{}", db.text);
+    assert_eq!(db.text.matches("imports").count(), 1, "{}", db.text);
+}
+
+#[test]
+fn an_import_alone_still_emits_the_host_imports() {
+    let files = generate_src(
+        "hosts/kvm.kdl",
+        "host \"kvm\" {\n    system \"x86_64-linux\"\n    import \"../modules/kvm-dst\"\n}",
+    )
+    .expect("generate");
+    assert_eq!(files.len(), 1);
+    assert!(
+        files[0].text.contains("../../modules/kvm-dst"),
+        "{}",
+        files[0].text
+    );
+}
+
+#[test]
+fn an_import_that_leaves_the_project_refuses() {
+    let errs = refusal(
+        "hosts/kvm.kdl",
+        "host \"kvm\" {\n    system \"x86_64-linux\"\n    import \"../../elsewhere.nix\"\n}",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("leaves the project root")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn an_import_that_would_splice_nix_refuses() {
+    let errs = refusal(
+        "hosts/kvm.kdl",
+        "host \"kvm\" {\n    system \"x86_64-linux\"\n    import \"./x.nix ]; evil = [\"\n}",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("may only contain")),
+        "{errs:?}"
+    );
+}
+
+#[test]
 fn lock_records_only_the_modules_that_contributed_to_each_file() {
     let files = generate_host("db.kdl");
     let db = files

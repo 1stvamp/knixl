@@ -10,6 +10,7 @@
 {
   imports = [
     ./db-backup.nix
+    ../../local/pg-tuning.nix
   ];
 
   nixpkgs.hostPlatform = "x86_64-linux";

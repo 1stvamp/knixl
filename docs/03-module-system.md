@@ -82,6 +82,18 @@ raw-nix {
 
 (see `examples/hosts/web.kdl`) passes that string through unmodified into the generated file. The content still hashes into the file, so it is covered by drift detection like everything else (ADR 0004); what is different is that the oracle does not look inside it. `raw-nix` is opaque to option-path validation, the trade-off for an escape hatch that can express anything Nix can.
 
+## Importing a hand-written module
+
+When what you need is a whole module rather than a snippet (e.g. a derivation plus the options that drive it), keep it as a `.nix` file in the project and `import` it from the host:
+
+```kdl
+host "db" {
+    import "../local/pg-tuning.nix"
+}
+```
+
+The path is relative to the host's KDL file, so knixl rewrites it relative to `generated/hosts/<host>.nix` and adds it to the same `imports` list as the host's side-files (see `examples/hosts/db.kdl`). A raw-nix `imports = [ ... ]` would clash with that list once the host has a side-file, which is why this is a node. The path has to stay inside the project (the flake can't see anything outside it) and may only use the characters a bare Nix path literal allows. knixl doesn't hash the imported file and the oracle doesn't see the options it declares, same as raw-nix. `import` is host-only for now: inside a `guest` config or an image target it's refused.
+
 ## Module sources and precedence
 
 Modules come from four layers, ordered by precedence (highest to lowest):

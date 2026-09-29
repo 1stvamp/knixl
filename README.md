@@ -116,7 +116,7 @@ knixl ships a curated set of modules (built-in Rust and declarative KDL alike), 
 - **os** : core host config, hostName, stateVersion, boot loader and kernel, timezone/locale, sysctl and kernel modules, nix.settings, systemPackages, session variables, and tmpfiles rules.
 - **nix-ld** : run prebuilt dynamically linked binaries (a pinned rustup toolchain, a GitHub release binary) with the library list declared per host.
 - **guest** : a NixOS system container whose config is a nested knixl module tree (`web-service` inside a guest just works, re-rooted under `containers.<name>.config`).
-- **host**, **postgres**, **backups**, **package**, **raw-nix**, **security-headers** : the rest of the built-ins.
+- **host**, **postgres**, **backups**, **package**, **raw-nix**, **import**, **security-headers** : the rest of the built-ins.
 
 Run `knixl doc <node>` for the typed reference of any of them.
 

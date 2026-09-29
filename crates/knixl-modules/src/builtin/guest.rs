@@ -111,6 +111,11 @@ impl Module for Guest {
                         "guest `{name}`: raw-nix inside a guest config cannot be re-rooted"
                     )));
                 }
+                if !out.imports.is_empty() {
+                    return Err(LowerError::Other(format!(
+                        "guest `{name}`: an import inside a guest config cannot be re-rooted"
+                    )));
+                }
                 for unit in out.units {
                     if !matches!(unit.bucket, Bucket::Default) {
                         return Err(LowerError::Other(format!(

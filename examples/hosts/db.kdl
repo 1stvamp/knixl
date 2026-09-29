@@ -12,4 +12,6 @@ host "db" {
         schedule "daily"
         when "config.services.postgresql.enable"   // emitted as lib.mkIf <raw cond>
     }
+
+    import "../local/pg-tuning.nix"   // hand-written module, imported beside the side-files
 }
