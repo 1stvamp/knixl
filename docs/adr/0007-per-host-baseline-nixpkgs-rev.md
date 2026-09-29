@@ -8,6 +8,9 @@ Refined by: ADR 0008 (2026-07-21): a host's baseline also carries its own out-of
 module pins when it declares an override, alongside the release/rev/options-hash this ADR
 added.
 
+Refined by: ADR 0014 (proposed, 2026-09-29): lifts the deferred raw nixpkgs pin, accepting
+`nixpkgs release="<rel>" rev="<full rev>"` to pin a baseline to an exact commit.
+
 ## Context
 
 knixl validates every emitted option path against a NixOS option set built from one
