@@ -596,3 +596,60 @@ fn a_host_rev_pin_differing_from_the_lock_is_unresolved() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn input_modules_are_imported_by_hosts_only() {
+    let root = input_mode_root("input-modules");
+    let kdl = fs::read_to_string(root.join("knixl.kdl")).unwrap();
+    fs::write(
+        root.join("knixl.kdl"),
+        format!("{kdl}oracle-modules {{\n    module \"disko\" input=\"disko\" attr=\"disko\"\n}}\ninstaller \"usb\" system=\"x86_64-linux\" {{\n    os {{\n        state-version \"25.11\"\n    }}\n}}\n"),
+    )
+    .unwrap();
+    seed_lock(&root, vec![disko_pin()]);
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    assert!(
+        project.inputs.validation_errors.is_empty(),
+        "{:?}",
+        project.inputs.validation_errors
+    );
+    let flake = &project.generated[&PathBuf::from("generated/flake.nix")];
+    assert!(
+        flake.contains("modules = [\n            inputs.\"disko\".nixosModules.\"disko\"\n            ./hosts/type40.nix\n"),
+        "{flake}"
+    );
+    assert!(
+        flake.contains("modules = [\n          ./installer/usb.nix\n"),
+        "the installer does not import input modules: {flake}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_input_module_naming_an_undeclared_input_is_refused() {
+    let root = input_mode_root("input-module-undeclared");
+    let kdl = fs::read_to_string(root.join("knixl.kdl")).unwrap();
+    fs::write(
+        root.join("knixl.kdl"),
+        format!("{kdl}oracle-modules {{\n    module \"sops\" input=\"sops-nix\" attr=\"sops\"\n    module \"np\" input=\"nixpkgs\"\n    module \"both\" input=\"disko\" flake=\"github:x/y\"\n}}\n"),
+    )
+    .unwrap();
+    seed_lock(&root, vec![disko_pin()]);
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    let errs = &project.inputs.validation_errors;
+    for needle in [
+        "oracle module \"sops\" names input `sops-nix`, which is not declared",
+        "oracle module \"np\" names input `nixpkgs`",
+        "oracle module \"both\" declares both flake= and input=",
+    ] {
+        assert!(
+            errs.iter().any(|e| e.starts_with(needle)),
+            "{needle}: {errs:?}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}

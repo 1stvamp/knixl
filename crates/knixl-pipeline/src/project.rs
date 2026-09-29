@@ -8,12 +8,15 @@ use kdl::{KdlDocument, KdlNode};
 use knixl_kdl::children_named;
 
 /// One oracle module reference: a flake to pull a NixOS module from, and which attr of
-/// it to use (defaults to `"default"` when the KDL omits `attr=`).
+/// it to use (defaults to `"default"` when the KDL omits `attr=`). With `input` set (ADR 0014)
+/// the module comes from that declared flake input, `flake` is empty, and the generated flake
+/// imports it as well as the oracle validating against it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct OracleModule {
     pub name: String,
     pub flake: String,
     pub attr: String,
+    pub input: Option<String>,
 }
 
 /// A declared external declarative-module source (issue #13): a flake ref plus the directory
@@ -272,6 +275,10 @@ fn oracle_modules_from_node(node: &KdlNode) -> Vec<OracleModule> {
                 .and_then(|v| v.as_string())
                 .unwrap_or("default")
                 .to_string(),
+            input: m
+                .get("input")
+                .and_then(|v| v.as_string())
+                .map(str::to_string),
         })
         .collect()
 }
@@ -402,11 +409,13 @@ mod tests {
             name: "disko".into(),
             flake: "a".into(),
             attr: "default".into(),
+            input: None,
         }];
         let host = vec![OracleModule {
             name: "sops-nix".into(),
             flake: "b".into(),
             attr: "default".into(),
+            input: None,
         }];
         // host present => host wins (replace)
         assert_eq!(effective_modules(&project, Some(&host)), host.as_slice());

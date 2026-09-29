@@ -275,6 +275,33 @@ pub fn gather_with_lock(
         }
     }
 
+    // ADR 0014: an oracle module may come from a declared flake input instead of a flake ref.
+    let declared_inputs: BTreeSet<&str> = project
+        .system
+        .iter()
+        .flat_map(|s| s.inputs.iter().map(|i| i.name.as_str()))
+        .collect();
+    let host_overrides = hosts
+        .iter()
+        .filter_map(|h| crate::project::parse_host_oracle_modules(&h.src));
+    for m in project
+        .oracle_modules
+        .iter()
+        .chain(host_overrides.collect::<Vec<_>>().iter().flatten())
+    {
+        let Some(input) = &m.input else { continue };
+        let problem = if !m.flake.is_empty() {
+            "declares both flake= and input=".to_string()
+        } else if input == "nixpkgs" {
+            "names input `nixpkgs`, whose modules are already part of every system".to_string()
+        } else if !declared_inputs.contains(input.as_str()) {
+            format!("names input `{input}`, which is not declared in system {{}}")
+        } else {
+            continue;
+        };
+        validation_errors.push(format!("oracle module \"{}\" {problem}", m.name));
+    }
+
     // Opt-in system-assembly flake (ADR 0009): every host needs a resolved baseline rev to
     // pin nixpkgs, since a partial flake would lie about the fleet.
     let mut flake_lock_problems = Vec::new();
@@ -288,6 +315,7 @@ pub fn gather_with_lock(
                     baseline_rev: b.nixpkgs_rev.clone(),
                     module_path: format!("./hosts/{name}.nix"),
                     system: None,
+                    input_modules: Vec::new(),
                 }),
                 _ => {
                     missing = true;
@@ -331,8 +359,10 @@ pub fn gather_with_lock(
             })
         } else {
             let systems = host_systems(&hosts);
+            let input_modules = host_input_modules(&hosts, &project.oracle_modules);
             for h in &mut flake_hosts {
                 h.system = systems.get(&h.name).cloned();
+                h.input_modules = input_modules.get(&h.name).cloned().unwrap_or_default();
             }
             input_mode_flake(
                 system,
@@ -486,6 +516,33 @@ fn input_mode_flake(
         system.formatter.as_deref(),
     );
     Some((raw, pins))
+}
+
+/// The input-backed modules each host imports (ADR 0014): its own `oracle-modules` override if
+/// it has one (replace, as ADR 0008), else the project default, in declared order.
+fn host_input_modules(
+    hosts: &[HostSource],
+    project: &[crate::project::OracleModule],
+) -> BTreeMap<String, Vec<String>> {
+    hosts
+        .iter()
+        .filter_map(|h| {
+            let name = host_names(std::slice::from_ref(h)).pop()?;
+            let own = crate::project::parse_host_oracle_modules(&h.src);
+            let modules = crate::project::effective_modules(project, own.as_deref())
+                .iter()
+                .filter_map(|m| {
+                    let input = m.input.as_ref()?;
+                    Some(format!(
+                        "inputs.\"{}\".nixosModules.\"{}\"",
+                        input.replace('\\', "\\\\").replace('"', "\\\""),
+                        m.attr.replace('\\', "\\\\").replace('"', "\\\"")
+                    ))
+                })
+                .collect();
+            Some((name, modules))
+        })
+        .collect()
 }
 
 /// Each host's declared `system` double, keyed by host name.
