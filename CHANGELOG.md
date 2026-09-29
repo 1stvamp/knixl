@@ -8,6 +8,66 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-29
+
+knixl can now generate the whole system flake for a system that uses other
+flakes' NixOS modules (ADR 0014), and hosts and image targets can import
+hand-written modules.
+
+Nothing here changes the generated output of an existing project: a `system {}`
+without `input` nodes emits the same flake byte for byte. Anyone using the crates
+directly should read the last `Changed` entry.
+
+### Added
+- Flake inputs in `system {}`: `input "disko" url="github:nix-community/disko"
+  [rev="<commit>"] [flake=#false] { follows nixpkgs="nixpkgs" }` (#96, ADR 0014).
+  With any input declared, `generated/flake.nix` takes those inputs with each rev
+  written into its url, and builds hosts and images with
+  `nixpkgs.lib.nixosSystem`. An `input "nixpkgs"` is required and replaces
+  `nixpkgs-url`; its rev is the hosts' shared baseline, so hosts on different
+  baselines are refused in this mode. `knixl upgrade` pins every other input as a
+  `flake-input` line in `knixl.lock.kdl`, recording a declared `rev=` as written
+  and resolving the rest.
+- `knixl check` reads the nix-owned `generated/flake.lock` in input mode and exits
+  5 when it is missing or pins an input at a different rev than
+  `knixl.lock.kdl` (#96). Run `nix flake lock` in `generated/` and commit it.
+- `nixpkgs release="unstable" rev="<commit>"` on a host pins its baseline to an
+  exact commit, e.g. the one a running system was built from, instead of the
+  release branch tip (#96, ADR 0014).
+- `formatter "<attr>"` in `system {}` adds a `formatter.<system>` output for each
+  host system, so `nix fmt` works (#96).
+- `module "disko" input="disko" attr="disko"` in `oracle-modules` takes a module
+  from a declared input: the oracle validates against it and each host's
+  `nixosSystem` imports `inputs."disko".nixosModules."disko"` (#97, ADR 0014).
+  Hosts only, never installer or guest-image targets.
+- `secrets backend="sops-nix" input="sops-nix" { default-file "..";
+  ssh-key-paths ".." }` wires sops-nix into every host of an input-mode flake:
+  the sops module, `sops.defaultSopsFile`, `sops.age.sshKeyPaths`, and a
+  `sops.secrets."<name>" = { }` for each `(secret)` the host references (#98).
+- `import "../modules/foo.nix"` on a host imports a hand-written NixOS module,
+  merged into the same `imports` list as the host's side-files, which a raw-nix
+  `imports = [ ... ]` would clash with (#95). The path is relative to the host's
+  KDL file and has to stay inside the project.
+- `import` also works in `installer` and `guest-image` targets, relative to
+  `knixl.kdl`, so an image module that raw-nix can't express (a `let` reading
+  `builtins.getEnv`, say) carries over unchanged (#102).
+
+### Changed
+- Library API, for anyone using the crates directly: `LowerOutput` gains an
+  `imports` field, `Lock` a `flake_inputs` field, `OracleModule` an `input` field,
+  `SystemConfig` `inputs` and `formatter`, `ProjectConfig` `sops`,
+  `GeneratedFile` `secrets`, `FlakeHost` `system`, `input_modules` and
+  `inline_modules`, and `gather::Project` `flake_lock_problems`, so constructing
+  any of them by literal no longer compiles.
+
+### Fixed
+- The oracle rejected real options inside an option that takes arbitrary keys,
+  e.g. `nix.settings.experimental-features`, `nixpkgs.config.allowUnfree`, and
+  anything under `home-manager.users.<name>` once home-manager is in
+  `oracle-modules` (#100). Those paths are now let through unchecked, like a
+  submodule's interior; a declared child such as `nix.settings.cores` is still
+  type-checked.
+
 ## [1.4.0] - 2026-08-04
 
 A breaking change, released as a minor deliberately: KDL that knixl cannot fully
@@ -176,7 +236,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/1stvamp/knixl/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/1stvamp/knixl/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/1stvamp/knixl/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/1stvamp/knixl/compare/v1.2.0...v1.2.1
