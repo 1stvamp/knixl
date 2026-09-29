@@ -8,6 +8,9 @@ pub struct FlakeHost {
     pub module_path: String,
     /// The host's declared `system` double, passed to `nixosSystem` in input mode.
     pub system: Option<String>,
+    /// Input-mode module expressions listed ahead of the host module, e.g.
+    /// `inputs."disko".nixosModules."disko"` (ADR 0014).
+    pub input_modules: Vec<String>,
 }
 
 /// An image target (ADR 0012, 0013): an installer ISO or an lxc image. `system` is the platform
@@ -209,8 +212,11 @@ pub fn render_input_flake(
     let mut inst: Vec<&FlakeImage> = images.iter().collect();
     inst.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let modules = |s: &mut String, indent: &str, path: &str| {
+    let modules = |s: &mut String, indent: &str, extra: &[String], path: &str| {
         s.push_str(&format!("{indent}modules = [\n"));
+        for m in extra {
+            s.push_str(&format!("{indent}  {m}\n"));
+        }
         s.push_str(&format!("{indent}  {path}\n"));
         s.push_str(&format!(
             "{indent}  {{ system.stateVersion = \"{}\"; }}\n",
@@ -250,7 +256,7 @@ pub fn render_input_flake(
         if i.kind == crate::project::ImageKind::Installer {
             s.push_str(&format!("        system = \"{}\";\n", esc(&i.system)));
         }
-        modules(&mut s, "        ", &i.module_path);
+        modules(&mut s, "        ", &[], &i.module_path);
         s.push_str("      };\n");
     }
     s.push_str("    in\n");
@@ -264,7 +270,7 @@ pub fn render_input_flake(
         if let Some(system) = &h.system {
             s.push_str(&format!("          system = \"{}\";\n", esc(system)));
         }
-        modules(&mut s, "          ", &h.module_path);
+        modules(&mut s, "          ", &h.input_modules, &h.module_path);
         s.push_str("        };\n");
     }
     for i in &inst {
@@ -346,12 +352,14 @@ mod tests {
                 baseline_rev: "rev-web".into(),
                 module_path: "./hosts/web.nix".into(),
                 system: Some("x86_64-linux".into()),
+                input_modules: vec![],
             },
             FlakeHost {
                 name: "db".into(),
                 baseline_rev: "rev-db".into(),
                 module_path: "./hosts/db.nix".into(),
                 system: Some("aarch64-linux".into()),
+                input_modules: vec![],
             },
         ]
     }
@@ -406,6 +414,7 @@ mod tests {
             baseline_rev: "rev".into(),
             module_path: "./hosts/web.nix".into(),
             system: None,
+            input_modules: vec![],
         }];
         // A url with a quote must not break out of its Nix string literal.
         let out = render_system_flake(&hs, &[], "25.05", "https://x/\"evil");
@@ -551,6 +560,24 @@ mod tests {
         assert_eq!(
             render_input_flake(&reversed, &hosts(), &[], "25.11", None),
             out
+        );
+    }
+
+    #[test]
+    fn input_flake_lists_input_modules_ahead_of_the_host_module() {
+        let mut hs = hosts();
+        hs[0].input_modules = vec![
+            "inputs.\"disko\".nixosModules.\"disko\"".into(),
+            "inputs.\"sops-nix\".nixosModules.\"sops\"".into(),
+        ];
+        let out = render_input_flake(&inputs(), &hs, &[], "25.11", None);
+        assert!(
+            out.contains("modules = [\n            inputs.\"disko\".nixosModules.\"disko\"\n            inputs.\"sops-nix\".nixosModules.\"sops\"\n            ./hosts/web.nix\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("modules = [\n            ./hosts/db.nix\n"),
+            "{out}"
         );
     }
 

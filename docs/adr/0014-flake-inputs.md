@@ -90,7 +90,8 @@ them, emission is unchanged.
 - **An oracle module may name an input**: `module "disko" input="disko" attr="disko"` in an
   `oracle-modules` block names a declared input in place of `flake=`. One declaration then drives
   both oracle validation (resolved from the input's pin, so the `oracle-module` lock line records
-  the same url and rev as the `flake-input` line, and the options cache key is unchanged) and
+  the input's rev, with its url in the `https://github.com/<owner>/<repo>` form the options
+  build fetches, and the options cache key is unchanged) and
   `modules = [ inputs.disko.nixosModules.disko ]` in the generated flake. `attr` defaults to
   `"default"`, as it does today. Naming an undeclared input is an error. Input modules apply to
   hosts only, never to installer or guest-image targets. A host's own `oracle-modules` block

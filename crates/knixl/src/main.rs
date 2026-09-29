@@ -112,12 +112,32 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             BTreeMap::new()
         };
 
+    // ADR 0014: flake inputs resolve on `upgrade` only; `install` never needs them, and an
+    // unresolved input already refuses with a message pointing at `upgrade`.
+    let pending_flake_inputs: Option<Vec<FlakeInputPin>> = if matches!(cli.cmd, Cmd::Upgrade { .. })
+    {
+        match resolve_pending_flake_inputs(ctx) {
+            Ok(p) => p,
+            Err(code) => return code,
+        }
+    } else {
+        None
+    };
+
+    // Input-backed oracle modules (ADR 0014) take their pin from the flake inputs, pending first.
+    let input_pins = flake_input_module_pins(
+        &ctx.root,
+        pending_flake_inputs
+            .as_deref()
+            .unwrap_or(&ctx.lock.flake_inputs),
+    );
+
     // #35 phase 3: the project's declared `oracle-modules` (knixl.kdl) resolve the same way,
     // alongside the baseline pre-pass above (in memory only, never written here; see
     // `resolve_pending_project_modules`).
     let pending_modules: Option<Vec<OracleModulePin>> =
         if matches!(cli.cmd, Cmd::Upgrade { .. } | Cmd::Install { .. }) {
-            match resolve_pending_project_modules(ctx) {
+            match resolve_pending_project_modules(ctx, &input_pins) {
                 Ok(p) => p,
                 Err(code) => return code,
             }
@@ -130,7 +150,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
     // with no declared `nixpkgs release=` has nowhere in the lock to carry its pins.
     let pending_host_modules: BTreeMap<String, Vec<OracleModulePin>> =
         if matches!(cli.cmd, Cmd::Upgrade { .. } | Cmd::Install { .. }) {
-            match resolve_pending_host_modules(ctx) {
+            match resolve_pending_host_modules(ctx, &input_pins) {
                 Ok(p) => p,
                 Err(code) => return code,
             }
@@ -150,18 +170,6 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
         } else {
             None
         };
-
-    // ADR 0014: flake inputs resolve on `upgrade` only; `install` never needs them, and an
-    // unresolved input already refuses with a message pointing at `upgrade`.
-    let pending_flake_inputs: Option<Vec<FlakeInputPin>> = if matches!(cli.cmd, Cmd::Upgrade { .. })
-    {
-        match resolve_pending_flake_inputs(ctx) {
-            Ok(p) => p,
-            Err(code) => return code,
-        }
-    } else {
-        None
-    };
 
     // Plan off a lock patched with `pending` merged in, so the "not resolved: run knixl
     // upgrade" validation error does not block the very commands that would resolve it, and
@@ -1226,7 +1234,32 @@ fn resolve_pending_flake_inputs(ctx: &Ctx) -> Result<Option<Vec<FlakeInputPin>>,
 /// already printed, so the caller only needs to return the code.
 fn resolve_oracle_module(
     m: &knixl_pipeline::project::OracleModule,
+    input_pins: &InputPins,
 ) -> Result<OracleModulePin, Code> {
+    if let Some(input) = &m.input {
+        return match input_pins.get(input) {
+            Some(Some((url, rev))) => Ok(OracleModulePin {
+                name: m.name.clone(),
+                url: url.clone(),
+                rev: rev.clone(),
+                attr: m.attr.clone(),
+            }),
+            Some(None) => {
+                eprintln!(
+                    "knixl: oracle module \"{}\": input \"{input}\" needs a github: url for the oracle to build its options",
+                    m.name
+                );
+                Err(Code::Validation)
+            }
+            None => {
+                eprintln!(
+                    "knixl: oracle module \"{}\": flake input \"{input}\" is not resolved: run knixl upgrade",
+                    m.name
+                );
+                Err(Code::Validation)
+            }
+        };
+    }
     knixl_nix::module::ModuleResolver::resolve()
         .lookup(&m.flake)
         .map(|r| OracleModulePin {
@@ -1249,8 +1282,33 @@ fn resolve_oracle_module(
 /// `resolve_oracle_module`).
 fn resolve_oracle_modules(
     modules: &[knixl_pipeline::project::OracleModule],
+    input_pins: &InputPins,
 ) -> Result<Vec<OracleModulePin>, Code> {
-    modules.iter().map(resolve_oracle_module).collect()
+    modules
+        .iter()
+        .map(|m| resolve_oracle_module(m, input_pins))
+        .collect()
+}
+
+/// Each pinned flake input's oracle source, keyed by input name: the `https://github.com/..`
+/// url the options build fetches with, and the pinned rev. `None` for a non-`github:` input,
+/// which the options build cannot fetch yet.
+type InputPins = BTreeMap<String, Option<(String, String)>>;
+
+fn flake_input_module_pins(root: &std::path::Path, pins: &[FlakeInputPin]) -> InputPins {
+    let declared = knixl_pipeline::project::parse_project(root)
+        .unwrap_or_default()
+        .system
+        .map(|s| s.inputs)
+        .unwrap_or_default();
+    pins.iter()
+        .filter(|p| declared.iter().any(|d| d.name == p.name && d.url == p.url))
+        .map(|p| {
+            let source =
+                knixl_nix::module::url_from_flake_ref(&p.url).map(|url| (url, p.rev.clone()));
+            (p.name.clone(), source)
+        })
+        .collect()
 }
 
 /// Whether `existing` (the lock's currently recorded pins) already matches `declared` (a
@@ -1262,13 +1320,23 @@ fn resolve_oracle_modules(
 fn oracle_modules_up_to_date(
     existing: &[OracleModulePin],
     declared: &[knixl_pipeline::project::OracleModule],
+    input_pins: &InputPins,
 ) -> bool {
     existing.len() == declared.len()
         && existing.iter().zip(declared.iter()).all(|(pin, m)| {
             pin.name == m.name
                 && pin.attr == m.attr
-                && knixl_nix::module::url_from_flake_ref(&m.flake).as_deref()
-                    == Some(pin.url.as_str())
+                && match &m.input {
+                    // An input-backed module follows its input, so it moves when the input does.
+                    Some(input) => {
+                        input_pins.get(input).cloned().flatten()
+                            == Some((pin.url.clone(), pin.rev.clone()))
+                    }
+                    None => {
+                        knixl_nix::module::url_from_flake_ref(&m.flake).as_deref()
+                            == Some(pin.url.as_str())
+                    }
+                }
         })
 }
 
@@ -1286,15 +1354,25 @@ fn oracle_modules_up_to_date(
 /// project-config parser itself is not yet wired into `gather`'s validation (that is phase 5 of
 /// #35), so there is no other path today that would report a genuinely malformed `knixl.kdl` to
 /// the user.
-fn resolve_pending_project_modules(ctx: &Ctx) -> Result<Option<Vec<OracleModulePin>>, Code> {
+fn resolve_pending_project_modules(
+    ctx: &Ctx,
+    input_pins: &InputPins,
+) -> Result<Option<Vec<OracleModulePin>>, Code> {
     let project = knixl_pipeline::project::parse_project(&ctx.root).unwrap_or_default();
     if project.oracle_modules.is_empty() {
         return Ok((!ctx.lock.oracle.modules.is_empty()).then(Vec::new));
     }
-    if oracle_modules_up_to_date(&ctx.lock.oracle.modules, &project.oracle_modules) {
+    if oracle_modules_up_to_date(
+        &ctx.lock.oracle.modules,
+        &project.oracle_modules,
+        input_pins,
+    ) {
         return Ok(None);
     }
-    Ok(Some(resolve_oracle_modules(&project.oracle_modules)?))
+    Ok(Some(resolve_oracle_modules(
+        &project.oracle_modules,
+        input_pins,
+    )?))
 }
 
 /// Resolve every host's own declared `oracle-modules` override IN MEMORY ONLY (mirrors
@@ -1308,7 +1386,10 @@ fn resolve_pending_project_modules(ctx: &Ctx) -> Result<Option<Vec<OracleModuleP
 /// `oracle-modules` block at all resolves to a present, empty entry when the lock still holds
 /// a stale override for it (GC on removal, mirroring `resolve_pending_project_modules`'s
 /// finding-1 fix), else is simply absent from the returned map.
-fn resolve_pending_host_modules(ctx: &Ctx) -> Result<BTreeMap<String, Vec<OracleModulePin>>, Code> {
+fn resolve_pending_host_modules(
+    ctx: &Ctx,
+    input_pins: &InputPins,
+) -> Result<BTreeMap<String, Vec<OracleModulePin>>, Code> {
     use knixl_pipeline::install::list_hosts;
     let hosts = list_hosts(&ctx.root).unwrap_or_default();
     let mut pending = BTreeMap::new();
@@ -1336,10 +1417,13 @@ fn resolve_pending_host_modules(ctx: &Ctx) -> Result<BTreeMap<String, Vec<Oracle
                     );
                     return Err(Code::Validation);
                 }
-                if oracle_modules_up_to_date(&existing, &declared) {
+                if oracle_modules_up_to_date(&existing, &declared, input_pins) {
                     continue;
                 }
-                pending.insert(h.name.clone(), resolve_oracle_modules(&declared)?);
+                pending.insert(
+                    h.name.clone(),
+                    resolve_oracle_modules(&declared, input_pins)?,
+                );
             }
         }
     }
