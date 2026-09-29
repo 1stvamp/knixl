@@ -14,6 +14,7 @@ pub struct Lock {
     pub formatter: FormatterPin,
     pub oracle: OraclePin,
     pub module_sources: Vec<ModuleSourcePin>,
+    pub flake_inputs: Vec<FlakeInputPin>,
     pub inputs: BTreeMap<PathBuf, Hash>,
     pub modules: BTreeMap<String, Version>,
     pub outputs: Vec<OutputEntry>,
@@ -51,6 +52,15 @@ pub struct OracleModulePin {
     pub url: String,
     pub rev: String,
     pub attr: String,
+}
+
+/// A pin for a system flake input other than nixpkgs (ADR 0014): `url` is the flake ref as
+/// declared, `rev` the full commit the generated flake writes into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlakeInputPin {
+    pub name: String,
+    pub url: String,
+    pub rev: String,
 }
 
 /// A pin for a fetched declarative module source (issue #13): the resolved source and the
@@ -111,6 +121,7 @@ impl Lock {
         let mut formatter = None;
         let mut oracle = None;
         let mut module_sources = Vec::new();
+        let mut flake_inputs = Vec::new();
         let mut inputs = BTreeMap::new();
         let mut modules = BTreeMap::new();
         let mut outputs = Vec::new();
@@ -140,6 +151,13 @@ impl Lock {
                         rev: prop_str(node, "rev")?,
                         path: prop_str_opt(node, "path"),
                         hash: prop_str(node, "hash")?,
+                    });
+                }
+                "flake-input" => {
+                    flake_inputs.push(FlakeInputPin {
+                        name: arg_str(node, 0)?,
+                        url: prop_str(node, "url")?,
+                        rev: prop_str(node, "rev")?,
                     });
                 }
                 "input" => {
@@ -207,6 +225,7 @@ impl Lock {
                 .ok_or_else(|| LockError::Malformed("missing `formatter`".into()))?,
             oracle: oracle.ok_or_else(|| LockError::Malformed("missing `oracle`".into()))?,
             module_sources,
+            flake_inputs,
             inputs,
             modules,
             outputs,
@@ -245,6 +264,20 @@ impl Lock {
                     esc(&m.rev),
                     esc(&m.path),
                     esc(&m.hash),
+                ));
+            }
+        }
+
+        if !self.flake_inputs.is_empty() {
+            let mut flake_inputs: Vec<&FlakeInputPin> = self.flake_inputs.iter().collect();
+            flake_inputs.sort_by(|a, b| a.name.cmp(&b.name));
+            s.push('\n');
+            for i in flake_inputs {
+                s.push_str(&format!(
+                    "    flake-input \"{}\" url=\"{}\" rev=\"{}\"\n",
+                    esc(&i.name),
+                    esc(&i.url),
+                    esc(&i.rev),
                 ));
             }
         }
@@ -505,6 +538,7 @@ mod tests {
                 modules: vec![],
             },
             module_sources: vec![],
+            flake_inputs: vec![],
             inputs,
             modules,
             outputs: vec![
@@ -770,6 +804,37 @@ mod tests {
         assert!(text.contains(
             "module-source \"web-service\" url=\"https://example.com/modules/web-service.tar.gz\" rev=\"abc123\" path=\"modules/web-service\" hash=\"blake3:feed\""
         ));
+    }
+
+    #[test]
+    fn flake_input_pins_round_trip_sorted_by_name() {
+        let mut lock = sample();
+        lock.flake_inputs = vec![
+            FlakeInputPin {
+                name: "sops-nix".into(),
+                url: "github:Mic92/sops-nix".into(),
+                rev: "f1406619a3884cd5c47992a70b8b35c9c0fcb4c9".into(),
+            },
+            FlakeInputPin {
+                name: "disko".into(),
+                url: "github:nix-community/disko".into(),
+                rev: "ff8702b4de27f72b4c78573dfb89ec74e36abdf1".into(),
+            },
+        ];
+
+        let text = lock.render();
+        let disko = text.find("flake-input \"disko\"").expect("disko line");
+        let sops = text.find("flake-input \"sops-nix\"").expect("sops line");
+        assert!(disko < sops, "{text}");
+        let mut back = Lock::parse(&text).expect("parse");
+        back.flake_inputs.sort_by(|a, b| a.name.cmp(&b.name));
+        lock.flake_inputs.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(back, lock);
+    }
+
+    #[test]
+    fn a_lock_without_flake_inputs_renders_no_flake_input_lines() {
+        assert!(!sample().render().contains("flake-input"));
     }
 
     #[test]

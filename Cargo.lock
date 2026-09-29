@@ -691,6 +691,7 @@ dependencies = [
  "knixl-nix",
  "knixl-oracle",
  "semver",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]

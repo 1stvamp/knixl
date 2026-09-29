@@ -130,6 +130,7 @@ fn gather_selects_each_hosts_effective_module_set_for_its_oracle() {
             }],
         },
         module_sources: Vec::new(),
+        flake_inputs: Vec::new(),
         inputs: BTreeMap::new(),
         modules: BTreeMap::new(),
         outputs: Vec::new(),

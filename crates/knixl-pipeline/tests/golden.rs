@@ -1067,6 +1067,7 @@ fn generate_prunes_pins_for_packages_no_longer_declared() {
             modules: Vec::new(),
         },
         module_sources: Vec::new(),
+        flake_inputs: Vec::new(),
         inputs: std::collections::BTreeMap::new(),
         modules: std::collections::BTreeMap::new(),
         outputs: Vec::new(),

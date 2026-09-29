@@ -16,6 +16,21 @@ Every command discovers its project root by walking up from the current director
 
   When the project's `knixl.kdl` declares a `system { state-version "<rel>" }` block, `generate` also emits `generated/flake.nix`, a generated and locked artefact defining `nixosConfigurations.<host>` for every host, each pinned to that host's baseline nixpkgs rev. Consume it with `nixos-rebuild switch --flake .#<host>` or `nixos-anywhere --flake .#<host>`. Without `system {}`, `generate` produces modules only, not a bootable system; the assembly flake remains a deliberate hand-written seam (ADR 0009). A host with no resolved baseline refuses to generate (exit 5), pointing at `install` or `upgrade`.
 
+  Declaring `input` nodes inside `system {}` switches the flake to input mode (ADR 0014), for a system that needs modules from other flakes (disko, sops-nix and so on):
+
+  ```kdl
+  system {
+      state-version "25.11"
+      formatter "nixfmt-rfc-style"
+      input "nixpkgs" url="github:NixOS/nixpkgs"
+      input "disko" url="github:nix-community/disko" rev="<commit>" {
+          follows nixpkgs="nixpkgs"
+      }
+  }
+  ```
+
+  An `input "nixpkgs"` is required once any input is declared, and it replaces `nixpkgs-url` (declaring both is refused). Its rev is the hosts' baseline, so every host has to sit on the same baseline rev; a fleet split across releases stays on the input-free flake. A host can pin its baseline to an exact commit with `nixpkgs release="unstable" rev="<commit>"` (e.g. the commit a running system was built from), which is recorded as written rather than resolved from the release branch. Every other input is pinned by `upgrade`: a declared `rev=` is recorded as-is, anything else resolves to the current commit (the built-in resolver handles `github:` refs, `KNIXL_MODULE_RESOLVER` overrides it), and a `github:` url that carries a branch or tag is refused, so pin with `rev=` instead. The pins land in `knixl.lock.kdl` as `flake-input` lines and the generated flake writes each rev into its input's url, so the `generated/flake.lock` nix writes is fixed by the knixl lock. Hosts and images are built with `nixpkgs.lib.nixosSystem`, hosts and installers passing their `system`. `formatter "<attr>"` adds `formatter.<system> = nixpkgs.legacyPackages.<system>.<attr>` for each host system, so `nix fmt` works. Run `nix flake lock` in `generated/` after the first `generate` (and after an `upgrade` that moves a rev), and commit `flake.lock`: knixl doesn't hash or prune it, and `check` fails (exit 5) when it's missing or pins any input at a different rev than `knixl.lock.kdl`.
+
   A top-level `installer "<name>" [system="<double>"] { <modules> }` block in `knixl.kdl` declares installer media (ADR 0012). `generate` emits `generated/installer/<name>.nix`: the block's children are ordinary knixl modules (`tailscale`, `openssh`, `user`, `os`, ...) lowered like a host, with the minimal `installation-cd` base imported ahead of them. When `system {}` is also declared, the assembly flake gains a `nixosConfigurations.<name>` entry plus a `packages.<system>."<name>-iso"` output pinned to the project's nixpkgs rev, so `nix build .#<name>-iso` produces a bootable ISO (e.g. one that joins a tailnet so `nixos-anywhere` can reach the target). The tailnet auth key is supplied at build time, not via the runtime `(secret)` mechanism, since a live ISO has no secret-decryption infrastructure.
 
   A `guest-image "<name>" [system="<double>"] { <modules> }` block is the same mechanism with a different output (ADR 0013): a NixOS system built as an lxc image for Incus, rather than an nspawn `containers.<name>` (which is the `guest` module, ADR 0011). `generate` emits `generated/guest-image/<name>.nix`, lowering the module tree like a host with the `lxc-container` base imported. Alongside `system {}`, the flake gains a `nixosConfigurations.<name>` entry and two package outputs, `packages.<system>."<name>-lxc"` (the rootfs, `config.system.build.tarball`) and `"<name>-lxc-metadata"` (`config.system.build.metadata`), so `nix build .#<name>-lxc` and `.#<name>-lxc-metadata` produce what `incus image import` takes. knixl produces the image only; importing and launching it (`incus image import`, `incus launch -p …`) stays with the operator. A `raw-nix` seam covers guest bits NixOS options do not model (e.g. a ROCm/ollama profile).

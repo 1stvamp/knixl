@@ -392,3 +392,207 @@ fn knixl_kdl_without_a_system_block_is_unchanged() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+const NIXPKGS_REV: &str = "241313f4e8e508cb9b13278c2b0fa25b9ca27163";
+const DISKO_REV: &str = "ff8702b4de27f72b4c78573dfb89ec74e36abdf1";
+
+/// An input-mode project (ADR 0014): two inputs, one host pinned to an exact nixpkgs commit.
+fn input_mode_root(tag: &str) -> PathBuf {
+    let root = temp_root(tag);
+    fs::write(
+        root.join("knixl.kdl"),
+        "system {\n    state-version \"25.11\"\n    formatter \"nixfmt-rfc-style\"\n    input \"nixpkgs\" url=\"github:NixOS/nixpkgs\"\n    input \"disko\" url=\"github:nix-community/disko\" {\n        follows nixpkgs=\"nixpkgs\"\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("hosts/type40.kdl"),
+        format!("host \"type40\" {{\n    system \"x86_64-linux\"\n    nixpkgs release=\"unstable\" rev=\"{NIXPKGS_REV}\"\n}}\n"),
+    )
+    .unwrap();
+    root
+}
+
+fn seed_lock(root: &std::path::Path, flake_inputs: Vec<knixl_lock::model::FlakeInputPin>) {
+    let tool: semver::Version = "0.3.1".parse().unwrap();
+    let mut lock = gather(root, &identity_formatter(), tool)
+        .expect("gather (seed)")
+        .lock;
+    lock.baselines.insert(
+        "type40".to_string(),
+        HostBaseline {
+            release: "unstable".into(),
+            nixpkgs_rev: NIXPKGS_REV.into(),
+            options_hash: String::new(),
+            modules: Vec::new(),
+        },
+    );
+    lock.flake_inputs = flake_inputs;
+    fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();
+}
+
+fn disko_pin() -> knixl_lock::model::FlakeInputPin {
+    knixl_lock::model::FlakeInputPin {
+        name: "disko".into(),
+        url: "github:nix-community/disko".into(),
+        rev: DISKO_REV.into(),
+    }
+}
+
+#[test]
+fn input_mode_emits_pinned_inputs_and_nixos_system_hosts() {
+    let root = input_mode_root("input-mode");
+    seed_lock(&root, vec![disko_pin()]);
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    assert!(
+        project.inputs.validation_errors.is_empty(),
+        "{:?}",
+        project.inputs.validation_errors
+    );
+    let flake = &project.generated[&PathBuf::from("generated/flake.nix")];
+    assert!(
+        flake.contains(&format!("url = \"github:NixOS/nixpkgs/{NIXPKGS_REV}\";")),
+        "{flake}"
+    );
+    assert!(
+        flake.contains(&format!(
+            "url = \"github:nix-community/disko/{DISKO_REV}\";"
+        )),
+        "{flake}"
+    );
+    assert!(
+        flake.contains("inputs.\"nixpkgs\".follows = \"nixpkgs\";"),
+        "{flake}"
+    );
+    assert!(
+        flake.contains(
+            "\"type40\" = nixpkgs.lib.nixosSystem {\n          system = \"x86_64-linux\";"
+        ),
+        "{flake}"
+    );
+    assert!(
+        flake.contains("nixpkgs.legacyPackages.\"x86_64-linux\".\"nixfmt-rfc-style\""),
+        "{flake}"
+    );
+
+    // No flake.lock yet: that is a `check` problem, never a generate refusal.
+    assert!(project.flake_lock_problems[0].contains("is missing"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn input_mode_checks_flake_lock_against_the_pinned_revs() {
+    let root = input_mode_root("input-lock");
+    seed_lock(&root, vec![disko_pin()]);
+    fs::create_dir_all(root.join("generated")).unwrap();
+    let flake_lock = |nixpkgs: &str| {
+        format!(
+            r#"{{"nodes":{{"disko":{{"locked":{{"rev":"{DISKO_REV}"}}}},"nixpkgs":{{"locked":{{"rev":"{nixpkgs}"}}}},"root":{{"inputs":{{"disko":"disko","nixpkgs":"nixpkgs"}}}}}},"root":"root","version":7}}"#
+        )
+    };
+    fs::write(root.join("generated/flake.lock"), flake_lock(NIXPKGS_REV)).unwrap();
+    let tool: semver::Version = "0.3.1".parse().unwrap();
+    let project = gather(&root, &identity_formatter(), tool.clone()).expect("gather");
+    assert!(
+        project.flake_lock_problems.is_empty(),
+        "{:?}",
+        project.flake_lock_problems
+    );
+
+    fs::write(
+        root.join("generated/flake.lock"),
+        flake_lock(&"0".repeat(40)),
+    )
+    .unwrap();
+    let project = gather(&root, &identity_formatter(), tool).expect("gather");
+    assert_eq!(
+        project.flake_lock_problems.len(),
+        1,
+        "{:?}",
+        project.flake_lock_problems
+    );
+    assert!(project.flake_lock_problems[0].contains("pins `nixpkgs`"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn input_mode_refuses_an_unresolved_input_and_emits_no_flake() {
+    let root = input_mode_root("input-unresolved");
+    seed_lock(&root, vec![]);
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    assert!(
+        project
+            .inputs
+            .validation_errors
+            .iter()
+            .any(|e| e == "flake input \"disko\" is not resolved: run knixl upgrade"),
+        "{:?}",
+        project.inputs.validation_errors
+    );
+    assert!(!project
+        .generated
+        .contains_key(&PathBuf::from("generated/flake.nix")));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn input_mode_refuses_hosts_on_different_baselines() {
+    let root = input_mode_root("input-split");
+    fs::write(
+        root.join("hosts/other.kdl"),
+        "host \"other\" {\n    system \"x86_64-linux\"\n    nixpkgs release=\"25.05\"\n}\n",
+    )
+    .unwrap();
+    seed_lock(&root, vec![disko_pin()]);
+    let mut lock =
+        knixl_lock::Lock::parse(&fs::read_to_string(root.join("knixl.lock.kdl")).unwrap()).unwrap();
+    lock.baselines.insert(
+        "other".to_string(),
+        HostBaseline {
+            release: "25.05".into(),
+            nixpkgs_rev: "1".repeat(40),
+            options_hash: String::new(),
+            modules: Vec::new(),
+        },
+    );
+    fs::write(root.join("knixl.lock.kdl"), lock.render()).unwrap();
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    assert!(
+        project
+            .inputs
+            .validation_errors
+            .iter()
+            .any(|e| e.contains("needs every host on one nixpkgs baseline rev")),
+        "{:?}",
+        project.inputs.validation_errors
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_host_rev_pin_differing_from_the_lock_is_unresolved() {
+    let root = input_mode_root("rev-moved");
+    seed_lock(&root, vec![disko_pin()]);
+    fs::write(
+        root.join("hosts/type40.kdl"),
+        format!("host \"type40\" {{\n    system \"x86_64-linux\"\n    nixpkgs release=\"unstable\" rev=\"{}\"\n}}\n", "2".repeat(40)),
+    )
+    .unwrap();
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    assert!(
+        project.inputs.validation_errors.iter().any(|e| e
+            .starts_with("host \"type40\": nixpkgs release \"unstable\" at 2222")
+            && e.ends_with("is not resolved: run knixl upgrade")),
+        "{:?}",
+        project.inputs.validation_errors
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}

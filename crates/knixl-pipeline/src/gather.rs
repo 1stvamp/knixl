@@ -16,7 +16,9 @@ use knixl_nix::module_fetch::{hash_module, module_cache_path};
 use knixl_nix::{hash, Formatter};
 use semver::Version;
 
-use crate::flake::{render_system_flake, FlakeHost, FlakeImage};
+use crate::flake::{
+    pinned_url, render_input_flake, render_system_flake, FlakeHost, FlakeImage, FlakeInputSpec,
+};
 use crate::project::{parse_project, ModuleSource};
 use crate::{generate, generate_image_targets, GenerateError, HostSource};
 
@@ -37,6 +39,10 @@ pub struct Project {
     /// validated against its own rev's option set, one without falls back to the lock's
     /// default rev. Absent entry means best-effort skip (nothing cached for that rev).
     pub oracles: BTreeMap<String, knixl_oracle::Oracle>,
+    /// Input mode only (ADR 0014): where the nix-owned `generated/flake.lock` disagrees with
+    /// the revs `knixl.lock.kdl` pins, or is missing. Reported by `check`, never by generate,
+    /// since the flake has to exist before nix can lock it.
+    pub flake_lock_problems: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,13 +58,28 @@ pub enum GatherError {
 }
 
 pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Project, GatherError> {
+    gather_with_lock(root, formatter, tool, None)
+}
+
+/// `gather`, but planning against `lock` instead of the one on disk: what `upgrade` needs once
+/// it has resolved new pins in memory, so the expected output (the flake in particular) is
+/// rendered from those pins rather than from the lock they are about to replace.
+pub fn gather_with_lock(
+    root: &Path,
+    formatter: &Formatter,
+    tool: Version,
+    lock: Option<Lock>,
+) -> Result<Project, GatherError> {
     let project = parse_project(root).map_err(|e| GatherError::Module(e.to_string()))?;
     let hosts = read_hosts(root)?;
     // Read the lock before building the registry: the fetched layer (issue #13) resolves
     // declared `modules {}` sources through the lock's pins, but a fresh project with no
     // lock yet still needs a registry (the fallback `Lock` literal below seeds `modules`
     // from it), so the lock is read once here and reused for both.
-    let existing_lock = read_lock(root)?;
+    let existing_lock = match lock {
+        Some(l) => Some(l),
+        None => read_lock(root)?,
+    };
     let module_pins: &[ModuleSourcePin] = existing_lock
         .as_ref()
         .map(|l| l.module_sources.as_slice())
@@ -84,6 +105,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
                 modules: Vec::new(),
             },
             module_sources: Vec::new(),
+            flake_inputs: Vec::new(),
             inputs: BTreeMap::new(),
             modules: registry.module_versions(),
             outputs: Vec::new(),
@@ -216,14 +238,28 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
     // (issue #22). Checked here rather than in `generate` because it compares declared KDL
     // state against the lock, not against the oracle's option set.
     let declared_baselines = declared_baselines(&hosts);
+    let declared_revs = declared_baseline_revs(&hosts);
+    for (host, rev) in &declared_revs {
+        if !declared_baselines.contains_key(host) {
+            validation_errors.push(format!(
+                "host \"{host}\": nixpkgs rev= needs a release= beside it"
+            ));
+        } else if !crate::project::is_full_rev(rev) {
+            validation_errors.push(format!(
+                "host \"{host}\": nixpkgs rev \"{rev}\" is not a full 40-character commit"
+            ));
+        }
+    }
     for (host, release) in &declared_baselines {
+        let rev = declared_revs.get(host);
         let resolved = lock
             .baselines
             .get(host)
-            .is_some_and(|b| &b.release == release);
+            .is_some_and(|b| &b.release == release && rev.is_none_or(|r| &b.nixpkgs_rev == r));
         if !resolved {
+            let pinned = rev.map(|r| format!(" at {r}")).unwrap_or_default();
             validation_errors.push(format!(
-                "host \"{host}\": nixpkgs release \"{release}\" is not resolved: run knixl upgrade"
+                "host \"{host}\": nixpkgs release \"{release}\"{pinned} is not resolved: run knixl upgrade"
             ));
         }
     }
@@ -241,6 +277,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
 
     // Opt-in system-assembly flake (ADR 0009): every host needs a resolved baseline rev to
     // pin nixpkgs, since a partial flake would lie about the fleet.
+    let mut flake_lock_problems = Vec::new();
     if let Some(system) = &project.system {
         let mut flake_hosts = Vec::new();
         let mut missing = false;
@@ -250,6 +287,7 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
                     name: name.clone(),
                     baseline_rev: b.nixpkgs_rev.clone(),
                     module_path: format!("./hosts/{name}.nix"),
+                    system: None,
                 }),
                 _ => {
                     missing = true;
@@ -282,14 +320,40 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
                 })
                 .collect()
         };
-        // Only emit when every host resolved; a partial flake would lie about the fleet.
-        if !missing {
-            let raw = render_system_flake(
+        let raw = if system.inputs.is_empty() {
+            (!missing).then(|| {
+                render_system_flake(
+                    &flake_hosts,
+                    &flake_images,
+                    &system.state_version,
+                    &system.nixpkgs_url,
+                )
+            })
+        } else {
+            let systems = host_systems(&hosts);
+            for h in &mut flake_hosts {
+                h.system = systems.get(&h.name).cloned();
+            }
+            input_mode_flake(
+                system,
+                &lock,
                 &flake_hosts,
-                &flake_images,
-                &system.state_version,
-                &system.nixpkgs_url,
-            );
+                &project.image_targets,
+                missing,
+                &mut validation_errors,
+            )
+            .map(|(raw, pins)| {
+                flake_lock_problems = crate::flake::flake_lock_problems(
+                    std::fs::read_to_string(root.join("generated/flake.lock"))
+                        .ok()
+                        .as_deref(),
+                    &pins,
+                );
+                raw
+            })
+        };
+        // Only emit when every host resolved; a partial flake would lie about the fleet.
+        if let Some(raw) = raw {
             let text = formatter
                 .format(&raw)
                 .map_err(|e| GatherError::Module(e.to_string()))?;
@@ -334,7 +398,113 @@ pub fn gather(root: &Path, formatter: &Formatter, tool: Version) -> Result<Proje
         generated,
         warnings,
         oracles,
+        flake_lock_problems,
     })
+}
+
+/// Build the input-mode flake (ADR 0014), or `None` with the reason pushed onto `errors`.
+/// Every host shares the one `nixpkgs` input, so all hosts must sit on the same baseline rev;
+/// every other input needs a `flake-input` pin in the lock matching its declared url (and its
+/// declared rev, if any). Also returns each input's pinned rev, for the `flake.lock` check.
+fn input_mode_flake(
+    system: &crate::project::SystemConfig,
+    lock: &Lock,
+    hosts: &[FlakeHost],
+    images: &[crate::project::ImageTarget],
+    hosts_missing: bool,
+    errors: &mut Vec<String>,
+) -> Option<(String, BTreeMap<String, String>)> {
+    let revs: BTreeSet<&str> = hosts.iter().map(|h| h.baseline_rev.as_str()).collect();
+    let nixpkgs_rev = match revs.len() {
+        0 if !lock.oracle.nixpkgs_rev.is_empty() => lock.oracle.nixpkgs_rev.clone(),
+        0 => return None,
+        1 => revs.iter().next().unwrap().to_string(),
+        _ => {
+            let found: Vec<String> = hosts
+                .iter()
+                .map(|h| format!("{} at {}", h.name, h.baseline_rev))
+                .collect();
+            errors.push(format!(
+                "system {{}} with flake inputs needs every host on one nixpkgs baseline rev (found {})",
+                found.join(", ")
+            ));
+            return None;
+        }
+    };
+
+    let mut missing = hosts_missing;
+    let mut specs = Vec::new();
+    let mut pins = BTreeMap::new();
+    for input in &system.inputs {
+        let rev = if input.name == "nixpkgs" {
+            Some(nixpkgs_rev.clone())
+        } else {
+            lock.flake_inputs
+                .iter()
+                .find(|p| {
+                    p.name == input.name
+                        && p.url == input.url
+                        && input.rev.as_ref().is_none_or(|r| &p.rev == r)
+                })
+                .map(|p| p.rev.clone())
+        };
+        let Some(rev) = rev else {
+            errors.push(format!(
+                "flake input \"{}\" is not resolved: run knixl upgrade",
+                input.name
+            ));
+            missing = true;
+            continue;
+        };
+        specs.push(FlakeInputSpec {
+            name: input.name.clone(),
+            url: pinned_url(&input.url, &rev),
+            flake: input.flake,
+            follows: input.follows.clone(),
+        });
+        pins.insert(input.name.clone(), rev);
+    }
+    if missing {
+        return None;
+    }
+
+    let images: Vec<FlakeImage> = images
+        .iter()
+        .map(|t| FlakeImage {
+            name: t.name.clone(),
+            baseline_rev: nixpkgs_rev.clone(),
+            module_path: format!("./{}/{}.nix", t.kind.output_dir(), t.name),
+            system: t.system.clone(),
+            kind: t.kind,
+        })
+        .collect();
+    let raw = render_input_flake(
+        &specs,
+        hosts,
+        &images,
+        &system.state_version,
+        system.formatter.as_deref(),
+    );
+    Some((raw, pins))
+}
+
+/// Each host's declared `system` double, keyed by host name.
+fn host_systems(hosts: &[HostSource]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for host in hosts {
+        let Ok(doc) = knixl_kdl::parse(&host.src) else {
+            continue;
+        };
+        for node in doc.nodes().iter().filter(|n| n.name().value() == "host") {
+            if let (Some(name), Some(system)) = (
+                crate::first_arg_str(node),
+                knixl_kdl::child_arg_str(node, "system"),
+            ) {
+                out.insert(name, system);
+            }
+        }
+    }
+    out
 }
 
 /// Every host's own name (its `host "<name>"` positional arg, falling back to "host" the same
@@ -420,6 +590,26 @@ pub fn declared_baselines(hosts: &[HostSource]) -> BTreeMap<String, String> {
             };
             if let Some(release) = knixl_kdl::child_prop_str(node, "nixpkgs", "release") {
                 out.insert(name, release);
+            }
+        }
+    }
+    out
+}
+
+/// Hosts that pin their baseline to an exact commit with `nixpkgs rev=".."` (ADR 0014), keyed
+/// by host name, mirroring `declared_baselines`.
+pub fn declared_baseline_revs(hosts: &[HostSource]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for host in hosts {
+        let Ok(doc) = knixl_kdl::parse(&host.src) else {
+            continue;
+        };
+        for node in doc.nodes().iter().filter(|n| n.name().value() == "host") {
+            if let (Some(name), Some(rev)) = (
+                crate::first_arg_str(node),
+                knixl_kdl::child_prop_str(node, "nixpkgs", "rev"),
+            ) {
+                out.insert(name, rev);
             }
         }
     }
