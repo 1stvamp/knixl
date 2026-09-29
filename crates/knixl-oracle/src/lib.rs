@@ -92,8 +92,23 @@ impl Oracle {
 
     /// Check one emitted assignment. Submodule interiors are left unchecked (Ok).
     pub fn check(&self, path: &AttrPath, value: &NixExpr) -> Result<(), TypeMismatch> {
-        let key = path.to_option_key(); // dynamic keys collapsed to <name>
+        let mut key = path.to_option_key(); // dynamic keys collapsed to <name>
+                                            // These options are a whole NixOS configuration (a VM or specialisation variant of
+                                            // the host), which nixosOptionsDoc lists as a bare submodule. Their interior is the
+                                            // host's option set plus whatever the variant imports (qemu-vm.nix declares
+                                            // virtualisation.memorySize only there), so a path the host set knows is checked
+                                            // against it and anything else is left unchecked.
+        let mut in_variant = false;
+        while let Some(rest) = WHOLE_CONFIG_OPTIONS
+            .iter()
+            .find_map(|root| key.strip_prefix(root)?.strip_prefix('.'))
+            .filter(|rest| !rest.is_empty())
+        {
+            key = rest.to_string();
+            in_variant = true;
+        }
         match self.options.get(&key) {
+            None if in_variant => Ok(()),
             // Not a leaf option: accept if it is the root of a submodule (an attrset whose
             // children are known options, e.g. services.restic.backups.<name>); the interior
             // is left unchecked. A genuine typo has no known children and is still rejected.
@@ -141,6 +156,13 @@ impl Oracle {
         self.options.keys().any(|k| k.starts_with(&prefix))
     }
 }
+
+const WHOLE_CONFIG_OPTIONS: &[&str] = &[
+    "virtualisation.vmVariant",
+    "virtualisation.vmVariantWithBootLoader",
+    "virtualisation.vmVariantWithDisko",
+    "specialisation.<name>.configuration",
+];
 
 fn holds_attrs(ty: &NixType) -> bool {
     match ty {
