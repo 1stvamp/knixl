@@ -8,6 +8,23 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-09-29
+
+The oracle now type-checks two kinds of option it was letting through
+unchecked, found by a real build that `check` had passed.
+
+### Fixed
+- A union with a singular enum, e.g. `virtualisation.diskSize` (`"auto"` or a
+  positive integer), accepted any value, so a string `"16384"` passed `check` and
+  only failed at `nix build`. The `value "auto" (singular enum)` side is now
+  parsed, and a union's error lists what each alternative expected.
+- Paths under `virtualisation.vmVariant` (and `vmVariantWithBootLoader`,
+  `vmVariantWithDisko`) and `specialisation.<name>.configuration` are now
+  checked against the host's option set. They were all left unchecked since
+  1.5.0. Options only a variant imports, such as `virtualisation.memorySize` in
+  the VM variant, are still unchecked there. `knixl check` may now refuse a
+  project it passed before, where such a path carries a value of the wrong type.
+
 ## [1.5.0] - 2026-09-29
 
 knixl can now generate the whole system flake for a system that uses other
@@ -236,7 +253,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/1stvamp/knixl/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/1stvamp/knixl/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/1stvamp/knixl/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/1stvamp/knixl/compare/v1.2.1...v1.3.0
