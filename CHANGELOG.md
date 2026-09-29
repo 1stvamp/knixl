@@ -8,6 +8,16 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-09-30
+
+Release artefacts now carry GitHub build provenance.
+
+### Added
+- Each prebuilt archive on the GitHub release has a build provenance
+  attestation, so `gh attestation verify <archive> -R 1stvamp/knixl` checks it
+  was built by this repository's release workflow, and `mise` verifies it when
+  installing from GitHub releases. Earlier releases have none.
+
 ## [1.5.1] - 2026-09-29
 
 The oracle now type-checks two kinds of option it was letting through
@@ -253,7 +263,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/1stvamp/knixl/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/1stvamp/knixl/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/1stvamp/knixl/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/1stvamp/knixl/compare/v1.3.0...v1.4.0

@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.5.1"
+version = "1.5.2"
 edition = "2021"
 rust-version = "1.87"
 license = "MIT OR Apache-2.0"
@@ -56,3 +56,5 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+# Publish GitHub build provenance for each release artefact
+github-attestations = true
