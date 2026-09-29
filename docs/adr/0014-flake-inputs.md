@@ -1,6 +1,6 @@
 # ADR 0014: Flake inputs in the system flake
 
-Status: proposed
+Status: accepted
 
 Refines: ADR 0007 (per-host baseline nixpkgs rev) and ADR 0008 (out-of-tree oracle modules).
 Supersedes in part: ADR 0009 (system assembly flake). Relates to: ADR 0005 (pinning), ADR 0006
@@ -137,13 +137,13 @@ them, emission is unchanged.
   way, and only on `upgrade`.
 - One `nixpkgs` input per flake means a fleet split across releases can't use input mode yet.
   Those projects stay on the input-free path until more than one nixpkgs input is designed.
-- The `nixosSystem` point is expected behaviour, pending the migration test. An early check
-  supports it: a generated input-mode host pinned to `241313f4e8e5` evaluates
-  `system.nixos.version` to `26.11.20260719.241313f` and `system.nixos.revision` to the full rev,
-  which is what a flake-built system on that commit reports. If the toplevels
-  still differ, the gap gets written down here before this moves to accepted. A
-  `default-file` outside `generated/` is reachable: the flake is a git flake with
-  `?dir=generated`, so nix copies the whole repository and `../secrets/<host>.yaml` resolves.
+- The `nixosSystem` point is confirmed. A real flake-built host migrated onto input mode
+  (nixpkgs pinned with `rev=`, three input modules, sops-nix wiring, local imports) evaluates to
+  the same system toplevel store path as the running system, and a guest image built beside it
+  to the same drv. Module-list order made no difference there, though a system that merges
+  list options across modules in an order-sensitive way could still differ. A `default-file`
+  outside `generated/` is reachable: the flake is a git flake with `?dir=generated`, so nix
+  copies the whole repository and `../secrets/<host>.yaml` resolves.
 - Local module imports (a host `import "<path>"` node) are related but designed separately.
 - Still deferred: merging per-host input modules with the project set (ADR 0008's
   replace-not-merge rule stands), passing `specialArgs` or `inputs` to modules, inputs that
