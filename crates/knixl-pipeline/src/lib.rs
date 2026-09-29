@@ -107,6 +107,8 @@ fn generate_one(
     // so the top level is usually a single `host` node.
     let mut files: BTreeMap<String, Vec<Assignment>> = BTreeMap::new();
     let mut raw_files: BTreeMap<String, Vec<RawNix>> = BTreeMap::new();
+    // `import` paths as written, in KDL source order; they all land in the host's own file.
+    let mut local_imports: Vec<String> = Vec::new();
     // Distinct modules that contributed to each output file, so the lock records honest
     // per-file attribution rather than every module on every file.
     let mut file_modules: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -186,6 +188,13 @@ fn generate_one(
                 .insert(r.module);
             raw_files.entry(key).or_default().push(r.raw);
         }
+        for i in output.imports {
+            file_modules
+                .entry(host_name.clone())
+                .or_default()
+                .insert(i.module);
+            local_imports.push(i.path);
+        }
     }
 
     let module_versions = registry.module_versions();
@@ -203,6 +212,15 @@ fn generate_one(
     if !input_errors.is_empty() {
         return Err(GenerateError::Validation(input_errors));
     }
+
+    let local_imports: Vec<PathBuf> = local_imports
+        .iter()
+        .map(|p| {
+            import_from_generated(&host.path, p)
+                .map_err(|why| format!("{}: import \"{p}\": {why}", host.path.display()))
+        })
+        .collect::<Result<_, _>>()
+        .map_err(|e| GenerateError::Validation(vec![e]))?;
 
     if let Some(oracle) = oracles.get(&host_name) {
         let mut errors = Vec::new();
@@ -225,6 +243,9 @@ fn generate_one(
     // Every output file: any bucket that produced assignments or raw passthrough.
     let mut keys: BTreeSet<String> = files.keys().cloned().collect();
     keys.extend(raw_files.keys().cloned());
+    if !local_imports.is_empty() {
+        keys.insert(host_name.clone());
+    }
 
     // Named side-files (anything not the host's own file). The host file imports them.
     let side_files: Vec<String> = keys.iter().filter(|k| *k != &host_name).cloned().collect();
@@ -260,6 +281,7 @@ fn generate_one(
             side_files
                 .iter()
                 .map(|n| NixExpr::Path(PathBuf::from(format!("./{n}.nix"))))
+                .chain(local_imports.iter().cloned().map(NixExpr::Path))
                 .collect()
         } else {
             Vec::new()
@@ -372,6 +394,13 @@ pub fn generate_image_targets(
             for r in out.raw {
                 modules.insert(r.module);
                 raw.push(r.raw);
+            }
+            if !out.imports.is_empty() {
+                return Err(GenerateError::Validation(vec![format!(
+                    "{} `{}`: `import` is only supported on a host",
+                    target.kind.output_dir(),
+                    target.name
+                )]));
             }
         }
 
@@ -569,6 +598,34 @@ fn exact_path_key(path: &knixl_ir::AttrPath) -> String {
         })
         .collect::<Vec<_>>()
         .join(".")
+}
+
+/// Rewrite an `import` path, written relative to the host's KDL file, so it resolves from the
+/// host's generated file (`generated/hosts/<h>.nix`). Resolution is lexical so the result is a
+/// pure function of the KDL; a path that climbs out of the project root is refused because
+/// the flake cannot see it.
+fn import_from_generated(source: &std::path::Path, path: &str) -> Result<PathBuf, String> {
+    let mut parts: Vec<String> = source
+        .parent()
+        .into_iter()
+        .flat_map(|p| p.components())
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if parts.pop().is_none() {
+                    return Err("the path leaves the project root".into());
+                }
+            }
+            s => parts.push(s.to_string()),
+        }
+    }
+    if parts.is_empty() {
+        return Err("the path is the project root itself".into());
+    }
+    Ok(PathBuf::from(format!("../../{}", parts.join("/"))))
 }
 
 fn bucket_key(bucket: &Bucket, host_name: &str) -> String {

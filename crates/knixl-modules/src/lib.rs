@@ -489,6 +489,7 @@ impl<'a> LowerCtx<'a> {
 pub struct LowerOutput {
     pub units: Vec<Unit>,
     pub raw: Vec<RawUnit>,
+    pub imports: Vec<ImportUnit>,
 }
 /// `module` names the module that produced this unit (for per-file lock attribution).
 /// Modules leave it empty; the framework stamps it at the dispatch boundary.
@@ -503,12 +504,19 @@ pub struct RawUnit {
     pub raw: RawNix,
     pub module: String,
 }
+/// A hand-written module the host file imports, as written in the KDL: relative to the host's
+/// source file. The pipeline, which knows where source and output live, rewrites it.
+pub struct ImportUnit {
+    pub path: String,
+    pub module: String,
+}
 
 impl LowerOutput {
     pub fn new() -> Self {
         Self {
             units: Vec::new(),
             raw: Vec::new(),
+            imports: Vec::new(),
         }
     }
     /// Convenience for the common case of assignments with no raw passthrough.
@@ -516,6 +524,7 @@ impl LowerOutput {
         Self {
             units,
             raw: Vec::new(),
+            imports: Vec::new(),
         }
     }
 
@@ -530,6 +539,11 @@ impl LowerOutput {
         for r in &mut self.raw {
             if r.module.is_empty() {
                 r.module = module.to_string();
+            }
+        }
+        for i in &mut self.imports {
+            if i.module.is_empty() {
+                i.module = module.to_string();
             }
         }
     }

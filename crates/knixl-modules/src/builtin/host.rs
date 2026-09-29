@@ -38,6 +38,7 @@ impl Module for Host {
     fn lower(&self, node: &KdlNode, ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError> {
         let mut units = Vec::new();
         let mut raw = Vec::new();
+        let mut imports = Vec::new();
         if let Some(sys) = child_arg_str(node, "system") {
             units.push(unit_default(assign(
                 &["nixpkgs", "hostPlatform"],
@@ -60,8 +61,13 @@ impl Module for Host {
         for out in ctx.lower_children(node, &["system", "hostname", "nixpkgs", "oracle-modules"])? {
             units.extend(out.units);
             raw.extend(out.raw);
+            imports.extend(out.imports);
         }
-        Ok(LowerOutput { units, raw })
+        Ok(LowerOutput {
+            units,
+            raw,
+            imports,
+        })
     }
 }
 

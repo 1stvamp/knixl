@@ -3,6 +3,7 @@ pub mod backups;
 pub mod disko;
 pub mod guest;
 pub mod host;
+pub mod import;
 pub mod incus;
 pub mod nix_ld;
 pub mod os;
@@ -24,5 +25,6 @@ pub fn register_builtins(reg: &mut Registry) {
     let _ = reg.register(Box::new(os::Os::new()));
     let _ = reg.register(Box::new(guest::Guest::new()));
     let _ = reg.register(Box::new(nix_ld::NixLd::new()));
+    let _ = reg.register(Box::new(import::Import::new()));
     // ... more as they land.
 }

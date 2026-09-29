@@ -48,6 +48,7 @@ impl Module for RawNixModule {
         Ok(LowerOutput {
             units: Vec::new(),
             raw,
+            imports: Vec::new(),
         })
     }
 }
