@@ -7,7 +7,7 @@ use std::io::IsTerminal;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use knixl_lock::model::{HostBaseline, ModuleSourcePin, OracleModulePin};
+use knixl_lock::model::{FlakeInputPin, HostBaseline, ModuleSourcePin, OracleModulePin};
 use knixl_lock::{FileState, Plan};
 
 #[derive(Parser)]
@@ -151,6 +151,18 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             None
         };
 
+    // ADR 0014: flake inputs resolve on `upgrade` only; `install` never needs them, and an
+    // unresolved input already refuses with a message pointing at `upgrade`.
+    let pending_flake_inputs: Option<Vec<FlakeInputPin>> = if matches!(cli.cmd, Cmd::Upgrade { .. })
+    {
+        match resolve_pending_flake_inputs(ctx) {
+            Ok(p) => p,
+            Err(code) => return code,
+        }
+    } else {
+        None
+    };
+
     // Plan off a lock patched with `pending` merged in, so the "not resolved: run knixl
     // upgrade" validation error does not block the very commands that would resolve it, and
     // `lock_next` (built from this patched lock) carries the pending baselines for
@@ -158,9 +170,13 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
     // they always plan off the on-disk lock and inputs unchanged.
     let patched_lock = (!pending.is_empty()
         || !pending_host_modules.is_empty()
-        || pending_module_sources.is_some())
+        || pending_module_sources.is_some()
+        || pending_flake_inputs.is_some())
     .then(|| {
         let mut lock = ctx.lock.clone();
+        if let Some(pins) = &pending_flake_inputs {
+            lock.flake_inputs = pins.clone();
+        }
         lock.baselines
             .extend(pending.iter().map(|(host, b)| (host.clone(), b.clone())));
         // Overlay each host's pending module-override resolution onto its baseline (which the
@@ -187,10 +203,38 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
         }
         lock
     });
-    let patched_inputs =
-        (!pending.is_empty()).then(|| patch_inputs_for_pending(&ctx.inputs, &pending));
+    let patched_inputs = (!pending.is_empty() || pending_flake_inputs.is_some())
+        .then(|| patch_inputs_for_pending(&ctx.inputs, &pending, pending_flake_inputs.is_some()));
     let lock_for_plan = patched_lock.as_ref().unwrap_or(&ctx.lock);
-    let inputs_for_plan = patched_inputs.as_ref().unwrap_or(&ctx.inputs);
+    // New flake-input pins change the flake itself, so its expected text has to come from the
+    // patched lock; planning against the old text would drop the flake as orphaned.
+    let regathered = match (&pending_flake_inputs, &patched_lock) {
+        (Some(_), Some(lock)) => match knixl_pipeline::gather::gather_with_lock(
+            &ctx.root,
+            &default_formatter(),
+            ctx.running.tool.clone(),
+            Some(lock.clone()),
+        ) {
+            Ok(p) => Some((
+                patch_inputs_for_pending(&p.inputs, &pending, true),
+                p.generated,
+            )),
+            Err(e) => {
+                eprintln!("knixl: {e}");
+                return Code::Internal;
+            }
+        },
+        _ => None,
+    };
+    let inputs_for_plan = regathered
+        .as_ref()
+        .map(|(inputs, _)| inputs)
+        .or(patched_inputs.as_ref())
+        .unwrap_or(&ctx.inputs);
+    let generated_for_plan = regathered
+        .as_ref()
+        .map(|(_, generated)| generated)
+        .unwrap_or(&ctx.generated);
 
     // `build_lock_next` (knixl-lock) sources the GLOBAL `oracle` pin from `running.oracle`,
     // not from the `lock` passed to `Plan::compute` (unlike per-host `baselines`, which it
@@ -237,6 +281,10 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
 
         Cmd::Check => {
             print_plan(&plan, cli.json, &ctx.warnings);
+            if !ctx.flake_lock_problems.is_empty() {
+                report_validation(&ctx.flake_lock_problems, cli.json);
+                return Code::Validation;
+            }
             verdict(&plan)
         }
 
@@ -285,6 +333,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                 && pending_modules.is_none()
                 && pending_host_modules.is_empty()
                 && pending_module_sources.is_none()
+                && pending_flake_inputs.is_none()
             {
                 println!("already up to date");
                 return Code::Clean;
@@ -320,12 +369,18 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                         );
                     }
                 }
+                for i in pending_flake_inputs.iter().flatten() {
+                    println!(
+                        "would resolve flake input \"{}\" ({}) -> {}",
+                        i.name, i.url, i.rev,
+                    );
+                }
                 eprintln!("re-run with --yes to apply");
                 return Code::NeedsAck;
             }
             for f in &plan.files {
                 if !matches!(f.state, FileState::Clean) {
-                    write_file(ctx, f);
+                    write_generated(&ctx.root, generated_for_plan, f);
                 }
             }
             for (host, b) in &pending {
@@ -355,6 +410,12 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                         p.pin.name, p.pin.url, p.pin.rev,
                     );
                 }
+            }
+            for i in pending_flake_inputs.iter().flatten() {
+                println!(
+                    "resolved flake input \"{}\" ({}) -> {}",
+                    i.name, i.url, i.rev,
+                );
             }
             // `plan.lock_next` was built from the lock already patched with `pending`/
             // `pending_modules`/`pending_host_modules`/`pending_module_sources` (see `run`'s
@@ -1009,6 +1070,14 @@ fn declared_release(host_path: &std::path::Path) -> Option<String> {
     knixl_kdl::child_prop_str(node, "nixpkgs", "release")
 }
 
+/// A host's declared `nixpkgs rev=".."` exact-commit pin (ADR 0014), if any.
+fn declared_rev(host_path: &std::path::Path) -> Option<String> {
+    let src = std::fs::read_to_string(host_path).ok()?;
+    let doc = knixl_kdl::parse(&src).ok()?;
+    let node = doc.nodes().iter().find(|n| n.name().value() == "host")?;
+    knixl_kdl::child_prop_str(node, "nixpkgs", "rev")
+}
+
 /// The blake3 hash of the options.json cached for `rev`, or an empty string when nothing is
 /// cached (best-effort, same convention as an unresolved oracle rev).
 fn options_hash_for_rev(rev: &str) -> String {
@@ -1034,10 +1103,27 @@ fn resolve_pending_baseline(
     let Some(release) = declared_release(host_path) else {
         return Ok(None);
     };
+    let declared = declared_rev(host_path);
     if let Some(b) = ctx.lock.baselines.get(host) {
-        if b.release == release {
+        if b.release == release && declared.as_ref().is_none_or(|r| &b.nixpkgs_rev == r) {
             return Ok(None);
         }
+    }
+    // An exact-commit pin is recorded as declared, never resolved from the release branch.
+    if let Some(rev) = declared {
+        if !knixl_pipeline::project::is_full_rev(&rev) {
+            eprintln!(
+                "knixl: host \"{host}\": nixpkgs rev \"{rev}\" is not a full 40-character commit"
+            );
+            return Err(Code::Validation);
+        }
+        let options_hash = options_hash_for_rev(&rev);
+        return Ok(Some(HostBaseline {
+            release,
+            nixpkgs_rev: rev,
+            options_hash,
+            modules: Vec::new(),
+        }));
     }
     let rev = knixl_nix::baseline::BaselineResolver::resolve()
         .lookup(&release)
@@ -1075,6 +1161,62 @@ fn resolve_pending_baselines(ctx: &Ctx) -> Result<BTreeMap<String, HostBaseline>
         }
     }
     Ok(pending)
+}
+
+/// Resolve the project's declared flake inputs other than `nixpkgs` IN MEMORY ONLY (ADR 0014;
+/// mirrors `resolve_pending_project_modules`). A declared `rev=` is recorded as-is, anything
+/// else resolves through the module resolver. `Ok(None)` when every input already matches its
+/// pin by name, url and any declared rev (the idempotent skip), or there are none and none are
+/// pinned; `Ok(Some(vec![]))` when inputs were removed and the lock still pins some (GC).
+fn resolve_pending_flake_inputs(ctx: &Ctx) -> Result<Option<Vec<FlakeInputPin>>, Code> {
+    let project = knixl_pipeline::project::parse_project(&ctx.root).unwrap_or_default();
+    let declared: Vec<knixl_pipeline::project::FlakeInput> = project
+        .system
+        .map(|s| s.inputs)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| i.name != "nixpkgs")
+        .collect();
+    let mut pinned: Vec<&FlakeInputPin> = ctx.lock.flake_inputs.iter().collect();
+    pinned.sort_by(|a, b| a.name.cmp(&b.name));
+    let up_to_date = pinned.len() == declared.len()
+        && pinned.iter().zip(&declared).all(|(p, d)| {
+            p.name == d.name && p.url == d.url && d.rev.as_ref().is_none_or(|r| &p.rev == r)
+        });
+    if up_to_date {
+        return Ok(None);
+    }
+    declared
+        .iter()
+        .map(|d| {
+            let rev = match &d.rev {
+                Some(rev) => rev.clone(),
+                None => knixl_nix::module::ModuleResolver::resolve()
+                    .lookup(&d.url)
+                    .map(|r| r.rev)
+                    .map_err(|e| {
+                        eprintln!(
+                            "knixl: cannot resolve flake input \"{}\" ({}): {e}",
+                            d.name, d.url
+                        );
+                        Code::Validation
+                    })?,
+            };
+            if !knixl_pipeline::project::is_full_rev(&rev) {
+                eprintln!(
+                    "knixl: flake input \"{}\" resolved to \"{rev}\", not a full 40-character commit",
+                    d.name
+                );
+                return Err(Code::Validation);
+            }
+            Ok(FlakeInputPin {
+                name: d.name.clone(),
+                url: d.url.clone(),
+                rev,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 /// Resolve one declared `module "<name>" flake="<ref>" [attr="<attr>"]` (project `knixl.kdl`
@@ -1518,6 +1660,7 @@ fn effective_baseline_rev(
 fn patch_inputs_for_pending(
     inputs: &knixl_lock::reconcile::Inputs,
     pending: &BTreeMap<String, HostBaseline>,
+    flake_inputs_pending: bool,
 ) -> knixl_lock::reconcile::Inputs {
     use knixl_lock::reconcile::{ExpectedFile, Inputs};
     let validation_errors = inputs
@@ -1528,6 +1671,11 @@ fn patch_inputs_for_pending(
                 e.starts_with(&format!("host \"{host}\": nixpkgs release \""))
                     && e.ends_with("is not resolved: run knixl upgrade")
             })
+        })
+        .filter(|e| {
+            !(flake_inputs_pending
+                && e.starts_with("flake input \"")
+                && e.ends_with("is not resolved: run knixl upgrade"))
         })
         .cloned()
         .collect();
@@ -2208,6 +2356,7 @@ struct Ctx {
     root: std::path::PathBuf,
     generated: std::collections::BTreeMap<std::path::PathBuf, String>,
     warnings: Vec<String>,
+    flake_lock_problems: Vec<String>,
 }
 impl Ctx {
     fn load() -> Ctx {
@@ -2229,6 +2378,7 @@ impl Ctx {
             root: project.root,
             generated: project.generated,
             warnings: project.warnings,
+            flake_lock_problems: project.flake_lock_problems,
         }
     }
 }
@@ -2413,8 +2563,16 @@ fn note_orphan(f: &knixl_lock::FilePlan, _json: bool) {
 
 /// Write the freshly generated content for `f` to disk, creating parent directories.
 fn write_file(ctx: &Ctx, f: &knixl_lock::FilePlan) {
-    let target = ctx.root.join(&f.path);
-    let Some(text) = ctx.generated.get(&f.path) else {
+    write_generated(&ctx.root, &ctx.generated, f);
+}
+
+fn write_generated(
+    root: &std::path::Path,
+    generated: &std::collections::BTreeMap<std::path::PathBuf, String>,
+    f: &knixl_lock::FilePlan,
+) {
+    let target = root.join(&f.path);
+    let Some(text) = generated.get(&f.path) else {
         eprintln!("knixl: no generated content for {}", f.path.display());
         return;
     };

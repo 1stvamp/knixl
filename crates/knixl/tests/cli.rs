@@ -1488,3 +1488,79 @@ fn upgrade_builds_and_caches_the_augmented_set_and_a_later_check_validates_disko
     let _ = fs::remove_dir_all(&xdg);
     let _ = fs::remove_dir_all(&root);
 }
+
+/// ADR 0014: adding a flake input to an already generated input-mode project. `upgrade` has to
+/// plan the flake from the newly resolved pins; planning from the old lock left the flake out of
+/// the expected set, so its lock entry was dropped and the next `generate` called it drift.
+#[test]
+fn upgrade_adding_a_flake_input_rewrites_the_flake_and_generate_stays_clean() {
+    let root = std::env::temp_dir().join(format!("knixl-cli-{}-flake-input", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("hosts")).unwrap();
+    let rev = |c: char| c.to_string().repeat(40);
+    let project = |extra: &str| {
+        format!(
+            "system {{\n    state-version \"25.11\"\n    input \"nixpkgs\" url=\"github:NixOS/nixpkgs\"\n{extra}}}\n"
+        )
+    };
+    fs::write(root.join("knixl.kdl"), project("")).unwrap();
+    fs::write(
+        root.join("hosts/box.kdl"),
+        format!(
+            "host \"box\" {{\n    system \"x86_64-linux\"\n    nixpkgs release=\"unstable\" rev=\"{}\"\n}}\n",
+            rev('a')
+        ),
+    )
+    .unwrap();
+
+    let up = knixl(&root, &["upgrade", "--yes"]);
+    assert_eq!(
+        up.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&up.stderr)
+    );
+    let gen = knixl(&root, &["generate"]);
+    assert_eq!(
+        gen.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&gen.stderr)
+    );
+
+    fs::write(
+        root.join("knixl.kdl"),
+        project(&format!(
+            "    input \"disko\" url=\"github:nix-community/disko\" rev=\"{}\"\n",
+            rev('b')
+        )),
+    )
+    .unwrap();
+    assert_eq!(
+        knixl(&root, &["generate"]).status.code(),
+        Some(5),
+        "unresolved input refuses"
+    );
+
+    let up = knixl(&root, &["upgrade", "--yes"]);
+    assert_eq!(
+        up.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&up.stderr)
+    );
+    let flake = fs::read_to_string(root.join("generated/flake.nix")).unwrap();
+    assert!(
+        flake.contains(&format!("github:nix-community/disko/{}", rev('b'))),
+        "upgrade wrote the new flake: {flake}"
+    );
+    let gen = knixl(&root, &["generate"]);
+    assert_eq!(
+        gen.status.code(),
+        Some(0),
+        "no drift after upgrade: {}",
+        String::from_utf8_lossy(&gen.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}

@@ -89,11 +89,30 @@ pub const DEFAULT_NIXPKGS_URL: &str = "https://github.com/NixOS/nixpkgs";
 
 /// Parsed `system {}` block: opts a project into emitting a bootable system flake.
 /// `state_version` is mandatory (NixOS requires it and refuses to guess it for you);
-/// `nixpkgs_url` defaults to `DEFAULT_NIXPKGS_URL` when the block omits it.
+/// `nixpkgs_url` defaults to `DEFAULT_NIXPKGS_URL` when the block omits it. A non-empty
+/// `inputs` switches the flake to input mode (ADR 0014), where `nixpkgs_url` is unused.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SystemConfig {
     pub state_version: String,
     pub nixpkgs_url: String,
+    pub inputs: Vec<FlakeInput>,
+    pub formatter: Option<String>,
+}
+
+/// One `input "<name>" url="<ref>" [rev="<commit>"] [flake=#false] { follows <k>="<v>" }`
+/// in `system {}` (ADR 0014). `follows` maps an input of this input to a project input.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FlakeInput {
+    pub name: String,
+    pub url: String,
+    pub rev: Option<String>,
+    pub flake: bool,
+    pub follows: Vec<(String, String)>,
+}
+
+/// Whether `rev` is a full 40-character hex commit, the only form knixl pins by.
+pub fn is_full_rev(rev: &str) -> bool {
+    rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -108,6 +127,8 @@ pub enum ProjectError {
     UnknownSecretsBackend(String),
     #[error("knixl.kdl: modules {{}} block: module `{0}` requires a flake")]
     MissingModuleFlake(String),
+    #[error("knixl.kdl: system {{}}: {0}")]
+    InvalidInput(String),
 }
 
 /// Parse `root/knixl.kdl`. An absent file is not an error: it yields `ProjectConfig::default()`
@@ -141,11 +162,24 @@ pub fn parse_project(root: &Path) -> Result<ProjectConfig, ProjectError> {
         Some(node) => {
             let state_version = knixl_kdl::child_arg_str(node, "state-version")
                 .ok_or(ProjectError::MissingStateVersion)?;
-            let nixpkgs_url = knixl_kdl::child_arg_str(node, "nixpkgs-url")
-                .unwrap_or_else(|| DEFAULT_NIXPKGS_URL.to_string());
+            let declared_url = knixl_kdl::child_arg_str(node, "nixpkgs-url");
+            let inputs = flake_inputs_from_node(node)?;
+            if !inputs.is_empty() && declared_url.is_some() {
+                return Err(ProjectError::InvalidInput(
+                    "`nixpkgs-url` and `input` nodes cannot both be declared: declare nixpkgs as `input \"nixpkgs\"`".into(),
+                ));
+            }
+            let formatter = knixl_kdl::child_arg_str(node, "formatter");
+            if formatter.is_some() && inputs.is_empty() {
+                return Err(ProjectError::InvalidInput(
+                    "`formatter` needs flake inputs (it reads nixpkgs.legacyPackages)".into(),
+                ));
+            }
             Some(SystemConfig {
                 state_version,
-                nixpkgs_url,
+                nixpkgs_url: declared_url.unwrap_or_else(|| DEFAULT_NIXPKGS_URL.to_string()),
+                inputs,
+                formatter,
             })
         }
     };
@@ -242,6 +276,81 @@ fn oracle_modules_from_node(node: &KdlNode) -> Vec<OracleModule> {
         .collect()
 }
 
+/// The `input` children of `system {}`, checked so the generated flake can pin each one: a
+/// `nixpkgs` input is required once any is declared (its rev is the host baseline, so it
+/// takes no `rev=` and no ref in its url), a `rev=` must be a full commit, and a `github:` url
+/// may not carry a branch or tag (the resolver would pin HEAD, not that ref).
+fn flake_inputs_from_node(node: &KdlNode) -> Result<Vec<FlakeInput>, ProjectError> {
+    let bad = |m: String| ProjectError::InvalidInput(m);
+    let mut inputs: Vec<FlakeInput> = Vec::new();
+    for n in children_named(node, "input") {
+        let name = knixl_kdl::first_arg_str(n).unwrap_or_default();
+        if name.is_empty() {
+            return Err(bad("an `input` needs a name".into()));
+        }
+        if inputs.iter().any(|i| i.name == name) {
+            return Err(bad(format!("input `{name}` is declared twice")));
+        }
+        let url = n
+            .get("url")
+            .and_then(|v| v.as_string())
+            .ok_or_else(|| bad(format!("input `{name}` requires a url")))?
+            .to_string();
+        let rev = n.get("rev").and_then(|v| v.as_string()).map(str::to_string);
+        if let Some(r) = &rev {
+            if !is_full_rev(r) {
+                return Err(bad(format!(
+                    "input `{name}`: rev \"{r}\" is not a full 40-character commit"
+                )));
+            }
+        }
+        if let Some(path) = url.strip_prefix("github:") {
+            if path.split('?').next().unwrap_or("").split('/').count() != 2 {
+                return Err(bad(format!(
+                    "input `{name}`: url \"{url}\" carries a ref; pin it with rev= instead"
+                )));
+            }
+        }
+        if name == "nixpkgs" && rev.is_some() {
+            return Err(bad(
+                "input `nixpkgs` takes its rev from the host baseline: use `nixpkgs release=\"..\" rev=\"..\"` on the host".into(),
+            ));
+        }
+        let flake = n.get("flake").and_then(|v| v.as_bool()).unwrap_or(true);
+        let mut follows: Vec<(String, String)> = children_named(n, "follows")
+            .flat_map(|f| f.entries().iter())
+            .filter_map(|e| {
+                let key = e.name()?.value().to_string();
+                let value = e.value().as_string()?.to_string();
+                Some((key, value))
+            })
+            .collect();
+        follows.sort();
+        inputs.push(FlakeInput {
+            name,
+            url,
+            rev,
+            flake,
+            follows,
+        });
+    }
+    if !inputs.is_empty() && !inputs.iter().any(|i| i.name == "nixpkgs") {
+        return Err(bad("flake inputs need an `input \"nixpkgs\"`".into()));
+    }
+    for i in &inputs {
+        for (_, target) in &i.follows {
+            if !inputs.iter().any(|j| &j.name == target) {
+                return Err(bad(format!(
+                    "input `{}` follows `{target}`, which is not a declared input",
+                    i.name
+                )));
+            }
+        }
+    }
+    inputs.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(inputs)
+}
+
 /// The `module` children of a `modules` block: `name` is the first positional argument,
 /// `flake` is a required prop (a `module` with none is a `ProjectError`), `path` is an
 /// optional prop defaulting to `""` (repo root).
@@ -326,6 +435,56 @@ mod tests {
         let s = p.system.expect("system present");
         assert_eq!(s.state_version, "25.05");
         assert_eq!(s.nixpkgs_url, DEFAULT_NIXPKGS_URL);
+    }
+
+    fn system_err(body: &str) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("knixl.kdl"),
+            format!("system {{\n    state-version \"25.11\"\n{body}\n}}\n"),
+        )
+        .unwrap();
+        parse_project(dir.path()).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn system_block_reads_flake_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("knixl.kdl"),
+            "system {\n    state-version \"25.11\"\n    formatter \"nixfmt-rfc-style\"\n    input \"nixpkgs\" url=\"github:NixOS/nixpkgs\"\n    input \"disko\" url=\"github:nix-community/disko\" rev=\"ff8702b4de27f72b4c78573dfb89ec74e36abdf1\" {\n        follows nixpkgs=\"nixpkgs\"\n    }\n    input \"blobs\" url=\"github:o/blobs\" flake=#false\n}\n",
+        )
+        .unwrap();
+        let s = parse_project(dir.path()).unwrap().system.unwrap();
+        let names: Vec<&str> = s.inputs.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["blobs", "disko", "nixpkgs"], "sorted by name");
+        assert!(!s.inputs[0].flake);
+        assert_eq!(
+            s.inputs[1].follows,
+            vec![("nixpkgs".to_string(), "nixpkgs".to_string())]
+        );
+        assert_eq!(
+            s.inputs[1].rev.as_deref(),
+            Some("ff8702b4de27f72b4c78573dfb89ec74e36abdf1")
+        );
+        assert_eq!(s.formatter.as_deref(), Some("nixfmt-rfc-style"));
+    }
+
+    #[test]
+    fn flake_inputs_are_refused_when_malformed() {
+        let nixpkgs = "    input \"nixpkgs\" url=\"github:NixOS/nixpkgs\"";
+        for (body, needle) in [
+            ("    input \"disko\" url=\"github:nix-community/disko\"".to_string(), "need an `input \"nixpkgs\"`"),
+            (format!("{nixpkgs}\n    nixpkgs-url \"https://x\""), "cannot both"),
+            ("    input \"nixpkgs\" url=\"github:NixOS/nixpkgs/nixos-unstable\"".to_string(), "carries a ref"),
+            (format!("{nixpkgs}\n    input \"d\" url=\"github:o/d\" rev=\"abc\""), "full 40-character"),
+            (format!("{nixpkgs}\n    input \"d\" url=\"github:o/d\" {{\n        follows nixpkgs=\"nope\"\n    }}"), "not a declared input"),
+            (format!("{nixpkgs}\n{nixpkgs}"), "declared twice"),
+            ("    formatter \"nixfmt\"".to_string(), "needs flake inputs"),
+        ] {
+            let err = system_err(&body);
+            assert!(err.contains(needle), "{body}: {err}");
+        }
     }
 
     #[test]

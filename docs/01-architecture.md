@@ -16,7 +16,7 @@ KDL inputs
   -> write generated/*.nix + knixl.lock.kdl
 ```
 
-When the project declares `system {}`, the pipeline additionally generates `generated/flake.nix`, an optional locked artefact defining per-host NixOS configurations, each pinned to that host's baseline nixpkgs rev. It is reconciled and hashed like the host modules.
+When the project declares `system {}`, the pipeline additionally generates `generated/flake.nix`, an optional locked artefact defining per-host NixOS configurations, each pinned to that host's baseline nixpkgs rev. It is reconciled and hashed like the host modules. With `input` nodes declared (ADR 0014) the flake takes its inputs pinned from `knixl.lock.kdl` and builds with `nixpkgs.lib.nixosSystem`; the `flake.lock` nix writes beside it is derived from those pins and only compared by `check`, never hashed.
 
 The whole thing is a pure function from (KDL, tool version, module versions, formatter version, oracle rev) to output bytes. `Plan::compute` runs everything up to "write" and produces a diff; the commands decide whether to write.
 

@@ -118,6 +118,13 @@ fn schema() -> NodeSchema {
                 ty: ValueTy::Str,
                 required: false,
                 doc: "The declared nixpkgs release, e.g. \"25.05\".".into(),
+            }, Field {
+                name: "rev".into(),
+                ty: ValueTy::Str,
+                required: false,
+                doc: "Pins the baseline to this exact 40-character commit instead of the \
+                      release branch tip, e.g. the commit a running system was built from \
+                      (ADR 0014). Needs `release=` beside it.".into(),
             }],
         }, Child {
             name: "oracle-modules".into(),

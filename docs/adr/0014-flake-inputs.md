@@ -39,17 +39,21 @@ When `system {}` declares `input` nodes, knixl generates a flake with those inpu
 exactly by `knixl.lock.kdl`, and builds hosts and images with `nixpkgs.lib.nixosSystem`. Without
 them, emission is unchanged.
 
-- **Flake inputs are declared in `system {}`**: `input "<name>" url="<flake ref>" [flake=#false]
-  { follows nixpkgs="nixpkgs" }`. Each `follows` child maps an input of this input (the key) to
+- **Flake inputs are declared in `system {}`**: `input "<name>" url="<flake ref>" [rev="<commit>"]
+  [flake=#false] { follows nixpkgs="nixpkgs" }`. Each `follows` child maps an input of this input (the key) to
   one of the project's own inputs (the value), emitted as
   `inputs.<name>.inputs.<key>.follows = "<value>"`. `flake=#false` emits `flake = false` for a
   non-flake source. `nixpkgs` is itself an input and is required once any input is declared. Its
   `url` carries no ref (its rev is the baseline, below), and it takes the place of the existing
   `system {}` child `nixpkgs-url`, so declaring both is refused.
-- **`knixl.lock.kdl` stays the single source of truth**: `install`/`upgrade` resolve every input
-  other than `nixpkgs` to a full 40-character rev, with the resolver oracle modules already use
-  (ADR 0008: `KNIXL_MODULE_RESOLVER` when set, otherwise the built-in `git ls-remote`, which
-  handles `github:` refs). A rev that is not 40 hex characters is refused. The pin is recorded in
+- **`knixl.lock.kdl` stays the single source of truth**: `upgrade` resolves every input other
+  than `nixpkgs` to a full 40-character rev. A declared `rev=` is recorded as written (a migration
+  needs the exact commits a running system was built from, which are rarely the current tips);
+  anything else goes through the resolver oracle modules already use (ADR 0008:
+  `KNIXL_MODULE_RESOLVER` when set, otherwise the built-in `git ls-remote`, which handles
+  `github:` refs and pins HEAD, so a `github:` url carrying a branch or tag is refused). A rev
+  that is not 40 hex characters is refused. `install` doesn't resolve inputs (it never needs
+  them); an unresolved input refuses generation with a message pointing at `upgrade`. The pin is recorded in
   the same shape as an `oracle-module` line, as a proposed top-level
   `flake-input name="<name>" url="<url>" rev="<rev>"` line (the lock's `input` node name is
   already taken by the KDL input file hashes). The generated flake writes that rev into each
@@ -64,9 +68,10 @@ them, emission is unchanged.
   left stale after an `upgrade` moved the baseline.
 - **The nixpkgs input is the baseline**: its rev is the baseline rev (ADR 0007), so oracle
   validation, pin feasibility (ADR 0006) and the build all see the same nixpkgs by construction.
-  There is one `nixpkgs` input per flake, so in input mode every host must resolve to the
-  project's baseline rev (the lock's `oracle` rev); a host whose own baseline differs is refused
-  (exit 5). ADR 0007's deferral is lifted: `nixpkgs release="<rel>" rev="<full rev>"` pins a
+  There is one `nixpkgs` input per flake, so in input mode every host must share one baseline
+  rev, and a project whose hosts differ is refused (exit 5). With `system {}` every host already
+  declares its own baseline (ADR 0009), so the shared host rev is the input's rev; image targets
+  use it too, and only a project with no hosts falls back to the lock's `oracle` rev. ADR 0007's deferral is lifted: `nixpkgs release="<rel>" rev="<full rev>"` pins a
   baseline to an exact commit, such as the one a running system was built from. `install` and
   `upgrade` record the declared rev as `nixpkgs-rev` without resolving the release branch, and
   `upgrade` never moves it (only a KDL edit does). `release=` stays required beside `rev=`,
@@ -131,7 +136,10 @@ them, emission is unchanged.
   way, and only on `upgrade`.
 - One `nixpkgs` input per flake means a fleet split across releases can't use input mode yet.
   Those projects stay on the input-free path until more than one nixpkgs input is designed.
-- The `nixosSystem` point is expected behaviour, pending the migration test. If the toplevels
+- The `nixosSystem` point is expected behaviour, pending the migration test. An early check
+  supports it: a generated input-mode host pinned to `241313f4e8e5` evaluates
+  `system.nixos.version` to `26.11.20260719.241313f` and `system.nixos.revision` to the full rev,
+  which is what a flake-built system on that commit reports. If the toplevels
   still differ, the gap gets written down here before this moves to accepted. The same test
   should confirm that a `default-file` outside `generated/` is reachable from a flake rooted
   there.

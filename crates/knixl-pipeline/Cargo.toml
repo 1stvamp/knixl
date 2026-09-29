@@ -20,6 +20,7 @@ knixl-lock = { path = "../knixl-lock", version = "1.2.0" }
 knixl-oracle = { path = "../knixl-oracle", version = "1.2.0" }
 kdl.workspace = true
 semver.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
