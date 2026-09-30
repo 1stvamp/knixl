@@ -4,6 +4,8 @@ import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
 import data from '../generated/site-data.json';
 
 const installer = `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/1stvamp/knixl/releases/download/v${data.version}/knixl-installer.sh | sh`;
+const nix = `nix run github:1stvamp/knixl/v${data.version} -- --help      # try it
+nix profile install github:1stvamp/knixl/v${data.version}  # install it`;
 ---
 
 <div class="install not-content">
@@ -20,6 +22,15 @@ const installer = `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/1stv
 		<TabItem label="Cargo">
 			<Code code={`cargo install knixl --version ${data.version}`} lang="sh" />
 			<p>Builds from crates.io. Needs Rust 1.87 or newer.</p>
+		</TabItem>
+		<TabItem label="Nix">
+			<Code code={nix} lang="sh" />
+			<p>
+				From the flake in the repo, pinned to the release tag. It brings its own <code>nixfmt</code
+				>, used when you don't have one on your <code>PATH</code>. An overlay (<code
+					>overlays.default</code
+				>) is there too, for adding knixl to a NixOS or home-manager config.
+			</p>
 		</TabItem>
 		<TabItem label="mise">
 			<Code code={`mise use github:1stvamp/knixl@${data.version}`} lang="sh" />

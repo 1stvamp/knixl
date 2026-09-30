@@ -80,7 +80,7 @@ The binary lands at `target/release/knixl`.
 `generate`, `check`, and `install` also need:
 
 - **Nix** on PATH, for the oracle (option-path validation) and for `install`'s package eval.
-- **a formatter**: `nixfmt-rfc-style` or `nixfmt` on PATH. `KNIXL_FORMATTER` overrides which binary is used. The Nix flake install already wraps `nixfmt` onto knixl's PATH.
+- **a formatter**: `nixfmt-rfc-style` or `nixfmt` on PATH. `KNIXL_FORMATTER` overrides which binary is used. The Nix flake install brings its own `nixfmt`, used when there isn't one on your PATH already.
 
 **Note:** without the oracle's `options.json` cache populated, path validation is quietly skipped, so a typo'd option path will not be caught. See docs/06-oracle.md for the cache.
 
