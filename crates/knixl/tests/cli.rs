@@ -1564,3 +1564,27 @@ fn upgrade_adding_a_flake_input_rewrites_the_flake_and_generate_stays_clean() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+/// #108: `doc` only needs the module registry, so an invalid or unparsable host elsewhere in
+/// the project must not stop it printing a reference.
+#[test]
+fn doc_works_whatever_state_the_hosts_are_in() {
+    let root = temp_project("doc-invalid-hosts");
+    fs::write(
+        root.join("hosts/typo.kdl"),
+        "host \"typo\" {\n    os {\n        timezon \"UTC\"\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(root.join("hosts/broken.kdl"), "host \"broken\" {\n").unwrap();
+
+    let out = knixl(&root, &["doc", "openssh"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("openssh"));
+
+    let _ = fs::remove_dir_all(&root);
+}

@@ -771,6 +771,17 @@ pub fn registry(root: &Path) -> Result<Registry, GatherError> {
     Ok(build_registry(root, &[], &[])?.0)
 }
 
+/// The registry `doc` looks nodes up in: every layer, including fetched modules resolved
+/// through the lock's pins, but without generating anything, so it works whatever state the
+/// project's hosts are in (#108).
+pub fn doc_registry(root: &Path) -> Result<Registry, GatherError> {
+    let project = parse_project(root).map_err(|e| GatherError::Module(e.to_string()))?;
+    let pins = read_lock(root)?
+        .map(|l| l.module_sources)
+        .unwrap_or_default();
+    Ok(build_registry(root, &project.module_sources, &pins)?.0)
+}
+
 /// Layers the registry per ADR 0010 (built-in, local, fetched, embedded stdlib); see there for
 /// the precedence and shadow-notice rules. Fetched sources resolve through the lock's `pins`
 /// rather than the network (issue #13), so this stays offline.
