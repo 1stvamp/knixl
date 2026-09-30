@@ -8,6 +8,41 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-30
+
+The Nix flake stops overriding your own `nixfmt`, a duplicated `os` setting is refused
+rather than dropped, and some generated output gets tidier. knixl also has a site now:
+[knixl.dev](https://knixl.dev).
+
+Two entries below change behaviour for an existing project: a duplicated scalar child of
+`os` now refuses, and the output changes regenerate a few files, which `knixl upgrade` shows
+as a regeneration.
+
+### Added
+- [knixl.dev](https://knixl.dev): a landing page with recorded demos, the docs and ADRs, a
+  page per example host and this changelog, all built from the repo (#106).
+
+### Changed
+- The flake's bundled `nixfmt` now goes on the end of knixl's `PATH`, so a `nixfmt` you
+  already have wins (#115). It used to take precedence, and since the lock records the
+  formatter version, anyone with their own `nixfmt` saw version skew whenever the flake's
+  nixpkgs shipped a different release. The overlay now builds knixl against the nixpkgs it
+  is applied to, and the package itself lives in `nix/package.nix`.
+- Generated Nix drops redundant parentheses around function arguments, e.g.
+  `builtins.fetchGit { ... }` in a pinned package, and writes an empty list as `[ ]` on one
+  line (#109). A host with a pinned package or an empty list option regenerates.
+- The input-mode system flake leaves out an empty `let`/`in` when it has no image targets
+  (#109).
+
+### Fixed
+- A scalar child of `os` given twice (`timezone`, `state-version`, `locale` and four more)
+  was accepted, and only the first reached the Nix (#107). It now refuses with exit 5. **A
+  project carrying such a duplicate has been generating from the first one and will fail
+  until it is removed.**
+- `knixl doc <node>` failed when any host in the project was invalid or failed to parse
+  (#108). It now reads only the module registry.
+- `knixl doc` no longer leaves trailing spaces on lines with no description (#109).
+
 ## [1.5.2] - 2026-09-30
 
 Release artefacts now carry GitHub build provenance.
@@ -263,7 +298,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/1stvamp/knixl/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/1stvamp/knixl/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/1stvamp/knixl/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/1stvamp/knixl/compare/v1.4.0...v1.5.0
