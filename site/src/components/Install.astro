@@ -12,8 +12,9 @@ const installer = `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/1stv
 			<Code code={installer} lang="sh" />
 			<p>
 				Prebuilt binaries for Linux (gnu and musl) and macOS, on x86_64 and aarch64. Each archive
-				carries GitHub build provenance, so you can check it with
-				<code>gh attestation verify &lt;archive&gt; -R 1stvamp/knixl</code>.
+				carries GitHub build provenance, so you can check it with <code
+					>gh attestation verify &lt;archive&gt; -R 1stvamp/knixl</code
+				>.
 			</p>
 		</TabItem>
 		<TabItem label="Cargo">
@@ -26,8 +27,9 @@ const installer = `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/1stv
 		</TabItem>
 	</Tabs>
 	<p class="need">
-		knixl runs <code>nixfmt</code> on its output, so have it on your <code>PATH</code> (or point
-		<code>KNIXL_FORMATTER</code> at it). <code>nix</code> itself is only needed for the option
+		knixl runs <code>nixfmt</code> on its output, so have it on your <code>PATH</code> (or point <code
+			>KNIXL_FORMATTER</code
+		> at it). <code>nix</code> itself is only needed for the option
 		oracle and pin verification.
 	</p>
 </div>
