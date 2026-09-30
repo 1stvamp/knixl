@@ -253,7 +253,10 @@ pub fn render_input_flake(
     }
     s.push_str("  };\n");
     s.push_str("  outputs = { nixpkgs, ... }@inputs:\n");
-    s.push_str("    let\n");
+    // The let only binds image configurations; with none it would be empty.
+    if !inst.is_empty() {
+        s.push_str("    let\n");
+    }
     for i in &inst {
         s.push_str(&format!(
             "      {} = nixpkgs.lib.nixosSystem {{\n",
@@ -265,7 +268,9 @@ pub fn render_input_flake(
         modules(&mut s, "        ", &[], &i.module_path, &[]);
         s.push_str("      };\n");
     }
-    s.push_str("    in\n");
+    if !inst.is_empty() {
+        s.push_str("    in\n");
+    }
     s.push_str("    {\n");
     s.push_str("      nixosConfigurations = {\n");
     for h in &sorted {
@@ -594,6 +599,13 @@ mod tests {
             out.contains("modules = [\n            ./hosts/db.nix\n"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn input_flake_without_images_has_no_let() {
+        let out = render_input_flake(&inputs(), &hosts(), &[], "25.11", None);
+        assert!(!out.contains("let"), "{out}");
+        assert!(!out.contains("    in\n"), "{out}");
     }
 
     #[test]

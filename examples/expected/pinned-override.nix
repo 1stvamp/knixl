@@ -15,14 +15,14 @@
       let
         _pin =
           (import
-            (builtins.fetchGit ({
+            (builtins.fetchGit {
               rev = "0000000000000000000000000000000000000abc";
               shallow = true;
               url = "https://github.com/NixOS/nixpkgs";
-            }))
-            ({
-              system = pkgs.system;
             })
+            {
+              system = pkgs.system;
+            }
           ).htop;
       in
       pkgs.htop.overrideAttrs (
