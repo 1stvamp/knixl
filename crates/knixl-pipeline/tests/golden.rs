@@ -194,6 +194,20 @@ fn a_typo_in_a_claimed_module_refuses_to_generate() {
 }
 
 #[test]
+fn a_scalar_os_child_given_twice_refuses_to_generate() {
+    // #107: both timezones passed validation and only the first was emitted, exit 0.
+    let errs = refusal(
+        "hosts/a.kdl",
+        "host \"a\" {\n    system \"x86_64-linux\"\n    os {\n        timezone \"Europe/London\"\n        timezone \"UTC\"\n    }\n}",
+    );
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("child `timezone` may appear at most once")),
+        "{errs:?}"
+    );
+}
+
+#[test]
 fn a_top_level_typo_refuses_as_validation_not_an_internal_error() {
     // A top-level unknown node already failed, but as UnknownNode, which the CLI reported as
     // exit 1. docs/05-cli.md documents exit 5 for a KDL schema error, so it is Validation now.

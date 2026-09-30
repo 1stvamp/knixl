@@ -307,42 +307,42 @@ fn schema() -> NodeSchema {
             node_child("timezone", ValueTy::Str, "time.timeZone."),
             node_child("locale", ValueTy::Str, "i18n.defaultLocale."),
             node_child("mutable-users", ValueTy::Bool, "users.mutableUsers."),
-            node_child(
+            list_child(
                 "sysctl",
                 ValueTy::Node,
                 "boot.kernel.sysctl entries as props, e.g. sysctl \"net.ipv4.ip_forward\"=1.",
             ),
-            node_child(
+            list_child(
                 "kernel-module",
                 ValueTy::Str,
                 "boot.kernelModules entry, e.g. \"br_netfilter\". Repeatable.",
             ),
-            node_child(
+            list_child(
                 "tmpfiles-rule",
                 ValueTy::Node,
                 "systemd.tmpfiles.rules entry: a path plus type= and optional mode=/user=/group=/age=/argument=. Repeatable.",
             ),
-            node_child(
+            list_child(
                 "experimental-feature",
                 ValueTy::Str,
                 "nix.settings.experimental-features entry. Repeatable.",
             ),
-            node_child(
+            list_child(
                 "trusted-user",
                 ValueTy::Str,
                 "nix.settings.trusted-users entry. Repeatable.",
             ),
-            node_child(
+            list_child(
                 "nix-setting",
                 ValueTy::Node,
                 "Scalar nix.settings entries as props, e.g. nix-setting \"max-jobs\"=4.",
             ),
-            node_child(
+            list_child(
                 "system-package",
                 ValueTy::Str,
                 "environment.systemPackages entry, a pkgs attr. Repeatable.",
             ),
-            node_child(
+            list_child(
                 "session-variable",
                 ValueTy::Node,
                 "environment.sessionVariables entries as props, e.g. session-variable \"EDITOR\"=\"vim\".",
@@ -352,7 +352,16 @@ fn schema() -> NodeSchema {
     }
 }
 
+/// A child that takes one value per host (the list-shaped ones use `list_child`).
 fn node_child(name: &str, ty: ValueTy, doc: &str) -> Child {
+    Child {
+        repeated: false,
+        ..list_child(name, ty, doc)
+    }
+}
+
+/// A child that may appear any number of times, each occurrence adding entries.
+fn list_child(name: &str, ty: ValueTy, doc: &str) -> Child {
     Child {
         name: name.into(),
         ty,
@@ -385,6 +394,31 @@ mod tests {
         let mut diags = Vec::new();
         let mut ctx = LowerCtx::new(Scope { host: "nas".into() }, &reg, &mut diags, vec![]);
         m.lower(&node(src), &mut ctx).expect("lower ok").units
+    }
+
+    #[test]
+    fn a_scalar_child_given_twice_is_refused() {
+        // #107: every child was repeatable, so the second timezone passed validation and
+        // lower() silently took the first.
+        for child in [
+            "state-version \"25.11\"",
+            "boot-loader \"systemd-boot\"",
+            "efi-can-touch-variables #true",
+            "kernel-package \"linuxPackages_6_18\"",
+            "timezone \"UTC\"",
+            "locale \"en_GB.UTF-8\"",
+            "mutable-users #false",
+        ] {
+            let src = format!("os {{\n    {child}\n    {child}\n}}");
+            let errs = Os::new().schema().validate(&node(&src)).unwrap_err();
+            assert_eq!(errs.len(), 1, "{child}: {errs:?}");
+        }
+    }
+
+    #[test]
+    fn list_children_stay_repeatable() {
+        let src = "os {\n    kernel-module \"kvm-amd\"\n    kernel-module \"vfio\"\n    system-package \"git\"\n    system-package \"htop\"\n    sysctl \"vm.swappiness\"=10\n    sysctl \"net.core.somaxconn\"=1024\n}";
+        assert!(Os::new().schema().validate(&node(src)).is_ok());
     }
 
     fn find<'a>(units: &'a [Unit], path: &str) -> Option<&'a NixExpr> {
