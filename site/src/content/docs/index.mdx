@@ -1,0 +1,85 @@
+---
+title: knixl
+description: knixl generates maintainable, human-readable Nix from small amounts of opinionated KDL.
+template: splash
+tableOfContents: false
+hero:
+  title: A few lines of KDL. Readable, locked Nix.
+  tagline: knixl generates maintainable, human-readable NixOS modules from small amounts of opinionated KDL. The KDL is the source of truth, the generated Nix is a committed build artefact, and an upgrade can never change your output without telling you first.
+  actions:
+    - text: Get started
+      link: /docs/overview/
+      icon: right-arrow
+    - text: See examples
+      link: /examples/web/
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/1stvamp/knixl
+      icon: external
+      variant: minimal
+---
+
+import CodePair from '../../components/CodePair.astro';
+import Demo from '../../components/Demo.astro';
+import Feature from '../../components/Feature.astro';
+import Install from '../../components/Install.astro';
+import Pipeline from '../../components/Pipeline.astro';
+import { Code } from '@astrojs/starlight/components';
+import data from '../../generated/site-data.json';
+
+<div class="landing-section" style="border-top: 0; padding-top: 0">
+	<CodePair kdl={data.web.kdl} nix={data.web.nix} kdlTitle="hosts/web.kdl" nixTitle="generated/hosts/web.nix" />
+</div>
+
+<Feature id="generate" title="Compile, check, and read back">
+	<p>`knixl generate` expands each host into an idiomatic NixOS module, formats it with the pinned `nixfmt`, and records every output's hash in `knixl.lock.kdl`. Run it twice and you get the same bytes.</p>
+	<p>`knixl check` is the CI gate: it recomputes everything and exits non-zero if anything is out of date, drifted or invalid. `knixl doc <node>` prints the typed reference for any module, straight from its schema.</p>
+	<Demo slot="media" name="generate" caption="generate, check, and the reference for web-service" commands="knixl generate && knixl check && knixl doc web-service" />
+</Feature>
+
+<Feature id="drift" title="Stale or drifted, knixl can tell" flip>
+	<p>Change the KDL and the generated file is **stale**: `generate` rewrites it. Edit a generated file by hand and it is **drifted**: knixl tells the two apart with a third hash, and refuses to overwrite a human's edit (exit 3) unless you say `--accept-drift`.</p>
+	<p>Nothing is silently lost, and CI can branch on the exit code.</p>
+	<Demo slot="media" name="drift" caption="a KDL edit makes a file stale; a hand-edit makes it drifted" commands="knixl plan && knixl generate" />
+</Feature>
+
+<Feature id="oracle" title="Checked against real NixOS options">
+	<p>Every option path knixl emits is checked against the `nixosOptionsDoc` option set for your pinned nixpkgs, plus the out-of-tree modules you declare (disko, sops-nix, home-manager). A misspelt option or a string where an integer belongs refuses to generate, before `nixos-rebuild` ever sees it.</p>
+	<p>KDL that no module understands refuses too (exit 5), so a typo never quietly drops out of your config.</p>
+	<Demo slot="media" name="oracle" caption="a misspelt KDL child refused before any Nix is written (exit 5)" commands="knixl check; echo $?" />
+</Feature>
+
+<Feature id="pinning" title="Pin a package by version" flip>
+	<p>`knixl install curl@8.4.0` finds the nixpkgs commit that shipped that version, records it per host in the lock, and emits the package from that commit. knixl build-tests how to pin it: overriding the current package's source when that builds, and falling back to the whole package from the old commit when it doesn't.</p>
+	<p>Each host can also pin its own baseline nixpkgs release, or an exact commit.</p>
+	<Demo slot="media" name="pin" caption="a version-pinned package landing in the lock and the generated Nix (the build test is skipped here to keep the recording short)" commands="knixl install curl@8.4.0 --host web --yes --no-abi-check" />
+</Feature>
+
+<Feature id="modules" title="Modules are KDL too">
+	<p>A module is a schema plus an emit template. The stdlib ships inside the binary (openssh, tailscale, zfs, users, home-manager, web services and more), and your own modules in `modules/` sit beside it, written the same way. Fetched modules are pinned in the lock like everything else.</p>
+	<p>Where a layer shadows another, knixl says so rather than picking silently.</p>
+	<div slot="media"><Code code={data.openssh.trimEnd()} lang="kdl" title="stdlib/openssh/knixl-module.kdl" /></div>
+</Feature>
+
+<Feature id="tui" title="A TUI when you want one" flip>
+	<p>`knixl tui` installs packages with a live preview of the generated Nix, browses the module library and its schemas, and drafts new modules with the schema validated as you type.</p>
+	<p>Everything it does is also a plain command, so scripts and CI never need it.</p>
+	<Demo slot="media" name="tui" caption="the TUI: home, browsing modules, and a module's reference" commands="knixl tui" />
+</Feature>
+
+<Feature id="flake" title="Generate the whole system flake">
+	<p>Add a `system {}` block and knixl generates `flake.nix` as well: every host as a `nixosConfiguration`, installer ISOs and lxc guest images as packages. Declare flake inputs and their modules, and knixl pins each input's commit in its own lock, so the `flake.lock` nix writes is fixed by it.</p>
+	<p>Migrated systems come out byte-identical: a real host moved onto a generated flake evaluates to the same store path it ran before.</p>
+	<Demo slot="media" name="flake" caption="flake inputs pinned from the lock, then generated and checked" commands="knixl upgrade --yes && knixl generate && knixl check" />
+</Feature>
+
+<section class="landing-section">
+	<h2>How it works</h2>
+	<p>One pure function from your KDL, the tool and module versions, the formatter and the oracle's nixpkgs to output bytes. `plan` computes the whole thing without writing a byte; every other command is a policy over that plan.</p>
+	<Pipeline />
+</section>
+
+<section class="landing-section" id="install">
+	<h2>Install <span class="version-pill">v{data.version}</span></h2>
+	<Install />
+</section>

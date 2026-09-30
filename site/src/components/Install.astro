@@ -1,0 +1,44 @@
+---
+// Ways to install, with the current release number from Cargo.toml.
+import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+import data from '../generated/site-data.json';
+
+const installer = `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/1stvamp/knixl/releases/download/v${data.version}/knixl-installer.sh | sh`;
+---
+
+<div class="install not-content">
+	<Tabs syncKey="install">
+		<TabItem label="Installer">
+			<Code code={installer} lang="sh" />
+			<p>
+				Prebuilt binaries for Linux (gnu and musl) and macOS, on x86_64 and aarch64. Each archive
+				carries GitHub build provenance, so you can check it with
+				<code>gh attestation verify &lt;archive&gt; -R 1stvamp/knixl</code>.
+			</p>
+		</TabItem>
+		<TabItem label="Cargo">
+			<Code code={`cargo install knixl --version ${data.version}`} lang="sh" />
+			<p>Builds from crates.io. Needs Rust 1.87 or newer.</p>
+		</TabItem>
+		<TabItem label="mise">
+			<Code code={`mise use github:1stvamp/knixl@${data.version}`} lang="sh" />
+			<p>Installs the release binary and verifies its attestation.</p>
+		</TabItem>
+	</Tabs>
+	<p class="need">
+		knixl runs <code>nixfmt</code> on its output, so have it on your <code>PATH</code> (or point
+		<code>KNIXL_FORMATTER</code> at it). <code>nix</code> itself is only needed for the option
+		oracle and pin verification.
+	</p>
+</div>
+
+<style>
+	.install :global(p) {
+		margin-top: 0.75rem;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-3);
+	}
+	.need {
+		margin-top: 1rem;
+	}
+</style>

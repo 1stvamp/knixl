@@ -11,6 +11,14 @@ the `chore(release): x.y.z` version bump, so the entry rides in on the release
 PR. cargo-dist matches the section heading to the version being released, so the
 heading has to read `## [x.y.z] - YYYY-MM-DD`.
 
+## Re-recording the site demos
+
+knixl.dev's demo videos are recorded from the real binary by `site/media/record.sh`. When a
+release changes what a recorded command prints (a new line in `plan`, a reworded refusal, a TUI
+screen), re-record before the release PR with `mise run site:record` (or name the tapes, e.g.
+`mise run site:record -- drift pin`), view the regenerated posters in `site/public/media/`,
+and commit the videos with the release.
+
 ## The prompt
 
 Feed this to the release-runner (a person or an agent). It assumes you are at the

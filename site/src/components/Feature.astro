@@ -1,0 +1,63 @@
+---
+// One feature run-through: heading and prose beside a demo or code sample. `flip` swaps sides
+// so consecutive features alternate.
+interface Props {
+	id: string;
+	title: string;
+	flip?: boolean;
+}
+const { id, title, flip = false } = Astro.props;
+---
+
+<section class:list={['feature', 'not-content', { flip }]} id={id}>
+	<div class="text">
+		<h2><a href={`#${id}`}>{title}</a></h2>
+		<slot />
+	</div>
+	<div class="media">
+		<slot name="media" />
+	</div>
+</section>
+
+<style>
+	.feature {
+		display: grid;
+		grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+		gap: 2.5rem;
+		align-items: center;
+		padding-block: 3rem;
+		border-top: 1px solid var(--sl-color-hairline);
+	}
+	.flip .text {
+		order: 2;
+	}
+	h2 {
+		margin: 0 0 0.75rem;
+		font-size: var(--sl-text-3xl);
+		line-height: 1.15;
+	}
+	h2 a {
+		color: var(--sl-color-white);
+		text-decoration: none;
+	}
+	.text :global(p) {
+		color: var(--sl-color-gray-2);
+		line-height: 1.65;
+	}
+	.text :global(p + p) {
+		margin-top: 0.75rem;
+	}
+	.text :global(code) {
+		font-size: 0.9em;
+	}
+	@media (max-width: 50rem) {
+		.feature {
+			grid-template-columns: minmax(0, 1fr);
+			gap: 1.5rem;
+			padding-block: 2rem;
+		}
+		.flip .text {
+			order: 0;
+		}
+	}
+</style>

@@ -1,0 +1,60 @@
+/* Accent colours from the logo gradient: pink, violet, teal. */
+:root {
+	--knixl-pink: #ff6ab8;
+	--knixl-violet: #a78bfa;
+	--knixl-teal: #5ee6c8;
+	--knixl-gradient: linear-gradient(90deg, var(--knixl-pink), var(--knixl-violet) 50%, var(--knixl-teal));
+
+	--sl-color-accent-low: #2a1f4a;
+	--sl-color-accent: #8b6cf0;
+	--sl-color-accent-high: #d9ccff;
+}
+
+:root[data-theme='light'] {
+	--sl-color-accent-low: #ece6ff;
+	--sl-color-accent: #6d4fd6;
+	--sl-color-accent-high: #2e1f66;
+}
+
+/* Landing page. */
+.hero .tagline {
+	max-width: 36rem;
+}
+
+.hero h1 {
+	background: var(--knixl-gradient);
+	-webkit-background-clip: text;
+	background-clip: text;
+	color: transparent;
+}
+
+.landing-section {
+	padding-block: 3rem;
+	border-top: 1px solid var(--sl-color-hairline);
+}
+
+.landing-section > h2 {
+	margin: 0 0 0.5rem;
+	font-size: var(--sl-text-3xl);
+}
+
+.landing-section > p {
+	max-width: 44rem;
+	color: var(--sl-color-gray-2);
+}
+
+.version-pill {
+	display: inline-block;
+	padding: 0.15rem 0.6rem;
+	border-radius: 999px;
+	font-size: var(--sl-text-xs);
+	font-weight: 600;
+	color: var(--sl-color-black);
+	background: var(--knixl-gradient);
+	vertical-align: middle;
+}
+
+/* The splash template's content column is narrow for side-by-side code. */
+[data-has-hero] .sl-container {
+	max-width: 76rem;
+}
