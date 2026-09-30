@@ -301,7 +301,8 @@ fn ty_str(ty: &ValueTy) -> String {
 
 fn field_line(f: &Field) -> String {
     let req = if f.required { " (required)" } else { "" };
-    format!("  {} : {}{}  {}\n", f.name, ty_str(&f.ty), req, f.doc)
+    let line = format!("  {} : {}{}  {}", f.name, ty_str(&f.ty), req, f.doc);
+    format!("{}\n", line.trim_end())
 }
 
 fn child_line(c: &Child) -> String {
@@ -317,7 +318,8 @@ fn child_line(c: &Child) -> String {
     } else {
         format!(" ({})", flags.join(", "))
     };
-    format!("  {} : {}{}  {}\n", c.name, ty_str(&c.ty), flags, c.doc)
+    let line = format!("  {} : {}{}  {}", c.name, ty_str(&c.ty), flags, c.doc);
+    format!("{}\n", line.trim_end())
 }
 
 /// Every schema violation is an Error: a wrong type, a missing value, or an unknown child all

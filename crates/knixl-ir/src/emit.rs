@@ -79,6 +79,7 @@ impl Emit for NixExpr {
                     w.push(seg);
                 }
             }
+            NixExpr::List(items) if items.is_empty() => w.push("[ ]"),
             NixExpr::List(items) => {
                 w.push("[");
                 w.nl();
@@ -112,9 +113,8 @@ impl Emit for NixExpr {
                 // ref/select/apply function is fine, so emit_atom leaves those alone.
                 emit_atom(w, f);
                 for a in args {
-                    w.push(" (");
-                    a.emit(w);
-                    w.push(")");
+                    w.push(" ");
+                    emit_arg(w, a);
                 }
             }
             NixExpr::Lambda { formals, body } => {
@@ -375,6 +375,23 @@ fn emit_atom(w: &mut Writer, e: &NixExpr) {
         w.push(")");
     } else {
         e.emit(w);
+    }
+}
+
+/// Emit a function argument: an atom stands alone (`f { .. }`, `f x.y`), except a negative
+/// number, since `f -1` parses as subtraction.
+fn emit_arg(w: &mut Writer, e: &NixExpr) {
+    let negative = match e {
+        NixExpr::Int(n) => *n < 0,
+        NixExpr::Float(x) => x.is_sign_negative(),
+        _ => false,
+    };
+    if negative {
+        w.push("(");
+        e.emit(w);
+        w.push(")");
+    } else {
+        emit_atom(w, e);
     }
 }
 
@@ -735,14 +752,14 @@ mod tests {
 
     #[test]
     fn application_as_list_element_is_parenthesised() {
-        // A bare `f (x)` in a list would split into two separate elements; it must be
+        // A bare `f x` in a list would split into two separate elements; it must be
         // wrapped so it stays a single atom.
         let expr = NixExpr::List(vec![NixExpr::Apply(
             Box::new(NixExpr::Ref("f".into())),
             vec![NixExpr::Ref("x".into())],
         )]);
         assert!(
-            capture(|w| expr.emit(w)).contains("(f (x))"),
+            capture(|w| expr.emit(w)).contains("(f x)"),
             "application list element must be parenthesised: {}",
             capture(|w| expr.emit(w))
         );
@@ -759,7 +776,7 @@ mod tests {
             )),
             vec!["y".into()],
         );
-        assert_eq!(capture(|w| expr.emit(w)), "(f (x)).y");
+        assert_eq!(capture(|w| expr.emit(w)), "(f x).y");
     }
 
     #[test]
@@ -773,7 +790,7 @@ mod tests {
 
     #[test]
     fn lambda_in_function_position_is_parenthesised() {
-        // `({ x }: x) (5)`, not `{ x }: x (5)` (which parses as a lambda returning `x (5)`).
+        // `({ x }: x) 5`, not `{ x }: x 5` (which parses as a lambda returning `x 5`).
         let expr = NixExpr::Apply(
             Box::new(NixExpr::Lambda {
                 formals: Formals {
@@ -784,7 +801,33 @@ mod tests {
             }),
             vec![NixExpr::Int(5)],
         );
-        assert_eq!(capture(|w| expr.emit(w)), "({ x }: x) (5)");
+        assert_eq!(capture(|w| expr.emit(w)), "({ x }: x) 5");
+    }
+
+    #[test]
+    fn arguments_are_bracketed_only_when_they_are_not_atoms() {
+        // #109: every argument was wrapped, giving `fetchGit ({ .. })`.
+        let f =
+            |args| capture(|w| NixExpr::Apply(Box::new(NixExpr::Ref("f".into())), args).emit(w));
+        assert_eq!(
+            f(vec![NixExpr::AttrSet(Default::default())]).replace('\n', ""),
+            "f {}"
+        );
+        assert_eq!(
+            f(vec![NixExpr::Apply(
+                Box::new(NixExpr::Ref("g".into())),
+                vec![NixExpr::Ref("x".into())]
+            )]),
+            "f (g x)"
+        );
+        // `f -1` would be subtraction.
+        assert_eq!(f(vec![NixExpr::Int(-1)]), "f (-1)");
+        assert_eq!(f(vec![NixExpr::Int(1)]), "f 1");
+    }
+
+    #[test]
+    fn an_empty_list_stays_on_one_line() {
+        assert_eq!(capture(|w| NixExpr::List(vec![]).emit(w)), "[ ]");
     }
 
     // ---- raw in atom position ----

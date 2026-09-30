@@ -17,8 +17,7 @@
   services.nginx.virtualHosts."example.com".forceSSL = true;
   services.nginx.virtualHosts."example.com".enableACME = true;
   services.nginx.virtualHosts."example.com".locations."/".proxyPass = "http://127.0.0.1:3000";
-  services.nginx.virtualHosts."example.com".serverAliases = [
-  ];
+  services.nginx.virtualHosts."example.com".serverAliases = [ ];
   security.acme.acceptTerms = true;
   security.acme.certs."example.com".email = "ops@example.com";
   services.nginx.virtualHosts."example.com".locations."/".extraConfig = ''
