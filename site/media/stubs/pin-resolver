@@ -1,0 +1,7 @@
+#!/bin/sh
+# Offline stand-in for knixl's pin resolver (KNIXL_PIN_RESOLVER): `<name> <version>` -> commit.
+# The commit is what the nixhub/devbox index returns for curl 8.4.0.
+case "$1 $2" in
+    "curl 8.4.0") echo 4fddc9be4eaf195d631333908f2a454b03628ee5 ;;
+    *) echo "version not found" >&2; exit 1 ;;
+esac

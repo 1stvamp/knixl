@@ -1,0 +1,58 @@
+---
+// KDL in, Nix out, side by side (stacked on narrow screens).
+import { Code } from '@astrojs/starlight/components';
+
+interface Props {
+	kdl: string;
+	nix: string;
+	kdlTitle: string;
+	nixTitle: string;
+}
+const { kdl, nix, kdlTitle, nixTitle } = Astro.props;
+---
+
+<div class="pair not-content">
+	<div class="side">
+		<p class="label">You write</p>
+		<Code code={kdl.trimEnd()} lang="kdl" title={kdlTitle} />
+	</div>
+	<div class="arrow" aria-hidden="true">→</div>
+	<div class="side">
+		<p class="label">knixl generates</p>
+		<Code code={nix.trimEnd()} lang="nix" title={nixTitle} />
+	</div>
+</div>
+
+<style>
+	.pair {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.3fr);
+		gap: 1rem;
+		align-items: start;
+	}
+	.label {
+		margin: 0 0 0.4rem;
+		font-size: var(--sl-text-sm);
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--sl-color-gray-3);
+	}
+	.arrow {
+		align-self: center;
+		font-size: 2rem;
+		background: var(--knixl-gradient);
+		-webkit-background-clip: text;
+		background-clip: text;
+		color: transparent;
+	}
+	@media (max-width: 50rem) {
+		.pair {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.arrow {
+			transform: rotate(90deg);
+			justify-self: center;
+		}
+	}
+</style>

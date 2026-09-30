@@ -88,3 +88,21 @@ run = """
 dir="${KNIXL_INSTALL_DIR:-$HOME/.local/bin}"
 rm -f "$dir/knixl" && echo "removed $dir/knixl"
 """
+
+# knixl.dev (site/). Node and pnpm are pinned per task so a plain `mise install` in the repo
+# never fetches them.
+[tasks."site:dev"]
+description = "Serve the site locally with live reload"
+dir = "site"
+tools = { node = "24", pnpm = "12" }
+run = "pnpm install --frozen-lockfile && pnpm dev"
+
+[tasks."site:build"]
+description = "Build the site into site/dist (the same build CI runs)"
+dir = "site"
+tools = { node = "24", pnpm = "12" }
+run = "pnpm install --frozen-lockfile && pnpm build"
+
+[tasks."site:record"]
+description = "Re-record the site's demo videos (all, or the named tapes)"
+run = "site/media/record.sh"

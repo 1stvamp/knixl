@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.astro/
+# Generated from docs/, examples/ and CHANGELOG.md by scripts/sync-content.mjs.
+src/content/docs/docs/
+src/content/docs/adr/
+src/content/docs/examples/
+src/content/docs/changelog.md
+src/generated/

@@ -1,0 +1,64 @@
+---
+// The generation pipeline from docs/01-architecture.md, as a strip of steps.
+const steps = [
+	{ name: 'Parse', detail: 'KDL with source spans, so every error points at your file' },
+	{ name: 'Validate', detail: 'each node against its module schema; unknown nodes refuse' },
+	{ name: 'Lower', detail: 'modules turn nodes into typed Nix assignments' },
+	{ name: 'Check', detail: 'every option path against the real NixOS option set' },
+	{ name: 'Emit', detail: 'readable Nix source, imports wired, repeats hoisted' },
+	{ name: 'Format', detail: 'with the pinned nixfmt, so output is byte-stable' },
+	{ name: 'Lock', detail: 'hash, reconcile, and only then write generated/' },
+];
+---
+
+<ol class="pipeline not-content">
+	{
+		steps.map((s, i) => (
+			<li>
+				<span class="n">{i + 1}</span>
+				<strong>{s.name}</strong>
+				<span class="detail">{s.detail}</span>
+			</li>
+		))
+	}
+</ol>
+
+<style>
+	.pipeline {
+		list-style: none;
+		padding: 0;
+		margin: 1.5rem 0 0;
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+		gap: 0.75rem;
+	}
+	li {
+		position: relative;
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		padding: 1rem;
+		border-radius: 0.75rem;
+		border: 1px solid var(--sl-color-gray-5);
+		background: var(--sl-color-gray-7, var(--sl-color-black));
+	}
+	.n {
+		width: 1.6rem;
+		height: 1.6rem;
+		display: grid;
+		place-items: center;
+		border-radius: 999px;
+		font-size: var(--sl-text-xs);
+		font-weight: 700;
+		color: var(--sl-color-black);
+		background: var(--knixl-gradient);
+	}
+	strong {
+		color: var(--sl-color-white);
+	}
+	.detail {
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-3);
+		line-height: 1.45;
+	}
+</style>

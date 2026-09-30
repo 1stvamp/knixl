@@ -1,0 +1,79 @@
+---
+// A recorded terminal demo (site/media/tapes/<name>.tape). It plays only while on screen, and not
+// at all under prefers-reduced-motion, where it shows its poster and a play control instead.
+interface Props {
+	name: string;
+	caption: string;
+	commands?: string;
+}
+const { name, caption, commands } = Astro.props;
+const media = `/media/${name}`;
+---
+
+<figure class="demo not-content">
+	<video
+		data-demo
+		muted
+		loop
+		playsinline
+		preload="none"
+		poster={`${media}.png`}
+		width="1200"
+		height="700"
+		aria-label={caption}
+	>
+		<source src={`${media}.webm`} type="video/webm" />
+		<source src={`${media}.mp4`} type="video/mp4" />
+	</video>
+	<figcaption>{caption}</figcaption>
+	{commands && <pre class="demo-commands"><code>{commands}</code></pre>}
+</figure>
+
+<script>
+	const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+	const videos = document.querySelectorAll<HTMLVideoElement>('video[data-demo]');
+	if (reduced) {
+		for (const v of videos) v.controls = true;
+	} else {
+		const seen = new IntersectionObserver(
+			(entries) => {
+				for (const e of entries) {
+					const v = e.target as HTMLVideoElement;
+					if (e.isIntersecting) v.play().catch(() => (v.controls = true));
+					else v.pause();
+				}
+			},
+			{ threshold: 0.4 },
+		);
+		for (const v of videos) seen.observe(v);
+	}
+</script>
+
+<style>
+	.demo {
+		margin: 0;
+	}
+	.demo video {
+		display: block;
+		width: 100%;
+		height: auto;
+		border-radius: 0.75rem;
+		border: 1px solid var(--sl-color-gray-5);
+		background: #1e1e2e;
+		box-shadow: 0 1.5rem 3rem -1.5rem rgb(0 0 0 / 0.5);
+	}
+	.demo figcaption {
+		margin-top: 0.6rem;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-3);
+	}
+	.demo-commands {
+		margin-top: 0.5rem;
+		padding: 0.6rem 0.8rem;
+		border-radius: 0.5rem;
+		background: var(--sl-color-gray-6);
+		font-size: var(--sl-text-xs);
+		overflow-x: auto;
+		user-select: all;
+	}
+</style>
