@@ -271,11 +271,8 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
         return Code::Validation;
     }
 
-    // Non-fatal generation lints. Reported for every command that acts on the plan; `doc`
-    // does not reconcile a project, so it stays quiet.
-    if !matches!(cli.cmd, Cmd::Doc { .. }) {
-        report_warnings(&ctx.warnings);
-    }
+    // Non-fatal generation lints, reported for every command that acts on the plan.
+    report_warnings(&ctx.warnings);
 
     match cli.cmd {
         Cmd::Plan { detailed_exitcode } => {
@@ -455,10 +452,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             Code::Clean
         }
 
-        Cmd::Doc { node } => {
-            print_doc(ctx, &node, cli.json);
-            Code::Clean
-        }
+        Cmd::Doc { .. } => unreachable!("doc is dispatched before Ctx::load"),
 
         Cmd::Install {
             pkg,
@@ -2305,6 +2299,17 @@ fn dispatch() -> Code {
             }
         };
     }
+    // `doc` only reads module schemas, so it skips generation: a broken host must not stop
+    // someone reading the reference they need to fix it (#108).
+    if let Cmd::Doc { node } = &cli.cmd {
+        return match knixl_pipeline::gather::doc_registry(&discover_root()) {
+            Ok(registry) => print_doc(&registry, node),
+            Err(e) => {
+                eprintln!("knixl: {e}");
+                Code::Internal
+            }
+        };
+    }
     run(cli, &Ctx::load())
 }
 
@@ -2582,10 +2587,16 @@ fn print_migration_notes(plan: &Plan, registry: &knixl_modules::Registry) {
     }
 }
 
-fn print_doc(ctx: &Ctx, node: &str, _json: bool) {
-    match ctx.registry.get(node) {
-        Some(m) => print!("{}", m.schema().render_doc(node)),
-        None => eprintln!("no module claims node `{node}`"),
+fn print_doc(registry: &knixl_modules::Registry, node: &str) -> Code {
+    match registry.get(node) {
+        Some(m) => {
+            print!("{}", m.schema().render_doc(node));
+            Code::Clean
+        }
+        None => {
+            eprintln!("no module claims node `{node}`");
+            Code::Clean
+        }
     }
 }
 
