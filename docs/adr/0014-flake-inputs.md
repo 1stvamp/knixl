@@ -2,6 +2,10 @@
 
 Status: accepted
 
+Amended by: ADR 0015 (2026-11-21): lifted the `specialArgs`/`inputs` deferral named below, so
+every input-mode `nixosSystem` call passes `specialArgs = { inherit inputs; }`, and in part the
+packages deferral, since `package from="<input>"` takes a package from a nixpkgs-shaped input.
+
 Refines: ADR 0007 (per-host baseline nixpkgs rev) and ADR 0008 (out-of-tree oracle modules).
 Supersedes in part: ADR 0009 (system assembly flake). Relates to: ADR 0005 (pinning), ADR 0006
 (automatic pin strategy selection), ADR 0012 (installer media), ADR 0013 (guest-image targets).

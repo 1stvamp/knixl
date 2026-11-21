@@ -4,7 +4,9 @@ Status: accepted
 
 Amended by: ADR 0006 (2026-07-20): lifted the `overrideAttrs` deferral named below, adding
 an `override` pin strategy alongside commit-mix. Amended by: ADR 0007 (2026-07-20): lifted
-the per-host baseline nixpkgs rev deferral named below.
+the per-host baseline nixpkgs rev deferral named below. Amended by: ADR 0015 (2026-11-21):
+`package from="<input>"` takes a package from a declared flake input, and is refused together
+with `version=`.
 
 ## Context
 

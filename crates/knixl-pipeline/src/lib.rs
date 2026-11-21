@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 use kdl::{KdlDocument, KdlNode};
 use knixl_ir::{
-    Assignment, Emit, Formals, ModuleRef, NixExpr, NixModule, Provenance, RawNix, Writer,
+    Assignment, AttrKey, Emit, Formals, ModuleRef, NixExpr, NixModule, Provenance, RawNix, Writer,
 };
 use knixl_kdl::{parse, ParseError};
 use knixl_modules::{Bucket, LowerCtx, LowerError, Registry, Scope};
@@ -46,6 +46,12 @@ pub struct GeneratedFile {
     /// sops-nix secret names the host references through `(secret)`, sorted; set on the host's
     /// own file only, for the flake's sops wiring (ADR 0014).
     pub secrets: Vec<String>,
+    /// Flake inputs the file's body reads through `inputs."<name>"` (`package from=`, ADR
+    /// 0015), sorted. The pipeline checks them against `system {}`, which `generate` can't see.
+    pub inputs: Vec<String>,
+    /// Whether the body unconditionally sets `nixpkgs.config.allowUnfree = true`, so install's
+    /// build checks can allow unfree for this host. Raw nix and predicates are invisible here.
+    pub allows_unfree: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -288,6 +294,10 @@ fn generate_one(
             warnings.append(&mut host_lints);
         }
 
+        // Before hoisting, so a reference never hides inside a binding.
+        let inputs = flake_inputs_read(&body);
+        let allows_unfree = sets_allow_unfree(&body);
+
         // let-hoisting: dedupe repeated compound values into top-level bindings.
         let lets = knixl_ir::hoist::hoist(&mut body);
         let imports = if *key == host_name {
@@ -318,7 +328,7 @@ fn generate_one(
             .collect();
 
         let module = NixModule {
-            header: module_header(),
+            header: with_inputs(module_header(), &inputs),
             imports,
             lets,
             body,
@@ -345,6 +355,8 @@ fn generate_one(
             } else {
                 Vec::new()
             },
+            inputs: inputs.into_iter().collect(),
+            allows_unfree,
         });
     }
 
@@ -462,6 +474,8 @@ pub fn generate_image_targets(
             .map(|d| d.message.clone())
             .collect();
         merge_list_assignments(&mut body);
+        let inputs = flake_inputs_read(&body);
+        let allows_unfree = sets_allow_unfree(&body);
         let lets = knixl_ir::hoist::hoist(&mut body);
 
         let module_names: Vec<String> = modules.into_iter().filter(|n| !n.is_empty()).collect();
@@ -478,7 +492,7 @@ pub fn generate_image_targets(
             .collect();
 
         let module = NixModule {
-            header: image_target_header(),
+            header: with_inputs(image_target_header(), &inputs),
             imports,
             lets,
             body,
@@ -505,6 +519,8 @@ pub fn generate_image_targets(
             modules: module_names,
             warnings,
             secrets: Vec::new(),
+            inputs: inputs.into_iter().collect(),
+            allows_unfree,
         });
     }
     Ok(generated)
@@ -715,6 +731,85 @@ fn module_header() -> Formals {
     }
 }
 
+/// Add `inputs` to a module's formals when its body reads one. Only then, so a host with no
+/// `package from=` keeps the header the input-free flake can evaluate (ADR 0015).
+fn with_inputs(mut header: Formals, inputs: &BTreeSet<String>) -> Formals {
+    if !inputs.is_empty() {
+        header.args.insert(1, "inputs".into());
+    }
+    header
+}
+
+/// The flake input names `body` reads as `inputs."<name>"`.
+fn sets_allow_unfree(body: &[Assignment]) -> bool {
+    const PATH: [&str; 3] = ["nixpkgs", "config", "allowUnfree"];
+    body.iter().filter(|a| a.condition.is_none()).any(|a| {
+        let keys: Vec<&str> = a
+            .path
+            .0
+            .iter()
+            .map(|k| match k {
+                AttrKey::Ident(s) | AttrKey::Quoted(s) => s.as_str(),
+            })
+            .collect();
+        PATH.starts_with(&keys) && is_true_at(&a.value, &PATH[keys.len()..])
+    })
+}
+
+/// Follows `rest` through nested attrsets and checks the value there is literally `true`.
+fn is_true_at(expr: &NixExpr, rest: &[&str]) -> bool {
+    match (rest.split_first(), expr) {
+        (None, NixExpr::Bool(b)) => *b,
+        (Some((head, tail)), NixExpr::AttrSet(m)) => m.iter().any(|(k, v)| {
+            matches!(k, AttrKey::Ident(s) | AttrKey::Quoted(s) if s == head) && is_true_at(v, tail)
+        }),
+        _ => false,
+    }
+}
+
+fn flake_inputs_read(body: &[Assignment]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for a in body {
+        collect_flake_inputs(&a.value, &mut out);
+    }
+    out
+}
+
+fn collect_flake_inputs(expr: &NixExpr, out: &mut BTreeSet<String>) {
+    match expr {
+        NixExpr::Select(e, path) => {
+            if matches!(e.as_ref(), NixExpr::Ref(r) if r == "inputs") {
+                if let Some(name) = path
+                    .first()
+                    .and_then(|s| s.strip_prefix('"'))
+                    .and_then(|s| s.strip_suffix('"'))
+                {
+                    out.insert(
+                        name.replace("\\${", "${")
+                            .replace("\\\"", "\"")
+                            .replace("\\\\", "\\"),
+                    );
+                }
+            }
+            collect_flake_inputs(e, out);
+        }
+        NixExpr::List(items) => items.iter().for_each(|e| collect_flake_inputs(e, out)),
+        NixExpr::AttrSet(m) => m.values().for_each(|e| collect_flake_inputs(e, out)),
+        NixExpr::Apply(f, args) => {
+            collect_flake_inputs(f, out);
+            args.iter().for_each(|e| collect_flake_inputs(e, out));
+        }
+        NixExpr::Lambda { body, .. } => collect_flake_inputs(body, out),
+        NixExpr::Let { bindings, body } => {
+            bindings
+                .iter()
+                .for_each(|b| collect_flake_inputs(&b.value, out));
+            collect_flake_inputs(body, out);
+        }
+        _ => {}
+    }
+}
+
 /// First positional (unnamed) argument of a node, as a string.
 fn first_arg_str(node: &KdlNode) -> Option<String> {
     node.entries()
@@ -845,5 +940,50 @@ mod tests {
         let mut body = vec![a, list_assign(&["environment", "systemPackages"], &["b"])];
         merge_list_assignments(&mut body);
         assert_eq!(body.len(), 2, "a priority opts out of merging");
+    }
+
+    fn attrs(entries: Vec<(&str, NixExpr)>) -> NixExpr {
+        NixExpr::AttrSet(
+            entries
+                .into_iter()
+                .map(|(k, v)| (AttrKey::Ident(k.into()), v))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn allow_unfree_is_seen_at_the_full_path_even_under_a_priority() {
+        assert!(sets_allow_unfree(&[assign(
+            &["nixpkgs", "config", "allowUnfree"],
+            None
+        )]));
+        assert!(sets_allow_unfree(&[assign(
+            &["nixpkgs", "config", "allowUnfree"],
+            Some(Priority::Default)
+        )]));
+    }
+
+    #[test]
+    fn allow_unfree_is_seen_inside_nested_attrsets() {
+        let mut a = assign(&["nixpkgs", "config"], None);
+        a.value = attrs(vec![("allowUnfree", NixExpr::Bool(true))]);
+        assert!(sets_allow_unfree(&[a]));
+        let mut b = assign(&["nixpkgs"], None);
+        b.value = attrs(vec![(
+            "config",
+            attrs(vec![("allowUnfree", NixExpr::Bool(true))]),
+        )]);
+        assert!(sets_allow_unfree(&[b]));
+    }
+
+    #[test]
+    fn allow_unfree_ignores_false_conditional_and_unrelated_assignments() {
+        let mut off = assign(&["nixpkgs", "config", "allowUnfree"], None);
+        off.value = NixExpr::Bool(false);
+        let mut conditional = assign(&["nixpkgs", "config", "allowUnfree"], None);
+        conditional.condition = Some(NixExpr::Ref("x".into()));
+        let unrelated = assign(&["nixpkgs", "config", "allowBroken"], None);
+        let too_deep = assign(&["nixpkgs", "config", "allowUnfree", "x"], None);
+        assert!(!sets_allow_unfree(&[off, conditional, unrelated, too_deep]));
     }
 }

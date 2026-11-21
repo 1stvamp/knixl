@@ -86,8 +86,11 @@ Each partition, and a luks wrapper, has exactly one content child. Four forms:
 - `swap [resume=#true]`
   -> `content = { type = "swap"; }`, adding `resumeDevice = true` when `resume`
   is true.
-- `luks name="<mapper>" { <inner content> }`
-  -> `content = { type = "luks"; name = "<mapper>"; content = <inner>; }`.
+- `luks name="<mapper>" [password-file="<path>"] [key-file="<path>"] { <inner content> }`
+  -> `content = { type = "luks"; name = "<mapper>"; content = <inner>; }`, plus
+  `passwordFile = "<path>";` and `settings.keyFile = "<path>";` when those props are set
+  (added later, issue #118; setting both is refused, since disko formats with the keyfile and
+  ignores `passwordFile` beside it).
   `name` required. The block holds exactly one inner content child (filesystem,
   zfs, or swap); zero or more than one is a validation error. luks does not nest
   inside luks in v1.
@@ -259,8 +262,9 @@ Unit tests in `disko.rs`:
 
 ## Non-goals
 
-- No swap `randomEncryption`, no luks key-file / TPM settings, no `settings`
-  passthrough on any content: v1 covers the plain forms only.
+- No swap `randomEncryption`, no luks TPM settings, no general `settings`
+  passthrough on any content: v1 covers the plain forms only. (luks `password-file`
+  and `key-file` came later, in issue #118.)
 - No mdraid, lvm, btrfs subvolumes, or bcachefs.
 - No luks-inside-luks, and no zpool `options` / `rootFsOptions` passthrough.
 - No per-partition `priority` knob. disko's default allocation handles a single

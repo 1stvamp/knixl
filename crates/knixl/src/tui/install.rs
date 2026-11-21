@@ -428,9 +428,10 @@ impl InstallModel {
         ]))
     }
 
-    /// Start a build for the current package, if `--build` was requested. Host-independent,
-    /// so this is NOT called on a host switch. Never runs for a versioned install: strategy
-    /// selection (`begin_strategy`) replaces the ambient build there once the pin resolves.
+    /// Start a build for the current package against the current host, if `--build` was
+    /// requested. Re-run on a host switch, since whether unfree is allowed follows the host.
+    /// Never runs for a versioned install: strategy selection (`begin_strategy`) replaces the
+    /// ambient build there once the pin resolves.
     fn begin_build(&mut self) -> Option<Cmd> {
         if self.version.is_some() {
             return None;
@@ -438,8 +439,9 @@ impl InstallModel {
         config().build.as_ref()?; // None => --build not requested
         let seq = self.mark_building();
         let pkg = self.pkg.value();
+        let host = self.hosts.get(self.host_sel)?.name.clone();
         Some(command::batch(vec![
-            build_cmd(seq, pkg),
+            build_cmd(seq, host, pkg),
             spin_start(self.build_spinner.tick_msg()),
         ]))
     }
@@ -473,16 +475,18 @@ impl InstallModel {
         ]))
     }
 
-    /// Re-verify after a host switch, and re-fire strategy selection too if the pin has
-    /// already resolved (see `begin_strategy` for why the decision is host-dependent). If
-    /// not, strategy selection will fire from the eventual `PinDone` instead.
+    /// Re-verify after a host switch, re-run the build (unfree follows the host), and re-fire
+    /// strategy selection too if the pin has already resolved (see `begin_strategy` for why
+    /// the decision is host-dependent). If not, strategy selection will fire from the
+    /// eventual `PinDone` instead.
     fn on_host_changed(&mut self) -> Option<Cmd> {
         let verify = self.begin_verify();
+        let build = self.begin_build();
         let strategy = (self.pin == PinState::Resolved)
             .then(|| self.pin_resolved.clone())
             .flatten()
             .and_then(|rev| self.begin_strategy(rev));
-        batch_all(vec![verify, strategy])
+        batch_all(vec![verify, build, strategy])
     }
 
     pub fn update(&mut self, msg: Msg, size: (u16, u16)) -> Step {
@@ -610,8 +614,7 @@ impl InstallModel {
             },
             Focus::Package => match code {
                 // Enter commits the edited package name, re-verifies, and re-runs the build
-                // and pin resolve (both package-only, so they re-run here but not on a host
-                // switch).
+                // and pin resolve.
                 KeyCode::Enter => {
                     let v = self.begin_verify();
                     let b = self.begin_build();
@@ -868,13 +871,13 @@ fn verify_cmd(seq: u64, pkg: String, host: HostInfo) -> Cmd {
 /// The package build, off the event-loop thread. Resolves to a `BuildDone` with the token so
 /// a stale build (package edited again) is discarded. Only called when `config().build` is
 /// `Some`.
-fn build_cmd(seq: u64, pkg: String) -> Cmd {
+fn build_cmd(seq: u64, host: String, pkg: String) -> Cmd {
     let build = config()
         .build
         .clone()
         .expect("build fn present when begin_build ran");
     Box::pin(async move {
-        match tokio::task::spawn_blocking(move || build(&pkg)).await {
+        match tokio::task::spawn_blocking(move || build(&host, &pkg)).await {
             Ok(outcome) => Some(Box::new(BuildDone { seq, outcome }) as Msg),
             Err(_) => None,
         }

@@ -43,6 +43,9 @@ pub struct Project {
     /// the revs `knixl.lock.kdl` pins, or is missing. Reported by `check`, never by generate,
     /// since the flake has to exist before nix can lock it.
     pub flake_lock_problems: Vec<String>,
+    /// Host sources (root-relative, e.g. `hosts/web.kdl`) whose generated output sets
+    /// `nixpkgs.config.allowUnfree = true`, so install's build checks allow unfree for them.
+    pub unfree_hosts: BTreeSet<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -165,6 +168,9 @@ pub fn gather_with_lock(
     let mut generated: BTreeMap<PathBuf, String> = BTreeMap::new();
     // Referenced sops secrets per host, for the flake's sops wiring (ADR 0014).
     let mut host_secrets: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // Flake inputs each generated module reads (`package from=`, ADR 0015), by source file.
+    let mut read_inputs: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+    let mut unfree_hosts: BTreeSet<PathBuf> = BTreeSet::new();
     // Shadowed stdlib modules are non-fatal: fold into the same warnings channel as the
     // generate-path lints, so shadowing is reported but never gates.
     let mut warnings: Vec<String> = module_notices.iter().map(|n| n.message()).collect();
@@ -184,6 +190,13 @@ pub fn gather_with_lock(
                     if !f.secrets.is_empty() {
                         let host = f.path.file_stem().unwrap_or_default().to_string_lossy();
                         host_secrets.insert(host.into_owned(), f.secrets.clone());
+                    }
+                    read_inputs
+                        .entry(f.from.clone())
+                        .or_default()
+                        .extend(f.inputs.iter().cloned());
+                    if f.allows_unfree {
+                        unfree_hosts.insert(f.from.clone());
                     }
                     generated.insert(f.path.clone(), f.text.clone());
                     warnings.extend(
@@ -221,6 +234,10 @@ pub fn gather_with_lock(
     ) {
         Ok(files) => {
             for f in files {
+                read_inputs
+                    .entry(f.from.clone())
+                    .or_default()
+                    .extend(f.inputs.iter().cloned());
                 generated.insert(f.path.clone(), f.text.clone());
                 warnings.extend(
                     f.warnings
@@ -294,6 +311,23 @@ pub fn gather_with_lock(
                 "secrets input=\"{}\" is not a flake input declared in system {{}}",
                 w.input
             ));
+        }
+    }
+
+    // ADR 0015: a `package from=` module reads `inputs`, which only the input-mode flake passes.
+    for (from, names) in &read_inputs {
+        for input in names {
+            if declared_inputs.is_empty() {
+                validation_errors.push(format!(
+                    "{}: package from=\"{input}\" needs flake inputs declared in system {{}}: the module reads `inputs`, which only the input-mode flake passes",
+                    from.display()
+                ));
+            } else if !declared_inputs.contains(input.as_str()) {
+                validation_errors.push(format!(
+                    "{}: package from=\"{input}\" names input `{input}`, which is not declared in system {{}}",
+                    from.display()
+                ));
+            }
         }
     }
 
@@ -467,6 +501,7 @@ pub fn gather_with_lock(
         warnings,
         oracles,
         flake_lock_problems,
+        unfree_hosts,
     })
 }
 

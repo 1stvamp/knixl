@@ -17,13 +17,19 @@ pub enum Nixpkgs {
 }
 
 impl Nixpkgs {
-    /// A Nix expression that evaluates to the package set.
-    fn expr(&self) -> String {
+    /// A Nix expression that evaluates to the package set, with unfree allowed when asked
+    /// (the host's own config, which a standalone build otherwise can't see).
+    fn expr(&self, allow_unfree: bool) -> String {
+        let args = if allow_unfree {
+            "{ config.allowUnfree = true; }"
+        } else {
+            "{}"
+        };
         match self {
             Nixpkgs::PinnedRev(rev) => format!(
-                "import (builtins.fetchTarball \"https://github.com/NixOS/nixpkgs/archive/{rev}.tar.gz\") {{}}"
+                "import (builtins.fetchTarball \"https://github.com/NixOS/nixpkgs/archive/{rev}.tar.gz\") {args}"
             ),
-            Nixpkgs::Ambient => "import <nixpkgs> {}".to_string(),
+            Nixpkgs::Ambient => format!("import <nixpkgs> {args}"),
         }
     }
 }
@@ -76,7 +82,7 @@ impl NixEval {
 
     /// True if `pkgs.<name>` exists in the given nixpkgs.
     pub fn package_exists(&self, src: &Nixpkgs, name: &str) -> Result<bool, NixError> {
-        let expr = format!("builtins.hasAttr \"{name}\" ({})", src.expr());
+        let expr = format!("builtins.hasAttr \"{name}\" ({})", src.expr(false));
         let out = self.run(&["--eval", "-E", &expr])?;
         if !out.status.success() {
             return Err(NixError::Failed(
@@ -100,8 +106,8 @@ impl NixEval {
 
     /// Build `pkgs.<name>` from the given nixpkgs, proving the package derivation builds.
     /// `--no-out-link` avoids leaving a `result` symlink.
-    pub fn builds(&self, src: &Nixpkgs, name: &str) -> Result<(), NixError> {
-        let expr = src.expr();
+    pub fn builds(&self, src: &Nixpkgs, name: &str, allow_unfree: bool) -> Result<(), NixError> {
+        let expr = src.expr(allow_unfree);
         let out = crate::output_retrying_etxtbsy(|| {
             let mut c = Command::new(&self.build_bin);
             c.args(["--no-out-link", "-A", name, "-E", &expr]);
@@ -234,7 +240,15 @@ mod tests {
     #[test]
     fn pinned_rev_expr_fetches_that_rev() {
         let src = Nixpkgs::PinnedRev("abc123".into());
-        assert!(src.expr().contains("archive/abc123.tar.gz"));
+        assert!(src.expr(false).contains("archive/abc123.tar.gz"));
+    }
+
+    #[test]
+    fn expr_allows_unfree_only_when_asked() {
+        for src in [Nixpkgs::PinnedRev("abc123".into()), Nixpkgs::Ambient] {
+            assert!(src.expr(true).ends_with(" { config.allowUnfree = true; }"));
+            assert!(src.expr(false).ends_with(" {}"));
+        }
     }
 
     #[test]
@@ -243,7 +257,7 @@ mod tests {
             bin: PathBuf::from("nix-instantiate"),
             build_bin: build_shim("bok", true),
         };
-        assert!(e.builds(&Nixpkgs::Ambient, "ripgrep").is_ok());
+        assert!(e.builds(&Nixpkgs::Ambient, "ripgrep", false).is_ok());
     }
 
     #[test]
@@ -253,7 +267,7 @@ mod tests {
             build_bin: build_shim("bbad", false),
         };
         assert!(matches!(
-            e.builds(&Nixpkgs::Ambient, "ripgrep"),
+            e.builds(&Nixpkgs::Ambient, "ripgrep", false),
             Err(NixError::Failed(_))
         ));
     }
@@ -265,7 +279,7 @@ mod tests {
             build_bin: PathBuf::from("/nonexistent/knixl-no-such-nix-build"),
         };
         assert!(matches!(
-            e.builds(&Nixpkgs::Ambient, "x"),
+            e.builds(&Nixpkgs::Ambient, "x", false),
             Err(NixError::Unavailable(_))
         ));
     }

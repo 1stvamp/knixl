@@ -18,6 +18,7 @@
         url = "https://github.com/NixOS/nixpkgs";
       })
       {
+        config = config.nixpkgs.config;
         system = pkgs.system;
       }
     ).htop

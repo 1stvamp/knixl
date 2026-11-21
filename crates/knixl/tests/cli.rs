@@ -291,6 +291,77 @@ fn install_build_refuses_when_the_build_fails() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// A `nix-build` shim that records its arguments to `log` and exits 0.
+fn recording_build_shim(tag: &str, log: &Path) -> PathBuf {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let path = std::env::temp_dir().join(format!(
+        "knixl-cli-recbuildshim-{}-{tag}",
+        std::process::id()
+    ));
+    let script = format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 0\n", log.display());
+    let mut f = fs::File::create(&path).unwrap();
+    f.write_all(script.as_bytes()).unwrap();
+    f.flush().unwrap();
+    drop(f); // close before exec, or spawning races with ETXTBSY
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// `install --build` against `web`, returning what the build shim was asked to build.
+fn install_build_args(tag: &str, host_allows_unfree: bool) -> String {
+    let root = temp_project(tag);
+    if host_allows_unfree {
+        let dir = root.join("modules/unfree-test");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("knixl-module.kdl"),
+            "module name=\"unfree-test\" version=\"1.0.0\" {\n    summary \"allows unfree, for install build tests.\"\n    claims-node \"unfree-test\"\n    schema { }\n    emit {\n        set \"nixpkgs.config.allowUnfree\" #true\n    }\n}\n",
+        )
+        .unwrap();
+        let host = root.join("hosts/web.kdl");
+        let src = fs::read_to_string(&host).unwrap();
+        let close = src.rfind('}').unwrap();
+        fs::write(
+            &host,
+            format!("{}    unfree-test\n{}", &src[..close], &src[close..]),
+        )
+        .unwrap();
+    }
+    let log = std::env::temp_dir().join(format!(
+        "knixl-cli-recbuild-{}-{tag}.log",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&log);
+    let eval_shim = nix_shim(tag, true);
+    let build = recording_build_shim(tag, &log);
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "ripgrep", "--host", "web", "--yes", "--build"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &eval_shim)
+        .env("KNIXL_NIX_BUILD", &build)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let args = fs::read_to_string(&log).unwrap_or_default();
+    let _ = fs::remove_file(&log);
+    let _ = fs::remove_file(&eval_shim);
+    let _ = fs::remove_file(&build);
+    let _ = fs::remove_dir_all(&root);
+    args
+}
+
+#[test]
+fn install_build_allows_unfree_only_when_the_host_config_does() {
+    let unfree = "config.allowUnfree = true;";
+    let allowed = install_build_args("unfree-yes", true);
+    assert!(allowed.contains(unfree), "build args: {allowed}");
+    let denied = install_build_args("unfree-no", false);
+    assert!(!denied.is_empty(), "the build ran");
+    assert!(!denied.contains(unfree), "build args: {denied}");
+}
+
 #[test]
 fn install_drafts_verifies_and_regenerates() {
     let root = temp_project("install");
@@ -357,6 +428,40 @@ fn install_refuses_a_nonexistent_package() {
     // The KDL is untouched (reverted / never written).
     let kdl = fs::read_to_string(root.join("hosts/web.kdl")).unwrap();
     assert!(!kdl.contains("nnoopkg"), "no draft left behind: {kdl}");
+    let _ = fs::remove_file(&shim);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn install_refuses_a_package_the_host_takes_from_an_input() {
+    let root = temp_project("install-from");
+    let host = root.join("hosts/web.kdl");
+    let src = fs::read_to_string(&host).unwrap();
+    let close = src.rfind('}').unwrap();
+    let with_from = format!(
+        "{}    package \"ripgrep\" from=\"nixpkgs-unstable\"\n{}",
+        &src[..close],
+        &src[close..]
+    );
+    fs::write(&host, &with_from).unwrap();
+    let shim = nix_shim("from", true);
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "ripgrep", "--host", "web", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &shim)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "refusal exits Validation (5): {out:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&host).unwrap(),
+        with_from,
+        "node left alone"
+    );
     let _ = fs::remove_file(&shim);
     let _ = fs::remove_dir_all(&root);
 }

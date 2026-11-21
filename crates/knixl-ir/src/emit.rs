@@ -248,7 +248,8 @@ fn fmt_nix_float(f: f64) -> String {
     }
 }
 
-fn escape_nix_str(s: &str) -> String {
+/// Escape `s` for a Nix double-quoted string literal (without the quotes).
+pub fn escape_nix_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {

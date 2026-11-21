@@ -75,10 +75,10 @@ fn gather_selects_each_hosts_effective_module_set_for_its_oracle() {
     // knows disko.a.enable. The BASE (no-modules) cache for the same rev is seeded with a
     // different known option, so a test that regressed to `cache_path` (rev-only) instead of
     // `cache_path_for` (effective-set) would fail here, not pass by coincidence.
-    seed_effective_cache("rev-a", &[disko_a.clone()], "disko.a.enable");
+    seed_effective_cache("rev-a", std::slice::from_ref(&disko_a), "disko.a.enable");
     seed_effective_cache("rev-a", &[], "system.stateVersion");
     // Host "b" declares no override, so it falls back to the project's default module set.
-    seed_effective_cache("rev-b", &[disko_b.clone()], "disko.b.enable");
+    seed_effective_cache("rev-b", std::slice::from_ref(&disko_b), "disko.b.enable");
 
     let root = std::env::temp_dir().join(format!(
         "knixl-proj-oracle-module-effective-set-{}",
