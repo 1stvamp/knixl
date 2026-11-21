@@ -43,6 +43,8 @@ enum Content {
     },
     Luks {
         name: String,
+        password_file: Option<String>,
+        key_file: Option<String>,
         inner: Box<Content>,
     },
 }
@@ -331,12 +333,29 @@ fn content_from(n: &KdlNode, label: &str) -> Result<Content, LowerError> {
                 .and_then(|v| v.as_string())
                 .ok_or_else(|| LowerError::missing(&format!("`{label}`.luks.name")))?
                 .to_string();
+            let password_file = n
+                .get("password-file")
+                .and_then(|v| v.as_string())
+                .map(str::to_string);
+            let key_file = n
+                .get("key-file")
+                .and_then(|v| v.as_string())
+                .map(str::to_string);
+            // disko formats with settings.keyFile when it is set and ignores passwordFile, and
+            // the initrd then reads that keyfile at every boot: the pair is never what was meant.
+            if password_file.is_some() && key_file.is_some() {
+                return Err(LowerError::Other(format!(
+                    "`{label}`.luks: password-file and key-file cannot both be set: key-file is the keyfile the initrd reads at every boot and disko ignores password-file beside it"
+                )));
+            }
             let inner = parse_content(n, "luks")?;
             if matches!(inner, Content::Luks { .. }) {
                 return Err(LowerError::Other("luks may not nest inside luks".into()));
             }
             Ok(Content::Luks {
                 name,
+                password_file,
+                key_file,
                 inner: Box::new(inner),
             })
         }
@@ -488,11 +507,26 @@ fn emit_content(c: &Content) -> NixExpr {
             }
             ident_set(e)
         }
-        Content::Luks { name, inner } => ident_set(vec![
-            ("type", str_expr("luks")),
-            ("name", str_expr(name)),
-            ("content", emit_content(inner)),
-        ]),
+        Content::Luks {
+            name,
+            password_file,
+            key_file,
+            inner,
+        } => {
+            let mut e = vec![
+                ("type", str_expr("luks")),
+                ("name", str_expr(name)),
+                ("content", emit_content(inner)),
+            ];
+            if let Some(pf) = password_file {
+                e.push(("passwordFile", str_expr(pf)));
+            }
+            // disko deprecated the top-level `keyFile`; `settings.keyFile` is its replacement.
+            if let Some(kf) = key_file {
+                e.push(("settings", ident_set(vec![("keyFile", str_expr(kf))])));
+            }
+            ident_set(e)
+        }
     }
 }
 
@@ -824,6 +858,65 @@ mod tests {
             "disko { disk \"m\" device=\"/dev/sda\" { partition \"p\" size=\"1G\" { filesystem format=\"ext4\" mountpoint=\"/\"\n btrfs } } }",
         );
         assert!(e.contains("btrfs"));
+    }
+
+    fn luks_content(src: &str) -> BTreeMap<AttrKey, NixExpr> {
+        let units = lower_ok(src);
+        let parts = partitions_of(&units, "m");
+        let NixExpr::AttrSet(c) = parts.get(&AttrKey::Quoted("c".into())).unwrap() else {
+            panic!()
+        };
+        let NixExpr::AttrSet(content) = c.get(&AttrKey::Ident("content".into())).unwrap() else {
+            panic!()
+        };
+        content.clone()
+    }
+
+    #[test]
+    fn luks_password_file_emits() {
+        let content = luks_content(
+            "disko { disk \"m\" device=\"/dev/sda\" { partition \"c\" size=\"1G\" { luks name=\"a\" password-file=\"/tmp/secret.key\" { filesystem format=\"ext4\" mountpoint=\"/\" } } } }",
+        );
+        assert!(matches!(
+            content.get(&AttrKey::Ident("passwordFile".into())),
+            Some(NixExpr::Str(s)) if s == "/tmp/secret.key"
+        ));
+        assert!(!content.contains_key(&AttrKey::Ident("settings".into())));
+    }
+
+    #[test]
+    fn luks_key_file_emits_under_settings() {
+        let content = luks_content(
+            "disko { disk \"m\" device=\"/dev/sda\" { partition \"c\" size=\"1G\" { luks name=\"a\" key-file=\"/tmp/disk.key\" { filesystem format=\"ext4\" mountpoint=\"/\" } } } }",
+        );
+        assert!(!content.contains_key(&AttrKey::Ident("passwordFile".into())));
+        // Emitted under `settings`, not disko's deprecated top-level `keyFile`.
+        assert!(!content.contains_key(&AttrKey::Ident("keyFile".into())));
+        let NixExpr::AttrSet(settings) = content.get(&AttrKey::Ident("settings".into())).unwrap()
+        else {
+            panic!("settings not a set")
+        };
+        assert!(matches!(
+            settings.get(&AttrKey::Ident("keyFile".into())),
+            Some(NixExpr::Str(s)) if s == "/tmp/disk.key"
+        ));
+    }
+
+    #[test]
+    fn luks_password_file_with_key_file_is_rejected() {
+        let e = lower_err(
+            "disko { disk \"m\" device=\"/dev/sda\" { partition \"c\" size=\"1G\" { luks name=\"a\" password-file=\"/tmp/secret.key\" key-file=\"/tmp/disk.key\" { swap } } } }",
+        );
+        assert!(e.contains("cannot both be set"), "{e}");
+    }
+
+    #[test]
+    fn luks_without_key_props_emits_neither() {
+        let content = luks_content(
+            "disko { disk \"m\" device=\"/dev/sda\" { partition \"c\" size=\"1G\" { luks name=\"a\" { swap } } } }",
+        );
+        assert!(!content.contains_key(&AttrKey::Ident("passwordFile".into())));
+        assert!(!content.contains_key(&AttrKey::Ident("settings".into())));
     }
 
     #[test]
