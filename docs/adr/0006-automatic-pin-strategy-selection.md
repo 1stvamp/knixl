@@ -79,3 +79,9 @@ run once. A `--no-abi-check` opt-out skips selection and takes commit-mix.
   release the feasibility test builds against that host's own baseline rev, not the
   builder's channel. The builder-channel fallback still applies to hosts without a declared
   release.
+- The feasibility test builds outside any host, so it can't see the host's nixpkgs config.
+  Since #119 it imports nixpkgs with `config.allowUnfree = true` when the host's generated
+  config sets `nixpkgs.config.allowUnfree = true` unconditionally, so an unfree package can be
+  pinned on a host that allows unfree. Anything knixl can't see (raw nix,
+  `allowUnfreePredicate`) still needs `NIXPKGS_ALLOW_UNFREE=1` in the environment, which
+  nixpkgs reads under the impure `nix-build` the test runs.

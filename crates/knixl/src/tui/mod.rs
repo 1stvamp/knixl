@@ -52,9 +52,10 @@ pub enum BuildOutcome {
     Skipped,
 }
 
-/// Builds `pkgs.<pkg>` (host-independent). Injected only when `--build` is requested;
-/// `Send + Sync` so the Install screen runs it off the event loop.
-pub type BuildFn = Arc<dyn Fn(&str) -> BuildOutcome + Send + Sync>;
+/// Builds `pkgs.<pkg>` for `(host, pkg)`: the host decides whether unfree is allowed.
+/// Injected only when `--build` is requested; `Send + Sync` so the Install screen runs it off
+/// the event loop.
+pub type BuildFn = Arc<dyn Fn(&str, &str) -> BuildOutcome + Send + Sync>;
 
 /// The result of resolving `pkg@version` to a nixpkgs commit.
 #[derive(Debug, Clone, PartialEq, Eq)]

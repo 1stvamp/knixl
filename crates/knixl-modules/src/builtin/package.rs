@@ -200,6 +200,13 @@ fn historical_pkg(rev: &str, name: &str) -> NixExpr {
     );
     let mut import_arg = std::collections::BTreeMap::new();
     import_arg.insert(
+        AttrKey::Ident("config".into()),
+        NixExpr::Select(
+            Box::new(NixExpr::Ref("config".into())),
+            vec!["nixpkgs".into(), "config".into()],
+        ),
+    );
+    import_arg.insert(
         AttrKey::Ident("system".into()),
         NixExpr::Select(Box::new(NixExpr::Ref("pkgs".into())), vec!["system".into()]),
     );
@@ -337,6 +344,10 @@ mod tests {
         assert!(
             rendered.contains("system"),
             "passes pkgs.system to the import: {rendered}"
+        );
+        assert!(
+            rendered.contains("nixpkgs") && rendered.contains("config"),
+            "passes the host's nixpkgs.config to the import: {rendered}"
         );
     }
 

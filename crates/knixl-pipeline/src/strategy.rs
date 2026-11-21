@@ -6,25 +6,37 @@ use knixl_lock::model::PinStrategy;
 
 const NIXPKGS_URL: &str = "https://github.com/NixOS/nixpkgs";
 
+/// `config.allowUnfree = true; ` when the target host allows unfree, else nothing: the
+/// standalone test build can't see the host's own nixpkgs config.
+fn unfree_arg(allow_unfree: bool) -> &'static str {
+    if allow_unfree {
+        "config.allowUnfree = true; "
+    } else {
+        ""
+    }
+}
+
 /// Self-contained: the historical nixpkgs supplies its own package + deps.
-pub fn commit_mix_test_expr(rev: &str, name: &str) -> String {
+pub fn commit_mix_test_expr(rev: &str, name: &str, allow_unfree: bool) -> String {
+    let unfree = unfree_arg(allow_unfree);
     format!(
-        "(import (builtins.fetchGit {{ rev = \"{rev}\"; shallow = true; url = \"{NIXPKGS_URL}\"; }}) {{ system = builtins.currentSystem; }}).{name}"
+        "(import (builtins.fetchGit {{ rev = \"{rev}\"; shallow = true; url = \"{NIXPKGS_URL}\"; }}) {{ {unfree}system = builtins.currentSystem; }}).{name}"
     )
 }
 
 /// Old version+src built against the baseline nixpkgs (the host's pinned baseline rev, when
 /// known, else the ambient `<nixpkgs>`; per-host baseline revs are #22).
-pub fn override_test_expr(rev: &str, baseline_rev: &str, name: &str) -> String {
+pub fn override_test_expr(rev: &str, baseline_rev: &str, name: &str, allow_unfree: bool) -> String {
+    let unfree = unfree_arg(allow_unfree);
     let pkgs = if baseline_rev.is_empty() {
-        "import <nixpkgs> {}".to_string()
+        format!("import <nixpkgs> {{{unfree}}}")
     } else {
         format!(
-            "import (builtins.fetchGit {{ rev = \"{baseline_rev}\"; shallow = true; url = \"{NIXPKGS_URL}\"; }}) {{}}"
+            "import (builtins.fetchGit {{ rev = \"{baseline_rev}\"; shallow = true; url = \"{NIXPKGS_URL}\"; }}) {{{unfree}}}"
         )
     };
     format!(
-        "let pkgs = {pkgs}; _pin = (import (builtins.fetchGit {{ rev = \"{rev}\"; shallow = true; url = \"{NIXPKGS_URL}\"; }}) {{ system = pkgs.system; }}).{name}; in pkgs.{name}.overrideAttrs ({{ ... }}: {{ src = _pin.src; version = _pin.version; }})"
+        "let pkgs = {pkgs}; _pin = (import (builtins.fetchGit {{ rev = \"{rev}\"; shallow = true; url = \"{NIXPKGS_URL}\"; }}) {{ {unfree}system = pkgs.system; }}).{name}; in pkgs.{name}.overrideAttrs ({{ ... }}: {{ src = _pin.src; version = _pin.version; }})"
     )
 }
 
@@ -43,14 +55,15 @@ pub fn select_strategy(
     name: &str,
     nix_available: bool,
     no_abi_check: bool,
+    allow_unfree: bool,
     build: &dyn Fn(&str) -> Result<(), String>,
 ) -> Result<PinStrategy, SelectError> {
     if no_abi_check || !nix_available || rev == baseline_rev {
         return Ok(PinStrategy::CommitMix);
     }
-    match build(&override_test_expr(rev, baseline_rev, name)) {
+    match build(&override_test_expr(rev, baseline_rev, name, allow_unfree)) {
         Ok(()) => Ok(PinStrategy::Override),
-        Err(ov) => match build(&commit_mix_test_expr(rev, name)) {
+        Err(ov) => match build(&commit_mix_test_expr(rev, name, allow_unfree)) {
             Ok(()) => Ok(PinStrategy::CommitMix),
             Err(cm) => Err(SelectError::NeitherBuilds {
                 commit_mix: cm,
@@ -103,7 +116,7 @@ mod tests {
     #[test]
     fn no_abi_check_skips_build_and_returns_commit_mix() {
         let fake = FakeBuilder::new(vec![]);
-        let got = select_strategy(REV, BASELINE, NAME, true, true, &|e| fake.build(e));
+        let got = select_strategy(REV, BASELINE, NAME, true, true, false, &|e| fake.build(e));
         assert_eq!(got, Ok(PinStrategy::CommitMix));
         assert!(
             fake.calls().is_empty(),
@@ -114,7 +127,7 @@ mod tests {
     #[test]
     fn nix_unavailable_skips_build_and_returns_commit_mix() {
         let fake = FakeBuilder::new(vec![]);
-        let got = select_strategy(REV, BASELINE, NAME, false, false, &|e| fake.build(e));
+        let got = select_strategy(REV, BASELINE, NAME, false, false, false, &|e| fake.build(e));
         assert_eq!(got, Ok(PinStrategy::CommitMix));
         assert!(
             fake.calls().is_empty(),
@@ -125,7 +138,9 @@ mod tests {
     #[test]
     fn rev_matching_baseline_skips_build_and_returns_commit_mix() {
         let fake = FakeBuilder::new(vec![]);
-        let got = select_strategy(BASELINE, BASELINE, NAME, true, false, &|e| fake.build(e));
+        let got = select_strategy(BASELINE, BASELINE, NAME, true, false, false, &|e| {
+            fake.build(e)
+        });
         assert_eq!(got, Ok(PinStrategy::CommitMix));
         assert!(
             fake.calls().is_empty(),
@@ -135,9 +150,9 @@ mod tests {
 
     #[test]
     fn override_builds_selects_override() {
-        let over = override_test_expr(REV, BASELINE, NAME);
+        let over = override_test_expr(REV, BASELINE, NAME, false);
         let fake = FakeBuilder::new(vec![(over.clone(), Ok(()))]);
-        let got = select_strategy(REV, BASELINE, NAME, true, false, &|e| fake.build(e));
+        let got = select_strategy(REV, BASELINE, NAME, true, false, false, &|e| fake.build(e));
         assert_eq!(got, Ok(PinStrategy::Override));
         assert_eq!(
             fake.calls(),
@@ -148,13 +163,13 @@ mod tests {
 
     #[test]
     fn override_fails_commit_mix_builds_selects_commit_mix() {
-        let over = override_test_expr(REV, BASELINE, NAME);
-        let cm = commit_mix_test_expr(REV, NAME);
+        let over = override_test_expr(REV, BASELINE, NAME, false);
+        let cm = commit_mix_test_expr(REV, NAME, false);
         let fake = FakeBuilder::new(vec![
             (over.clone(), Err("override build failed".to_string())),
             (cm.clone(), Ok(())),
         ]);
-        let got = select_strategy(REV, BASELINE, NAME, true, false, &|e| fake.build(e));
+        let got = select_strategy(REV, BASELINE, NAME, true, false, false, &|e| fake.build(e));
         assert_eq!(got, Ok(PinStrategy::CommitMix));
         assert_eq!(
             fake.calls(),
@@ -165,13 +180,13 @@ mod tests {
 
     #[test]
     fn both_fail_returns_neither_builds_with_both_messages() {
-        let over = override_test_expr(REV, BASELINE, NAME);
-        let cm = commit_mix_test_expr(REV, NAME);
+        let over = override_test_expr(REV, BASELINE, NAME, false);
+        let cm = commit_mix_test_expr(REV, NAME, false);
         let fake = FakeBuilder::new(vec![
             (over.clone(), Err("override build failed".to_string())),
             (cm.clone(), Err("commit-mix build failed".to_string())),
         ]);
-        let got = select_strategy(REV, BASELINE, NAME, true, false, &|e| fake.build(e));
+        let got = select_strategy(REV, BASELINE, NAME, true, false, false, &|e| fake.build(e));
         assert_eq!(
             got,
             Err(SelectError::NeitherBuilds {
@@ -180,5 +195,31 @@ mod tests {
             })
         );
         assert_eq!(fake.calls(), vec![over, cm]);
+    }
+
+    #[test]
+    fn exprs_allow_unfree_only_when_asked() {
+        let unfree = "config.allowUnfree = true;";
+        assert!(!commit_mix_test_expr(REV, NAME, false).contains(unfree));
+        assert!(!override_test_expr(REV, BASELINE, NAME, false).contains(unfree));
+        assert!(commit_mix_test_expr(REV, NAME, true).contains(unfree));
+        // Both imports in the override expression: the baseline and the historical one.
+        assert_eq!(
+            override_test_expr(REV, BASELINE, NAME, true)
+                .matches(unfree)
+                .count(),
+            2
+        );
+        assert!(override_test_expr(REV, "", NAME, true)
+            .contains("import <nixpkgs> {config.allowUnfree = true; }"));
+    }
+
+    #[test]
+    fn select_strategy_builds_the_unfree_exprs_when_the_host_allows_unfree() {
+        let over = override_test_expr(REV, BASELINE, NAME, true);
+        let fake = FakeBuilder::new(vec![(over.clone(), Ok(()))]);
+        let got = select_strategy(REV, BASELINE, NAME, true, false, true, &|e| fake.build(e));
+        assert_eq!(got, Ok(PinStrategy::Override));
+        assert_eq!(fake.calls(), vec![over]);
     }
 }

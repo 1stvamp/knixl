@@ -518,6 +518,8 @@ fn install(
             return Code::Usage;
         }
     };
+    let unfree = unfree_by_host(&hosts, &ctx.unfree_hosts, &ctx.root);
+    let initial_unfree = unfree.get(&initial.name).copied().unwrap_or(false);
 
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     if interactive && !yes {
@@ -528,7 +530,7 @@ fn install(
             version: version.map(str::to_string),
             no_abi_check,
         };
-        let build_fn = build.then(|| make_build(ctx.root.clone()));
+        let build_fn = build.then(|| make_build(ctx.root.clone(), unfree.clone()));
         let pin_fn = version.is_some().then(make_pin);
         // #28: decide the pin strategy inside the Install screen's Apply-gated verify
         // sequence, rather than build-testing a second time at commit (`commit_tui_install`'s
@@ -544,6 +546,7 @@ fn install(
                 ctx.lock.oracle.nixpkgs_rev.clone(),
                 pending.clone(),
                 no_abi_check,
+                unfree.clone(),
             )
         });
         return match open_tui(entry, build_fn, pin_fn, strategy_fn) {
@@ -629,7 +632,13 @@ fn install(
                     &initial.name,
                     baseline_pending.as_ref(),
                 );
-                match choose_strategy(name, &resolved.nixpkgs_rev, &baseline_rev, no_abi_check) {
+                match choose_strategy(
+                    name,
+                    &resolved.nixpkgs_rev,
+                    &baseline_rev,
+                    no_abi_check,
+                    initial_unfree,
+                ) {
                     Ok((strategy, reason, tested)) => {
                         build_tested = tested;
                         (resolved, strategy, reason)
@@ -674,7 +683,7 @@ fn install(
         } else {
             Nixpkgs::PinnedRev(rev.clone())
         };
-        match NixEval::resolve().builds(&src, name) {
+        match NixEval::resolve().builds(&src, name, initial_unfree) {
             Ok(()) => {}
             Err(NixError::Unavailable(_)) if strict => {
                 eprintln!("knixl: --strict: nix unavailable, cannot build `{name}`");
@@ -1986,17 +1995,19 @@ fn make_verify(root: std::path::PathBuf) -> tui::VerifyFn {
 }
 
 /// The build function for the Install screen: builds `pkgs.<pkg>` from the lock's pinned rev
-/// (ambient fallback), mapping nix errors to a coarse outcome. Closes over only `root`.
-fn make_build(root: std::path::PathBuf) -> tui::BuildFn {
+/// (ambient fallback), allowing unfree when the selected host does, and maps nix errors to a
+/// coarse outcome.
+fn make_build(root: std::path::PathBuf, unfree: BTreeMap<String, bool>) -> tui::BuildFn {
     use knixl_nix::nixeval::{NixError, NixEval, Nixpkgs};
-    Arc::new(move |pkg: &str| {
+    Arc::new(move |host: &str, pkg: &str| {
+        let allow_unfree = unfree.get(host).copied().unwrap_or(false);
         let rev = read_pinned_rev(&root);
         let src = if rev.is_empty() {
             Nixpkgs::Ambient
         } else {
             Nixpkgs::PinnedRev(rev)
         };
-        match NixEval::resolve().builds(&src, pkg) {
+        match NixEval::resolve().builds(&src, pkg, allow_unfree) {
             Ok(()) => tui::BuildOutcome::Ok,
             Err(NixError::Unavailable(_)) => tui::BuildOutcome::Skipped,
             Err(NixError::Failed(_)) => tui::BuildOutcome::Failed,
@@ -2031,6 +2042,7 @@ fn choose_strategy(
     rev: &str,
     baseline_rev: &str,
     no_abi_check: bool,
+    allow_unfree: bool,
 ) -> Result<(knixl_lock::model::PinStrategy, String, bool), (String, String)> {
     use knixl_lock::model::PinStrategy;
     use knixl_nix::nixeval::NixEval;
@@ -2040,7 +2052,15 @@ fn choose_strategy(
     let skipped = no_abi_check || !nix_available || rev == baseline_rev;
     let nix = NixEval::resolve();
     let build = |expr: &str| nix.builds_expr(expr).map_err(|e| e.to_string());
-    match select_strategy(rev, baseline_rev, name, nix_available, no_abi_check, &build) {
+    match select_strategy(
+        rev,
+        baseline_rev,
+        name,
+        nix_available,
+        no_abi_check,
+        allow_unfree,
+        &build,
+    ) {
         Ok(PinStrategy::Override) => Ok((PinStrategy::Override, "build ok".to_string(), true)),
         Ok(PinStrategy::CommitMix) if skipped => {
             let reason = if no_abi_check {
@@ -2081,8 +2101,9 @@ fn strategy_outcome(
     rev: &str,
     baseline_rev: &str,
     no_abi_check: bool,
+    allow_unfree: bool,
 ) -> tui::StrategyOutcome {
-    match choose_strategy(name, rev, baseline_rev, no_abi_check) {
+    match choose_strategy(name, rev, baseline_rev, no_abi_check, allow_unfree) {
         Ok((strategy, label, _tested)) => tui::StrategyOutcome::Chosen { strategy, label },
         Err((commit_mix, over)) => {
             tui::StrategyOutcome::Failed(format!("commit-mix: {commit_mix}; override: {over}"))
@@ -2101,6 +2122,7 @@ fn make_strategy(
     oracle_rev: String,
     pending: BTreeMap<String, HostBaseline>,
     no_abi_check: bool,
+    unfree: BTreeMap<String, bool>,
 ) -> tui::StrategyFn {
     Arc::new(move |name: &str, rev: &str, host_name: &str| {
         let baseline_rev = hosts
@@ -2116,8 +2138,25 @@ fn make_strategy(
                 )
             })
             .unwrap_or_else(|| oracle_rev.clone());
-        strategy_outcome(name, rev, &baseline_rev, no_abi_check)
+        let allow_unfree = unfree.get(host_name).copied().unwrap_or(false);
+        strategy_outcome(name, rev, &baseline_rev, no_abi_check, allow_unfree)
     })
+}
+
+/// Whether each host's generated config allows unfree, keyed by host name. `unfree_hosts`
+/// holds root-relative sources, while `list_hosts` paths start at `root`.
+fn unfree_by_host(
+    hosts: &[knixl_pipeline::install::HostInfo],
+    unfree_hosts: &BTreeSet<std::path::PathBuf>,
+    root: &std::path::Path,
+) -> BTreeMap<String, bool> {
+    hosts
+        .iter()
+        .map(|h| {
+            let rel = h.path.strip_prefix(root).unwrap_or(&h.path);
+            (h.name.clone(), unfree_hosts.contains(rel))
+        })
+        .collect()
 }
 
 /// Human-readable name for a `PinStrategy`, for the `pinned ... via ...` status line.
@@ -2446,6 +2485,8 @@ struct Ctx {
     generated: std::collections::BTreeMap<std::path::PathBuf, String>,
     warnings: Vec<String>,
     flake_lock_problems: Vec<String>,
+    /// Root-relative host sources whose generated config allows unfree (see `gather`).
+    unfree_hosts: BTreeSet<std::path::PathBuf>,
 }
 impl Ctx {
     fn load() -> Ctx {
@@ -2468,6 +2509,7 @@ impl Ctx {
             generated: project.generated,
             warnings: project.warnings,
             flake_lock_problems: project.flake_lock_problems,
+            unfree_hosts: project.unfree_hosts,
         }
     }
 }
@@ -2778,6 +2820,7 @@ mod tests {
             oracle_rev.to_string(),
             std::collections::BTreeMap::new(),
             no_abi_check,
+            std::collections::BTreeMap::new(),
         )
     }
 
@@ -2891,6 +2934,7 @@ mod tests {
             "oracle-rev".to_string(),
             std::collections::BTreeMap::new(),
             false,
+            std::collections::BTreeMap::new(),
         );
 
         // "rev-b" IS host b's own baseline: matched without a build.
