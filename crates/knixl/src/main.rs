@@ -775,7 +775,7 @@ fn commit_install(
         }
         Err(e) => {
             eprintln!("knixl: cannot edit {}: {e}", chosen.path.display());
-            return Code::Internal;
+            return Code::Validation;
         }
     };
 

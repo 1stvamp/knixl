@@ -62,7 +62,8 @@ pub fn select_host<'a>(
 /// child of the single top-level `host` node in `src`, preserving the rest of the file's
 /// formatting. If the host already declares that package, rewrite its `version` prop in place
 /// instead of appending a duplicate. Returns the new source, or `None` if the requested version
-/// already matches what is declared (a true no-op).
+/// already matches what is declared (a true no-op). A declared `from=` package is refused:
+/// rewriting it would drop the input it comes from (ADR 0015).
 pub fn add_package(src: &str, pkg: &str, version: Option<&str>) -> Result<Option<String>, String> {
     let doc: KdlDocument = src.parse().map_err(|e: kdl::KdlError| e.to_string())?;
     let host = doc
@@ -72,6 +73,11 @@ pub fn add_package(src: &str, pkg: &str, version: Option<&str>) -> Result<Option
         .ok_or_else(|| "no `host` node to add a package to".to_string())?;
 
     if let Some(existing) = find_package(host, pkg) {
+        if let Some(input) = existing.get("from").and_then(|v| v.as_string()) {
+            return Err(format!(
+                "the host already declares `package \"{pkg}\" from=\"{input}\"`; edit that node by hand"
+            ));
+        }
         let current = existing.get("version").and_then(|v| v.as_string());
         if current == version {
             return Ok(None);
@@ -414,6 +420,15 @@ mod tests {
             })
             .count();
         assert_eq!(count, 1, "exactly one ripgrep node: {out}");
+    }
+
+    #[test]
+    fn add_package_refuses_a_declared_from_package() {
+        let src = "host \"web\" {\n    package \"handy\" from=\"nixpkgs-unstable\"\n}\n";
+        for version in [None, Some("1.0")] {
+            let err = add_package(src, "handy", version).unwrap_err();
+            assert!(err.contains("from=\"nixpkgs-unstable\""), "{err}");
+        }
     }
 
     #[test]

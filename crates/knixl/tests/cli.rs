@@ -362,6 +362,40 @@ fn install_refuses_a_nonexistent_package() {
 }
 
 #[test]
+fn install_refuses_a_package_the_host_takes_from_an_input() {
+    let root = temp_project("install-from");
+    let host = root.join("hosts/web.kdl");
+    let src = fs::read_to_string(&host).unwrap();
+    let close = src.rfind('}').unwrap();
+    let with_from = format!(
+        "{}    package \"ripgrep\" from=\"nixpkgs-unstable\"\n{}",
+        &src[..close],
+        &src[close..]
+    );
+    fs::write(&host, &with_from).unwrap();
+    let shim = nix_shim("from", true);
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .args(["install", "ripgrep", "--host", "web", "--yes"])
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX", &shim)
+        .output()
+        .expect("run knixl install");
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "refusal exits Validation (5): {out:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&host).unwrap(),
+        with_from,
+        "node left alone"
+    );
+    let _ = fs::remove_file(&shim);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn install_strict_errors_when_nix_absent() {
     let root = temp_project("install-strict");
     let out = Command::new(env!("CARGO_BIN_EXE_knixl"))

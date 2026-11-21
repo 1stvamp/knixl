@@ -1,6 +1,7 @@
 //! `package`: add a package to the host's `environment.systemPackages`. Repeated under a
 //! host (`package "ripgrep"`); each node contributes one `pkgs.<name>`. The pipeline's
 //! list-merge folds the repeats into a single `environment.systemPackages` list.
+//! `from="<input>"` takes the package from a declared flake input instead (ADR 0015).
 use crate::{
     Bucket, Field, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, PinStrategy,
     Unit, ValueTy,
@@ -39,6 +40,28 @@ impl Module for PackageModule {
         let name = arg_name(node).ok_or_else(|| LowerError::missing("package name"))?;
         let version = prop_str(node, "version");
 
+        if let Some(input) = prop_str(node, "from") {
+            // The pipeline checks the input against system {}, which only it can see.
+            let problem = if version.is_some() {
+                Some(format!(
+                    "package \"{name}\": from= and version= cannot both be set: a version pin is a nixpkgs commit, and from= already picks the source"
+                ))
+            } else if input == "nixpkgs" {
+                Some(format!(
+                    "package \"{name}\": from=\"nixpkgs\" is the host's own pkgs: drop from="
+                ))
+            } else {
+                None
+            };
+            if let Some(msg) = problem {
+                ctx.reject(node.span(), msg);
+                return Ok(LowerOutput::new());
+            }
+            return Ok(LowerOutput::units(vec![system_package(input_pkg(
+                &input, &name,
+            ))]));
+        }
+
         let select = match &version {
             None => NixExpr::Select(Box::new(NixExpr::Ref("pkgs".into())), vec![name.clone()]),
             Some(v) => {
@@ -55,21 +78,25 @@ impl Module for PackageModule {
             }
         };
 
-        let assignment = Assignment {
+        Ok(LowerOutput::units(vec![system_package(select)]))
+    }
+}
+
+/// One `environment.systemPackages = [ <pkg> ];` unit for the host's own file.
+fn system_package(pkg: NixExpr) -> Unit {
+    Unit {
+        bucket: Bucket::Default,
+        assignment: Assignment {
             path: AttrPath(vec![
                 AttrKey::Ident("environment".into()),
                 AttrKey::Ident("systemPackages".into()),
             ]),
-            value: NixExpr::List(vec![select]),
+            value: NixExpr::List(vec![pkg]),
             priority: None,
             condition: None,
             doc: None,
-        };
-        Ok(LowerOutput::units(vec![Unit {
-            bucket: Bucket::Default,
-            assignment,
-            module: String::new(),
-        }]))
+        },
+        module: String::new(),
     }
 }
 
@@ -82,12 +109,20 @@ fn schema() -> NodeSchema {
             required: true,
             doc: "The nixpkgs attribute name, e.g. ripgrep.".into(),
         }],
-        props: vec![Field {
-            name: "version".into(),
-            ty: ValueTy::Str,
-            required: false,
-            doc: "Pin to this version, resolved to a nixpkgs commit at install time.".into(),
-        }],
+        props: vec![
+            Field {
+                name: "version".into(),
+                ty: ValueTy::Str,
+                required: false,
+                doc: "Pin to this version, resolved to a nixpkgs commit at install time.".into(),
+            },
+            Field {
+                name: "from".into(),
+                ty: ValueTy::Str,
+                required: false,
+                doc: "Take the package from this flake input (a nixpkgs checkout declared in system {}) instead of the host's pkgs.".into(),
+            },
+        ],
         children: vec![],
         open_children: false,
     }
@@ -111,9 +146,42 @@ fn prop_str(node: &KdlNode, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// A package from a declared flake input, imported with the host's nixpkgs config so settings
+/// such as `allowUnfree` carry over: `(import inputs."<input>" { config = config.nixpkgs.config;
+/// system = pkgs.stdenv.hostPlatform.system; })."<name>"`. A dotted name is quoted per segment
+/// (`."kdePackages"."kate"`), so it resolves the same as `pkgs.kdePackages.kate`. The pipeline
+/// adds `inputs` to the module's formals when it sees the reference.
+fn input_pkg(input: &str, name: &str) -> NixExpr {
+    let quoted = |s: &str| format!("\"{}\"", knixl_ir::emit::escape_nix_str(s));
+    let mut args = std::collections::BTreeMap::new();
+    args.insert(
+        AttrKey::Ident("config".into()),
+        NixExpr::Select(
+            Box::new(NixExpr::Ref("config".into())),
+            vec!["nixpkgs".into(), "config".into()],
+        ),
+    );
+    args.insert(
+        AttrKey::Ident("system".into()),
+        NixExpr::Select(
+            Box::new(NixExpr::Ref("pkgs".into())),
+            vec!["stdenv".into(), "hostPlatform".into(), "system".into()],
+        ),
+    );
+    let imported = NixExpr::Apply(
+        Box::new(NixExpr::Ref("import".into())),
+        vec![
+            NixExpr::Select(Box::new(NixExpr::Ref("inputs".into())), vec![quoted(input)]),
+            NixExpr::AttrSet(args),
+        ],
+    );
+    NixExpr::Select(Box::new(imported), name.split('.').map(quoted).collect())
+}
+
 /// The historical package as it existed at a pinned nixpkgs commit:
-/// `(import (builtins.fetchGit { rev = ..; shallow = true; url = ..; }) { system =
-/// pkgs.system; }).<name>`. Shared by both pin strategies: `CommitMix` uses this directly,
+/// `(import (builtins.fetchGit { rev = ..; shallow = true; url = ..; }) { config =
+/// config.nixpkgs.config; system = pkgs.system; }).<name>`, so the host's `allowUnfree` and
+/// the rest of its nixpkgs config apply to the pinned package too. Shared by both pin strategies: `CommitMix` uses this directly,
 /// `Override` binds it to `_pin` and overrides the baseline package with its `src`/`version`.
 fn historical_pkg(rev: &str, name: &str) -> NixExpr {
     let mut src = std::collections::BTreeMap::new();
@@ -364,6 +432,69 @@ mod tests {
         assert!(
             m.lower(&n, &mut ctx).is_err(),
             "declared version with no lock pin is an error"
+        );
+    }
+    /// Lowers `src` with no pins and returns the emitted list value plus any diagnostics.
+    fn render_from(src: &str) -> (String, Vec<crate::Diagnostic>) {
+        let m = PackageModule::new();
+        let n = node(src);
+        let reg = Registry::new();
+        let mut diags = Vec::new();
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
+        let out = m.lower(&n, &mut ctx).unwrap();
+        let mut w = knixl_ir::Writer::new();
+        for u in &out.units {
+            u.assignment.value.emit(&mut w);
+        }
+        (w.into_string(), diags)
+    }
+
+    #[test]
+    fn from_package_imports_the_input_with_the_host_nixpkgs_config() {
+        let (rendered, diags) = render_from("package \"handy\" from=\"nixpkgs-unstable\"");
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(
+            rendered,
+            "[\n  (import inputs.\"nixpkgs-unstable\" {\n    config = config.nixpkgs.config;\n    system = pkgs.stdenv.hostPlatform.system;\n  }).\"handy\"\n]"
+        );
+    }
+
+    #[test]
+    fn from_package_with_a_dotted_name_quotes_each_segment() {
+        let (rendered, diags) =
+            render_from("package \"kdePackages.kate\" from=\"nixpkgs-unstable\"");
+        assert!(diags.is_empty(), "{diags:?}");
+        assert!(
+            rendered.ends_with("}).\"kdePackages\".\"kate\"\n]"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn from_with_version_is_rejected() {
+        let (rendered, diags) = render_from("package \"handy\" from=\"unstable\" version=\"1.0\"");
+        assert!(rendered.is_empty(), "nothing emitted: {rendered}");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, crate::Severity::Error);
+        assert!(
+            diags[0]
+                .message
+                .contains("from= and version= cannot both be set"),
+            "{}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn from_nixpkgs_is_rejected_with_a_hint_to_drop_it() {
+        let (rendered, diags) = render_from("package \"handy\" from=\"nixpkgs\"");
+        assert!(rendered.is_empty(), "nothing emitted: {rendered}");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, crate::Severity::Error);
+        assert!(
+            diags[0].message.contains("drop from="),
+            "{}",
+            diags[0].message
         );
     }
 }

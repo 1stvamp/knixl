@@ -199,7 +199,8 @@ pub fn pinned_url(url: &str, rev: &str) -> String {
 /// Render the input-mode system flake (ADR 0014): declared inputs pinned by rev, every host
 /// and image built with `nixpkgs.lib.nixosSystem` from the `nixpkgs` input. Hosts pass their
 /// `system` when known, and installers pass theirs; guest images don't, since the lxc base
-/// module sets the platform. Inputs, hosts and images are emitted in name order.
+/// module sets the platform. Every call passes `specialArgs = { inherit inputs; }` so modules
+/// can take `inputs` as an argument (ADR 0015). Inputs, hosts and images are emitted in name order.
 pub fn render_input_flake(
     inputs: &[FlakeInputSpec],
     hosts: &[FlakeHost],
@@ -265,6 +266,7 @@ pub fn render_input_flake(
         if i.kind == crate::project::ImageKind::Installer {
             s.push_str(&format!("        system = \"{}\";\n", esc(&i.system)));
         }
+        s.push_str("        specialArgs = { inherit inputs; };\n");
         modules(&mut s, "        ", &[], &i.module_path, &[]);
         s.push_str("      };\n");
     }
@@ -281,6 +283,7 @@ pub fn render_input_flake(
         if let Some(system) = &h.system {
             s.push_str(&format!("          system = \"{}\";\n", esc(system)));
         }
+        s.push_str("          specialArgs = { inherit inputs; };\n");
         modules(
             &mut s,
             "          ",
@@ -414,6 +417,7 @@ mod tests {
         assert!(out.contains("https://example.com/nixpkgs"));
         assert!(out.contains("builtins.fetchGit"));
         assert!(!out.contains("inputs ="), "no flake inputs");
+        assert!(!out.contains("specialArgs"), "{out}");
         // Regression guard: the flake must use eval-config.nix, never lib.nixosSystem (which
         // does not exist on a plain imported nixpkgs set and fails to evaluate).
         assert!(
@@ -569,6 +573,10 @@ mod tests {
             .contains("\"web\" = nixpkgs.lib.nixosSystem {\n          system = \"x86_64-linux\";"));
         assert!(out
             .contains("\"db\" = nixpkgs.lib.nixosSystem {\n          system = \"aarch64-linux\";"));
+        assert!(out.contains(
+            "system = \"x86_64-linux\";\n          specialArgs = { inherit inputs; };\n          modules = ["
+        ));
+        assert_eq!(out.matches("specialArgs = { inherit inputs; };").count(), 2);
         assert!(!out.contains("fetchGit"), "{out}");
         assert!(!out.contains("formatter"), "{out}");
         assert!(
@@ -649,7 +657,12 @@ mod tests {
         let out = render_input_flake(&inputs(), &[], &images, "25.11", None);
         assert!(out
             .contains("image_usb = nixpkgs.lib.nixosSystem {\n        system = \"x86_64-linux\";"));
-        assert!(out.contains("image_llm = nixpkgs.lib.nixosSystem {\n        modules = ["));
+        assert!(out.contains(
+            "image_usb = nixpkgs.lib.nixosSystem {\n        system = \"x86_64-linux\";\n        specialArgs = { inherit inputs; };\n        modules = ["
+        ));
+        assert!(out.contains(
+            "image_llm = nixpkgs.lib.nixosSystem {\n        specialArgs = { inherit inputs; };\n        modules = ["
+        ));
         assert!(out.contains("\"llm-lxc\" = image_llm.config.system.build.tarball;"));
         assert!(out.contains("\"usb-iso\" = image_usb.config.system.build.isoImage;"));
     }

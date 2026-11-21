@@ -466,7 +466,7 @@ fn input_mode_emits_pinned_inputs_and_nixos_system_hosts() {
     );
     assert!(
         flake.contains(
-            "\"type40\" = nixpkgs.lib.nixosSystem {\n          system = \"x86_64-linux\";"
+            "\"type40\" = nixpkgs.lib.nixosSystem {\n          system = \"x86_64-linux\";\n          specialArgs = { inherit inputs; };"
         ),
         "{flake}"
     );
@@ -623,6 +623,10 @@ fn input_modules_are_imported_by_hosts_only() {
         flake.contains("modules = [\n          ./installer/usb.nix\n"),
         "the installer does not import input modules: {flake}"
     );
+    assert!(
+        flake.contains("system = \"x86_64-linux\";\n        specialArgs = { inherit inputs; };\n        modules = [\n          ./installer/usb.nix\n"),
+        "the installer gets inputs as a module argument: {flake}"
+    );
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -760,6 +764,181 @@ fn an_image_target_imports_a_hand_written_module_after_its_base() {
         )),
         "{:?}",
         project.inputs.validation_errors
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// ADR 0015: an input-mode project with a `nixpkgs-unstable` input, and a type40 host whose
+/// packages are given by `packages`.
+fn from_package_root(tag: &str, packages: &str) -> PathBuf {
+    let root = input_mode_root(tag);
+    let kdl = fs::read_to_string(root.join("knixl.kdl")).unwrap().replace(
+        "    input \"disko\"",
+        "    input \"nixpkgs-unstable\" url=\"github:NixOS/nixpkgs\" flake=#false\n    input \"disko\"",
+    );
+    fs::write(root.join("knixl.kdl"), kdl).unwrap();
+    fs::write(
+        root.join("hosts/type40.kdl"),
+        format!("host \"type40\" {{\n    system \"x86_64-linux\"\n    nixpkgs release=\"unstable\" rev=\"{NIXPKGS_REV}\"\n{packages}}}\n"),
+    )
+    .unwrap();
+    seed_lock(
+        &root,
+        vec![
+            disko_pin(),
+            knixl_lock::model::FlakeInputPin {
+                name: "nixpkgs-unstable".into(),
+                url: "github:NixOS/nixpkgs".into(),
+                rev: "1111111111111111111111111111111111111111".into(),
+            },
+        ],
+    );
+    root
+}
+
+#[test]
+fn a_from_package_reads_its_input_through_the_host_module_formals() {
+    let root = from_package_root(
+        "from-package",
+        "    package \"ripgrep\"\n    package \"handy\" from=\"nixpkgs-unstable\"\n    package \"zed-editor\" from=\"nixpkgs-unstable\"\n",
+    );
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    assert!(
+        project.inputs.validation_errors.is_empty(),
+        "{:?}",
+        project.inputs.validation_errors
+    );
+    let host = &project.generated[&PathBuf::from("generated/hosts/type40.nix")];
+    assert!(
+        host.contains("{ config, inputs, lib, pkgs, ... }:"),
+        "{host}"
+    );
+    // The two from= packages share their import arguments, so the existing let-hoisting pass
+    // binds them once; each package keeps its own import.
+    assert!(
+        host.contains("_knixl0 = {\n    config = config.nixpkgs.config;\n    system = pkgs.stdenv.hostPlatform.system;\n  };"),
+        "{host}"
+    );
+    assert!(
+        host.contains("environment.systemPackages = [\n    pkgs.ripgrep\n    (import inputs.\"nixpkgs-unstable\" _knixl0).\"handy\"\n    (import inputs.\"nixpkgs-unstable\" _knixl0).\"zed-editor\"\n  ];"),
+        "{host}"
+    );
+    let flake = &project.generated[&PathBuf::from("generated/flake.nix")];
+    assert!(
+        flake.contains("specialArgs = { inherit inputs; };"),
+        "{flake}"
+    );
+    assert!(
+        flake.contains("url = \"github:NixOS/nixpkgs/1111111111111111111111111111111111111111\";"),
+        "{flake}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_from_package_naming_an_undeclared_input_is_refused() {
+    let root = from_package_root(
+        "from-undeclared",
+        "    package \"handy\" from=\"unstable\"\n",
+    );
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    let errs = &project.inputs.validation_errors;
+    assert!(
+        errs.iter().any(|e| e
+            == "hosts/type40.kdl: package from=\"unstable\" names input `unstable`, which is not declared in system {}"),
+        "{errs:?}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_from_package_outside_input_mode_is_refused() {
+    let root = temp_root("from-no-inputs");
+    fs::write(
+        root.join("knixl.kdl"),
+        "system {\n    state-version \"25.05\"\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("hosts/web.kdl"),
+        "host \"web\" {\n    system \"x86_64-linux\"\n    package \"handy\" from=\"nixpkgs-unstable\"\n}\n",
+    )
+    .unwrap();
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    let errs = &project.inputs.validation_errors;
+    assert!(
+        errs.iter().any(|e| e.starts_with(
+            "hosts/web.kdl: package from=\"nixpkgs-unstable\" needs flake inputs declared in system {}"
+        )),
+        "{errs:?}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_from_package_inside_a_guest_config_adds_inputs_to_the_host_header() {
+    let root = from_package_root(
+        "from-guest",
+        "    guest \"sandbox\" {\n        config {\n            package \"handy\" from=\"nixpkgs-unstable\"\n        }\n    }\n",
+    );
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    assert!(
+        project.inputs.validation_errors.is_empty(),
+        "{:?}",
+        project.inputs.validation_errors
+    );
+    let host = &project.generated[&PathBuf::from("generated/hosts/type40.nix")];
+    assert!(
+        host.contains("{ config, inputs, lib, pkgs, ... }:"),
+        "{host}"
+    );
+    assert!(host.contains("inputs.\"nixpkgs-unstable\""), "{host}");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_from_package_in_an_installer_adds_inputs_to_its_header() {
+    let root = from_package_root("from-installer", "");
+    let kdl = fs::read_to_string(root.join("knixl.kdl")).unwrap();
+    fs::write(
+        root.join("knixl.kdl"),
+        format!("{kdl}installer \"usb\" system=\"x86_64-linux\" {{\n    package \"handy\" from=\"nixpkgs-unstable\"\n}}\nguest-image \"llm\" system=\"x86_64-linux\" {{\n    package \"handy\" from=\"nixpkgs-unstable\"\n}}\n"),
+    )
+    .unwrap();
+
+    let project = gather(&root, &identity_formatter(), "0.3.1".parse().unwrap()).expect("gather");
+    assert!(
+        project.inputs.validation_errors.is_empty(),
+        "{:?}",
+        project.inputs.validation_errors
+    );
+    for path in [
+        "generated/installer/usb.nix",
+        "generated/guest-image/llm.nix",
+    ] {
+        let module = &project.generated[&PathBuf::from(path)];
+        assert!(
+            module.contains("{ config, inputs, lib, pkgs, modulesPath, ... }:"),
+            "{path}: {module}"
+        );
+        assert!(
+            module.contains("inputs.\"nixpkgs-unstable\""),
+            "{path}: {module}"
+        );
+    }
+    let host = &project.generated[&PathBuf::from("generated/hosts/type40.nix")];
+    assert!(
+        host.contains("{ config, lib, pkgs, ... }:"),
+        "the host has no from= package: {host}"
     );
 
     let _ = fs::remove_dir_all(&root);
