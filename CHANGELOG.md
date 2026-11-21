@@ -8,6 +8,40 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-21
+
+Packages can come from any flake input, luks devices take a password or key file, and pinned
+packages now respect the host's nixpkgs config (so unfree pins build).
+
+Two entries below change generated output for an existing project: an input-mode system flake
+gains `specialArgs`, and every pinned package gains a `config` line. `knixl upgrade` shows both
+as a regeneration.
+
+### Added
+- `package "<name>" from="<input>"` takes a package from a flake input that has no NixOS module,
+  e.g. `package "handy" from="nixpkgs-unstable"` (#117, ADR 0015). The input is imported with the
+  host's `nixpkgs.config` and system, dotted names like `kdePackages.kate` work, and an input
+  that is not declared in `knixl.kdl` is refused. `from=` needs input mode, and it cannot be
+  combined with `version=`.
+- Raw-nix modules in an input-mode project can take `inputs` as a module argument (#117).
+- `luks` in a disko layout accepts `password-file` (emits `passwordFile`, used while
+  formatting) and `key-file` (emits `settings.keyFile`, used to unlock at boot) (#118). Setting
+  both is refused.
+
+### Changed
+- The input-mode system flake passes `specialArgs = { inherit inputs; }` to every host,
+  installer and guest image, so every input-mode project regenerates `flake.nix` (#117).
+- `knixl install` refuses a package the host already takes with `from=`, with exit 5 (#117).
+- `knixl install --build` (and the TUI build check) allows unfree packages when the host's
+  generated config sets `nixpkgs.config.allowUnfree = true`, or when `NIXPKGS_ALLOW_UNFREE=1` is
+  set (#119).
+
+### Fixed
+- A pinned package (`version=`) was built from a nixpkgs import that ignored the host's
+  `nixpkgs.config`, so an unfree pin failed to evaluate even with `allowUnfree` set (#119). The
+  import now carries `config = config.nixpkgs.config;`. **Every host with a pinned package
+  regenerates.**
+
 ## [1.6.0] - 2026-09-30
 
 The Nix flake stops overriding your own `nixfmt`, a duplicated `os` setting is refused
@@ -298,7 +332,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/1stvamp/knixl/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/1stvamp/knixl/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/1stvamp/knixl/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/1stvamp/knixl/compare/v1.5.0...v1.5.1
