@@ -58,3 +58,7 @@ install-path = "CARGO_HOME"
 install-updater = false
 # Publish GitHub build provenance for each release artefact
 github-attestations = true
+
+# GitHub retired the macos-14 image dist picks by default for this target
+[workspace.metadata.dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
