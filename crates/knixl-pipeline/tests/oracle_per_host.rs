@@ -91,6 +91,7 @@ fn gather_selects_each_hosts_own_baseline_rev_for_its_oracle() {
             version: "0".into(),
         },
         oracle: OraclePin {
+            release: String::new(),
             nixpkgs_rev: "rev-b".into(),
             options_hash: String::new(),
             modules: Vec::new(),

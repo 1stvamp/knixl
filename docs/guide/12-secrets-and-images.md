@@ -72,7 +72,7 @@ installer "usb" {
 nix build ./generated#usb-iso
 ```
 
-Add `system="aarch64-linux"` to the `installer` node for another platform. A live ISO has nothing to decrypt secrets with, so `secret=` references don't work here; supply anything secret when you build the image, e.g. from a module you `import` (paths are relative to `knixl.kdl`) that reads an environment variable, built with `--impure`.
+Add `system="aarch64-linux"` to the `installer` node for another platform. In an input-free flake (no `input` lines), images build from the project's own nixpkgs, so declare one at the top of `knixl.kdl` with `nixpkgs release="25.11"` and run `knixl upgrade --yes`; until then the flake leaves them out. A live ISO has nothing to decrypt secrets with, so `secret=` references don't work here; supply anything secret when you build the image, e.g. from a module you `import` (paths are relative to `knixl.kdl`) that reads an environment variable, built with `--impure`.
 
 ## Images for Incus
 

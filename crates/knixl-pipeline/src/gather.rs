@@ -106,6 +106,7 @@ pub fn gather_with_lock(
             tool: tool.clone(),
             formatter: formatter_pin.clone(),
             oracle: OraclePin {
+                release: String::new(),
                 nixpkgs_rev: String::new(),
                 options_hash: String::new(),
                 modules: Vec::new(),

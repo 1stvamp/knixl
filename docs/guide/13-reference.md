@@ -82,6 +82,10 @@ Module nodes are listed in [Using modules](07-modules.md).
 All of these are optional.
 
 ```kdl
+// The project's default nixpkgs: what hosts without their own release are validated
+// against, and what installers and guest images build from in an input-free flake.
+nixpkgs release="<release>"
+
 // Generate generated/flake.nix.
 system {
     state-version "<release>"            // required in a system block

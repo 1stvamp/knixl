@@ -31,7 +31,7 @@ If the build fails (no network, say), `upgrade` carries on and warns. In CI, eit
 
 ## Per-host option sets
 
-Each host is validated against its own nixpkgs: the commit its `nixpkgs release` resolved to. A fleet that's part-way through moving from one release to the next validates every host against the options it will actually be built with. A host with no option set in the cache is generated without option checks, on its own; the other hosts are still checked. A host with no `nixpkgs release` at all has no commit to look up, so it's only checked when `KNIXL_OPTIONS_JSON` is set.
+Each host is validated against its own nixpkgs: the commit its `nixpkgs release` resolved to. A fleet that's part-way through moving from one release to the next validates every host against the options it will actually be built with. A host with no option set in the cache is generated without option checks, on its own; the other hosts are still checked. A host with no `nixpkgs release` of its own is checked against the project's, if `knixl.kdl` declares one (`nixpkgs release="25.11"` at the top level, resolved by `knixl upgrade` like a host's); with neither, it's only checked when `KNIXL_OPTIONS_JSON` is set.
 
 ## Modules from other flakes
 

@@ -383,6 +383,51 @@ fn upgrade_builds_a_missing_base_option_set() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// #134: a project-level `nixpkgs release` resolves into the lock's oracle line on upgrade,
+/// and dropping it clears the line again.
+#[test]
+fn upgrade_resolves_and_clears_the_project_release() {
+    let root = temp_project("project-release");
+    let resolver = resolver_shim("project-release-rev", "feed", "", 0);
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_knixl"))
+            .args(args)
+            .current_dir(&root)
+            .env("KNIXL_FORMATTER", "cat")
+            .env("KNIXL_NIX_BUILD", "false")
+            .env("KNIXL_BASELINE_RESOLVER", &resolver)
+            .output()
+            .unwrap()
+    };
+    let lock = || fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    assert_eq!(run(&["generate"]).status.code(), Some(0));
+    fs::write(root.join("knixl.kdl"), "nixpkgs release=\"25.11\"\n").unwrap();
+
+    let preview = run(&["upgrade"]);
+    assert_eq!(preview.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&preview.stdout)
+        .contains("would resolve the project nixpkgs release \"25.11\" -> feed"));
+    assert!(
+        lock().contains("oracle nixpkgs-rev=\"\""),
+        "a preview writes nothing"
+    );
+
+    assert_eq!(run(&["upgrade", "--yes"]).status.code(), Some(0));
+    assert!(
+        lock().contains("oracle release=\"25.11\" nixpkgs-rev=\"feed\""),
+        "{}",
+        lock()
+    );
+    // Resolved once; the (failed, fake) option-set build is all that is still offered.
+    assert!(!String::from_utf8_lossy(&run(&["upgrade"]).stdout).contains("project nixpkgs release"));
+
+    fs::remove_file(root.join("knixl.kdl")).unwrap();
+    assert_eq!(run(&["upgrade", "--yes"]).status.code(), Some(0));
+    assert!(lock().contains("oracle nixpkgs-rev=\"\""), "{}", lock());
+    let _ = fs::remove_file(&resolver);
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn prune_deletes_orphaned_files() {
     let root = temp_project("prune");

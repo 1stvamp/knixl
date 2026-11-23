@@ -133,6 +133,19 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
         None
     };
 
+    // The project's own `nixpkgs release` (knixl.kdl) resolves into the lock's `oracle` line on
+    // `upgrade` only (#134): the rev hosts without a release validate against, and the one
+    // image targets build from in the input-free flake.
+    let pending_project_release: Option<(String, String)> =
+        if matches!(cli.cmd, Cmd::Upgrade { .. }) {
+            match resolve_pending_project_release(ctx) {
+                Ok(p) => p,
+                Err(code) => return code,
+            }
+        } else {
+            None
+        };
+
     // Input-backed oracle modules (ADR 0014) take their pin from the flake inputs, pending first.
     let input_pins = flake_input_module_pins(
         &ctx.root,
@@ -188,9 +201,15 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
     let patched_lock = (!pending.is_empty()
         || !pending_host_modules.is_empty()
         || pending_module_sources.is_some()
-        || pending_flake_inputs.is_some())
+        || pending_flake_inputs.is_some()
+        || pending_project_release.is_some())
     .then(|| {
         let mut lock = ctx.lock.clone();
+        if let Some((release, rev)) = &pending_project_release {
+            lock.oracle.release = release.clone();
+            lock.oracle.nixpkgs_rev = rev.clone();
+            lock.oracle.options_hash = options_hash_for_rev(rev);
+        }
         if let Some(pins) = &pending_flake_inputs {
             lock.flake_inputs = pins.clone();
         }
@@ -227,7 +246,8 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
     // flake's text, and whether the hosts can share one nixpkgs at all), so plan from the
     // patched lock. Planning against the old one dropped the flake as orphaned and hid a
     // validation error the new baseline causes (#135).
-    let regather = pending_flake_inputs.is_some() || !pending.is_empty();
+    let regather =
+        pending_flake_inputs.is_some() || !pending.is_empty() || pending_project_release.is_some();
     let regathered = match (regather, &patched_lock) {
         (true, Some(lock)) => match knixl_pipeline::gather::gather_with_lock(
             &ctx.root,
@@ -261,17 +281,23 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
     // takes from `lock` -- see `build_lock_next`): so `pending_modules` needs to land in a
     // patched `Versions`, not the patched lock above, for `plan.lock_next` to carry it through
     // to `Cmd::Upgrade`'s/`commit_install`'s write.
-    let patched_running = pending_modules
-        .as_ref()
-        .map(|pins| knixl_lock::reconcile::Versions {
-            tool: ctx.running.tool.clone(),
-            formatter: ctx.running.formatter.clone(),
-            oracle: knixl_lock::model::OraclePin {
-                nixpkgs_rev: ctx.running.oracle.nixpkgs_rev.clone(),
-                options_hash: ctx.running.oracle.options_hash.clone(),
-                modules: pins.clone(),
-            },
-            modules: ctx.running.modules.clone(),
+    let patched_running =
+        (pending_modules.is_some() || pending_project_release.is_some()).then(|| {
+            let mut oracle = ctx.running.oracle.clone();
+            if let Some(pins) = &pending_modules {
+                oracle.modules = pins.clone();
+            }
+            if let Some((release, rev)) = &pending_project_release {
+                oracle.release = release.clone();
+                oracle.nixpkgs_rev = rev.clone();
+                oracle.options_hash = options_hash_for_rev(rev);
+            }
+            knixl_lock::reconcile::Versions {
+                tool: ctx.running.tool.clone(),
+                formatter: ctx.running.formatter.clone(),
+                oracle,
+                modules: ctx.running.modules.clone(),
+            }
         });
     let running_for_plan = patched_running.as_ref().unwrap_or(&ctx.running);
 
@@ -360,6 +386,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                 && pending_host_modules.is_empty()
                 && pending_module_sources.is_none()
                 && pending_flake_inputs.is_none()
+                && pending_project_release.is_none()
                 && ctx.unvalidated.is_empty()
             {
                 println!("already up to date");
@@ -401,6 +428,14 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                         "would resolve flake input \"{}\" ({}) -> {}",
                         i.name, i.url, i.rev,
                     );
+                }
+                if let Some((release, rev)) = &pending_project_release {
+                    match release.is_empty() {
+                        true => println!("would clear the project nixpkgs release"),
+                        false => println!(
+                            "would resolve the project nixpkgs release \"{release}\" -> {rev}"
+                        ),
+                    }
                 }
                 let missing: BTreeSet<&str> = ctx
                     .unvalidated
@@ -451,6 +486,14 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                     "resolved flake input \"{}\" ({}) -> {}",
                     i.name, i.url, i.rev,
                 );
+            }
+            if let Some((release, rev)) = &pending_project_release {
+                match release.is_empty() {
+                    true => println!("cleared the project nixpkgs release"),
+                    false => {
+                        println!("resolved the project nixpkgs release \"{release}\" -> {rev}")
+                    }
+                }
             }
             // `plan.lock_next` was built from the lock already patched with `pending`/
             // `pending_modules`/`pending_host_modules`/`pending_module_sources` (see `run`'s
@@ -1129,6 +1172,34 @@ fn options_hash_for_rev(rev: &str) -> String {
         .and_then(|p| std::fs::read(&p).ok())
         .map(|bytes| knixl_nix::hash(&bytes))
         .unwrap_or_default()
+}
+
+/// The project's declared `nixpkgs release` (knixl.kdl), resolved in memory against the lock's
+/// `oracle` line (#134): `Ok(None)` when they already agree, `Some(("", ""))` to clear a
+/// release no longer declared, else the freshly resolved `(release, rev)`.
+fn resolve_pending_project_release(ctx: &Ctx) -> Result<Option<(String, String)>, Code> {
+    let declared = knixl_pipeline::project::parse_project(&ctx.root)
+        .ok()
+        .and_then(|p| p.default_release);
+    let recorded = &ctx.lock.oracle;
+    match declared {
+        None if recorded.release.is_empty() => Ok(None),
+        None => Ok(Some((String::new(), String::new()))),
+        Some(release) if release == recorded.release && !recorded.nixpkgs_rev.is_empty() => {
+            Ok(None)
+        }
+        Some(release) => {
+            let rev = knixl_nix::baseline::BaselineResolver::resolve()
+                .lookup(&release)
+                .map_err(|e| {
+                    eprintln!(
+                        "knixl: cannot resolve the project nixpkgs release \"{release}\": {e}"
+                    );
+                    Code::Validation
+                })?;
+            Ok(Some((release, rev)))
+        }
+    }
 }
 
 /// Resolve `host`'s declared `nixpkgs release` baseline IN MEMORY ONLY: no write (issue #22

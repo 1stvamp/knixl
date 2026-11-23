@@ -322,6 +322,7 @@ mod tests {
     }
     fn oracle_pin() -> OraclePin {
         OraclePin {
+            release: String::new(),
             nixpkgs_rev: "rev".into(),
             options_hash: "blake3:opts".into(),
             modules: vec![],

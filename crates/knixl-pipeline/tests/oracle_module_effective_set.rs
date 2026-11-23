@@ -120,6 +120,7 @@ fn gather_selects_each_hosts_effective_module_set_for_its_oracle() {
             version: "0".into(),
         },
         oracle: OraclePin {
+            release: String::new(),
             nixpkgs_rev: "rev-b".into(),
             options_hash: String::new(),
             modules: vec![OracleModulePin {

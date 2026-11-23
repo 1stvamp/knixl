@@ -1076,6 +1076,7 @@ fn generate_prunes_pins_for_packages_no_longer_declared() {
             version: "0".into(),
         },
         oracle: OraclePin {
+            release: String::new(),
             nixpkgs_rev: String::new(),
             options_hash: String::new(),
             modules: Vec::new(),
