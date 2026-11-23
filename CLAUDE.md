@@ -13,6 +13,8 @@ A Rust tool that compiles opinionated KDL into maintainable, committed Nix sourc
 3. `crates/` : specification-grade sketches. Signatures and control flow are the intent; bodies marked `/* ... */` and helpers like `assign(..)` / `child_arg_str(..)` are not yet written.
 4. `examples/` : the behaviour contract. The generated `.nix` under `examples/expected/` is what the pipeline must reproduce from the `.kdl` inputs. Treat these as golden tests.
 
+`docs/guide/` is the user guide (what knixl.dev shows as the Guide). It is written for people using knixl, not for contributors, so it is not ground truth, but a change to user-visible behaviour should update it in the same PR.
+
 ## Non-negotiable invariants
 
 - KDL is authoritative, generated Nix is derived. No Nix-to-KDL round-trip. Ever. (ADR 0001)

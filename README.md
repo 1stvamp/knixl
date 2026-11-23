@@ -10,7 +10,9 @@
 
 knixl generates maintainable, human-readable Nix from small amounts of opinionated KDL.
 
-Pronounced "nix-ull". Written in Rust. KDL is the source of truth, the generated Nix is a committed build artefact, and regeneration is version-aware so a framework upgrade cannot change your output without telling you first.
+**Documentation: [knixl.dev/guide](https://knixl.dev/guide/introduction/)**, starting with [your first host](https://knixl.dev/guide/first-host/).
+
+Pronounced "nix-ull". You describe each machine in a few lines of KDL; knixl writes ordinary NixOS modules from it, checks them against the real NixOS options, and records a hash of everything in a lockfile, so the same KDL always gives the same Nix and a knixl upgrade can't change your output without showing you first.
 
 <p align="center">
   <img src="assets/tui-tour.gif" alt="knixl TUI: home, browse modules, new module" width="760">
@@ -31,7 +33,7 @@ host "web" {
 }
 ```
 
-knixl expands it into a full, idiomatic NixOS module (nginx enabled, TLS and proxy recommendations on, ACME wired up, security headers added), formats it with a pinned formatter, writes it to `generated/`, and records hashes in a lockfile so the output is reproducible byte-for-byte.
+knixl expands it into a full NixOS module (nginx enabled, TLS and proxy recommendations on, ACME wired up, security headers added), formats it with nixfmt, writes it to `generated/`, and records hashes in a lockfile so the output is reproducible byte for byte.
 
 The whole loop is compile, check, and read back the typed reference for any node:
 
@@ -75,18 +77,13 @@ cargo build --release        # or: mise run build
 
 The binary lands at `target/release/knixl`.
 
-### Runtime prerequisites
+### What it needs at runtime
 
-`generate`, `check`, and `install` also need:
-
-- **Nix** on PATH, for the oracle (option-path validation) and for `install`'s package eval.
-- **a formatter**: `nixfmt-rfc-style` or `nixfmt` on PATH. `KNIXL_FORMATTER` overrides which binary is used. The Nix flake install brings its own `nixfmt`, used when there isn't one on your PATH already.
-
-**Note:** without the oracle's `options.json` cache populated, path validation is quietly skipped, so a typo'd option path will not be caught. See docs/06-oracle.md for the cache.
+A Nix formatter (`nixfmt` or `nixfmt-rfc-style`) on your `PATH`, and Nix for `knixl install` and for building the option set that validation checks against. `generate` and `check` work offline. Option validation needs a one-off setup per nixpkgs commit, and is skipped until you do it: see [Validation and the oracle](https://knixl.dev/guide/validation/#turning-it-on).
 
 ## Quickstart
 
-A knixl project is a directory with a `hosts/` folder. The stdlib modules are built into knixl, so that is all you need to start; your own declarative modules, if you write any, live in an optional `modules/` folder beside it. knixl walks up from the current directory to the first folder that has `hosts/` or `knixl.lock.kdl`, and treats that as the root.
+A knixl project is a directory with a `hosts/` folder in it, one `.kdl` file per machine.
 
 ```sh
 mkdir -p demo/hosts && cd demo
@@ -101,80 +98,49 @@ knixl generate    # writes generated/hosts/web.nix and knixl.lock.kdl
 knixl check       # clean
 ```
 
-From there, add a module node to the host and regenerate. The modules are built in (see below), so there is nothing to install or copy first. `knixl doc <node>` prints what a node accepts before you write it.
+From there, add modules to the host and regenerate. [Your first host](https://knixl.dev/guide/first-host/) walks through it, and on to a bootable system.
 
-## Batteries included
+## What comes with it
 
-knixl ships a curated set of modules (built-in Rust and declarative KDL alike), all embedded in the binary and usable in any project with no setup (no `modules/` directory to place, nothing to fetch):
+Modules for the common ground are built in, so there's nothing to install or copy before you use them:
 
-- **web-service** : an nginx vhost with TLS, ACME, and hardening presets.
-- **disko** : declarative disk layout, GPT partitions with ext4/vfat/swap/LUKS content and ZFS pools, plus a `boot-root-zfs` shorthand.
-- **zfs**, **user**, **openssh** : the host primitives, ZFS with a stable `hostId`, a login user with SSH keys, a hardened sshd.
-- **tailscale** : Tailscale with an auth key pulled from a named secret.
-- **incus** : an Incus host, enable plus the web UI, the storage/network/profile preseed (with optional bridge ipv6), an optional API listener (static or bound to an interface's address at runtime), and host-firewall integration.
-- **home-manager** : per-user home-manager with the "Words of warning" guardrails (required `stateVersion`, safe `useUserPackages`, `nix.gc` left to NixOS) baked in.
-- **os** : core host config, hostName, stateVersion, boot loader and kernel, timezone/locale, sysctl and kernel modules, nix.settings, systemPackages, session variables, and tmpfiles rules.
-- **nix-ld** : run prebuilt dynamically linked binaries (a pinned rustup toolchain, a GitHub release binary) with the library list declared per host.
-- **guest** : a NixOS system container whose config is a nested knixl module tree (`web-service` inside a guest just works, re-rooted under `containers.<name>.config`).
-- **host**, **postgres**, **backups**, **package**, **raw-nix**, **import**, **security-headers** : the rest of the built-ins.
+- **os**: boot loader, kernel, time zone, locale, sysctls, nix settings, system packages, tmpfiles rules.
+- **user**, **openssh**, **firewall**, **tailscale**: users with SSH keys, a hardened SSH server, open ports and trusted interfaces, and Tailscale with its auth key from a secret.
+- **disko**, **zfs**: declarative disk layouts (GPT, LUKS, swap, ZFS pools) and ZFS support.
+- **web-service**, **security-headers**, **postgres**, **backups**: an nginx reverse proxy with TLS, shared security headers, PostgreSQL, and restic backups.
+- **incus**, **guest**: an Incus host, and NixOS containers configured with knixl modules.
+- **home-manager**, **nix-ld**, **package**: home-manager for a user, running prebuilt binaries, and packages (with version pins, or from another flake input).
+- **raw-nix** and **import**: for the Nix no module covers.
 
-Run `knixl doc <node>` for the typed reference of any of them.
+`knixl doc <node>` prints what any of them accepts. [Using modules](https://knixl.dev/guide/modules/) has an example of each, and you can [write your own](https://knixl.dev/guide/writing-modules/) as a short KDL file.
 
-Three things worth calling out:
-
-- **Generate a bootable system.** Add a `system { }` block to `knixl.kdl` and `generate` also emits `generated/flake.nix` with `nixosConfigurations.<host>`, each host pinned to its own nixpkgs baseline. `nixos-rebuild switch --flake .#<host>` (or nixos-anywhere) and it boots. Absent the block, knixl emits modules only and the assembly seam stays yours (ADR 0009).
-- **Reference secrets without seeing them.** A `(secret)"name"` value wires a module option to a decrypted path (`config.sops.secrets."name".path`, or agenix), so the encrypted material stays out of band and knixl never reads or hashes the plaintext.
-- **Bring your own modules.** Declare `modules { module "x" flake="github:org/x" }` in `knixl.kdl`; knixl resolves it to a pinned rev, caches the manifest, and records it in the lock, so `generate` stays offline and byte-reproducible. Precedence is built-in, then your local `modules/`, then fetched, then stdlib, and a shadowed module is reported, never silent (ADR 0010).
-- **Build installer media.** Declare `installer "usb" { ... }` in `knixl.kdl` with an ordinary module tree; knixl emits an installer NixOS module (the `installation-cd` base plus your modules) and, alongside `system {}`, a `nix build .#usb-iso` output. Handy for a self-bootstrapping ISO that joins a tailnet so `nixos-anywhere` can reach a fresh box (ADR 0012).
-- **Build guest images.** Declare `guest-image "llm" { ... }` for a NixOS system built as an lxc image for Incus (the sibling of the nspawn `guest` module). Same mechanism as installer media, different output: `nix build .#llm-lxc` (+ `.#llm-lxc-metadata`) produces what `incus image import` takes (ADR 0013).
-
-## The model in four points
-
-- **KDL is authoritative.** Generated Nix is derived and disposable. There is no round-trip from edited Nix back to KDL (that is a tar pit, see ADR 0001).
-- **Override via the module system, not by editing generated files.** Anything expressed as a NixOS option is overridable from a sibling module with `lib.mkForce` / `lib.mkAfter`. Structural choices (which files, which modules) change at the KDL layer.
-- **Escape hatch:** a `raw-nix` passthrough node for inline snippets, or just import a hand-written `.nix` module alongside. knixl does not need to model all of Nix, only provide a clean seam.
-- **Reproducible + version-aware:** `output = f(kdl, tool_version, module_versions, formatter_version, oracle_rev)`, deterministic to the byte. A lockfile pins all five. Regeneration is a reconcile, and a version bump is opt-in and reviewable.
+knixl can also write the `flake.nix` that builds your machines (so `nixos-rebuild switch --flake` works straight away), installer ISOs, and NixOS images for Incus. See [From KDL to a running machine](https://knixl.dev/guide/running-machine/).
 
 ## Commands
 
-- `knixl check` : CI gate. Exits 0 only if every generated file matches the lock. Never writes.
-- `knixl plan` : recompute and report, write nothing.
-- `knixl generate` : apply. Silent for input changes, refuses hand-edited (tainted) files without `--accept-drift`, refuses version skew (points you at `upgrade`).
-- `knixl upgrade` : the only path that bumps recorded versions. Shows migration notes and a diff, applies on `--yes`.
-- `knixl doc <node>` : typed reference for a module node, generated from its schema.
-- `knixl install <pkg>` : add a package to a host. Drafts the KDL, verifies it under nix, previews, then regenerates. `pkg@version` pins the package to a nixpkgs commit. On a real terminal it opens the TUI install screen; piped or `--yes` it uses a plain confirm.
-- `knixl tui` : the interactive hub (shown above). Install a package, browse registered modules and their schemas, or author a new declarative module (build its schema and emit template, validated live as you type).
+- `knixl plan`: show what would change. Writes nothing.
+- `knixl generate`: write the generated Nix and the lockfile.
+- `knixl check`: for CI. Fails unless every generated file is up to date and unedited.
+- `knixl upgrade`: review and apply version changes (a new knixl, a nixpkgs release, flake inputs).
+- `knixl doc <node>`: what a module accepts.
+- `knixl install <pkg>`: add a package to a host, check it with Nix, and regenerate. `pkg@version` pins a version.
+- `knixl tui`: the interactive interface (shown above): add packages with a live preview, browse modules, and build your own.
 
-## Drift and versions
-
-A generated file that someone hand-edited is **tainted**. knixl tells drift apart from a stale input by a third hash, and refuses to silently overwrite a human's edit:
+If someone edits a generated file by hand, knixl notices and refuses to overwrite their change:
 
 <p align="center">
   <img src="assets/drift-demo.gif" alt="knixl catches a hand-edited generated file and refuses to overwrite it" width="820">
 </p>
 
-## Key terms
-
-- **Clean** : the generated file matches what its inputs and versions produce. Nothing to do.
-- **Stale** : an input (KDL) changed, so a regeneration is owed. `generate` fixes it.
-- **Drifted** : the generated file was hand-edited (tainted). `generate` refuses it without `--accept-drift`.
-- **Missing** : the file should exist and does not. **Orphaned** : it exists but no host claims it (deleted only with `--prune`).
-- **taint** : the whole-file drift concept. A hand-edit taints the file, because a partial re-merge would lose the edit silently (ADR 0004).
-- **oracle** : the NixOS option set knixl validates emitted paths against, built from a pinned nixpkgs rev (ADR 0003).
-- **baseline** : a per-host nixpkgs rev. A host may declare `nixpkgs release="25.05"`, resolved to a commit at install/upgrade time (ADR 0007).
-- **pin strategy** : how a version-pinned package is emitted, `override` or `commit-mix`, chosen automatically at pin time (ADR 0005/0006).
+[Day to day](https://knixl.dev/guide/day-to-day/) covers the everyday loop and what to do when `check` fails.
 
 ## Examples
 
-`examples/` holds worked hosts (`db`, `web`, `shared`, `pinned`, `pinned-override`, plus `nas`, `gateway`, `vault`, `vmhost`, `workstation` exercising the newer modules) with their golden Nix output under `examples/expected/` and the matching lock. They double as the acceptance tests, and run with nothing beside them: every module they use is part of the embedded stdlib. See examples/README.md.
+`examples/hosts/` holds worked hosts, with the Nix knixl generates for each under `examples/expected/`. They're also on the site, side by side: [knixl.dev/examples](https://knixl.dev/examples/web/).
 
 ## Status
 
-1.1.0 is released (on crates.io, with prebuilt binaries). `check`, `plan`, `generate`, `upgrade`, `doc`, `install`, and `tui` work; every example host reproduces byte-for-byte through the pinned nixfmt; the oracle validates emitted paths against the NixOS option set; and the module set covers disks (disko), ZFS, users, OpenSSH, Tailscale, Incus, home-manager, nginx, and core host config (os: hostName, boot, kernel, sysctl and kernel modules, nix.settings, packages, session variables, tmpfiles rules), plus nested NixOS system containers (guest), installer-media/ISO generation, lxc guest images for Incus (guest-image), and nix-ld for prebuilt binaries. On top of that: opt-in bootable-system flake emission, reference-by-name secrets, and flake-based fetched modules. Design specs are under `docs/superpowers/specs/`; new work is tracked in GitHub issues.
-
-## Prior art
-
-Nothing does KDL to committed Nix source. The ecosystem goes the other way (home-manager `toKDL`, niri-flake, the `pkgs.formats.kdl` request all generate KDL from Nix). Nickel exports to JSON/YAML/TOML, not Nix source. dhall-to-nix emits Nix but at eval time as normalised values, and cannot express callPackage, overlays, or the module system. terranix is the closest structural precedent (a DSL compiling to target config), just mirrored. See docs/00-overview.md for the full write-up.
+Released and in use; the [changelog](CHANGELOG.md) lists what each version added. New work is tracked in GitHub issues. The design specs and decision records, for contributors, are under `docs/` and at [knixl.dev/design](https://knixl.dev/design/architecture/).
 
 ## Licence
 
