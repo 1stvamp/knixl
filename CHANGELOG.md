@@ -8,6 +8,16 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-23
+
+A template value for literal lists.
+
+### Added
+- Module templates can write a literal list with `(list)`: `set "<path>" (list)"a" "b"` makes the
+  `(list)` value and every value after it the elements, each a bool, number or interpolated
+  string. It covers list options whose entries come from one item, such as an overlay's
+  `lowerdir` for a single share, which previously needed raw-nix (#139).
+
 ## [1.9.0] - 2026-11-23
 
 A user guide on [knixl.dev](https://knixl.dev/guide/introduction/), validation that turns itself
@@ -392,7 +402,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/1stvamp/knixl/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/1stvamp/knixl/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/1stvamp/knixl/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/1stvamp/knixl/compare/v1.6.0...v1.7.0
