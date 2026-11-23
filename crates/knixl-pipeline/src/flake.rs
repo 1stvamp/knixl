@@ -106,6 +106,9 @@ pub fn render_system_flake(
             let_ident(&i.name),
             esc(&i.baseline_rev)
         ));
+        // The module sets nixpkgs.hostPlatform; `system = null` keeps eval-config from reading
+        // builtins.currentSystem, which pure evaluation does not have.
+        s.push_str("        system = null;\n");
         s.push_str("        modules = [\n");
         s.push_str(&format!("          {}\n", i.module_path));
         s.push_str(&format!(
@@ -124,6 +127,7 @@ pub fn render_system_flake(
             esc(&h.name),
             esc(&h.baseline_rev)
         ));
+        s.push_str("          system = null;\n");
         s.push_str("          modules = [\n");
         s.push_str(&format!("            {}\n", h.module_path));
         s.push_str(&format!(
@@ -428,6 +432,13 @@ mod tests {
             !out.contains("nixosSystem"),
             "must not use lib.nixosSystem: {out}"
         );
+        // Pure evaluation (nixos-rebuild --flake) has no builtins.currentSystem, so every
+        // eval-config call must pass `system = null` and leave it to nixpkgs.hostPlatform (#127).
+        assert_eq!(
+            out.matches("system = null;").count(),
+            out.matches("= evalAt ").count(),
+            "{out}"
+        );
     }
 
     #[test]
@@ -460,6 +471,11 @@ mod tests {
         assert!(out.contains("image_usb = evalAt \"rev-inst\""));
         assert!(out.contains("./installer/usb.nix"));
         assert!(out.contains("\"usb\" = image_usb;"));
+        assert_eq!(
+            out.matches("system = null;").count(),
+            3,
+            "two hosts and the image: {out}"
+        );
         // the ISO package output, keyed by the installer's system
         assert!(out.contains("packages = {"));
         assert!(out.contains("\"x86_64-linux\" = {"));

@@ -121,7 +121,7 @@ system {
 }
 ```
 
-knixl then writes a flake with no inputs, which fetches each host's nixpkgs commit itself, so every host can be on its own release. The cost is that you can't add other flake inputs (so no disko, sops-nix or home-manager wiring), and in knixl 1.8.0 this flake needs `--impure` to evaluate, which is a bug. If you can keep every host on one release, input mode is the better choice.
+knixl then writes a flake with no inputs, which fetches each host's nixpkgs commit itself, so every host can be on its own release. The cost is that you can't add other flake inputs (so no disko, sops-nix or home-manager wiring). If you can keep every host on one release, input mode is the better choice.
 
 ## Other flake inputs
 
