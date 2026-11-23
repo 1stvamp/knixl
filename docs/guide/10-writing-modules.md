@@ -105,6 +105,7 @@ Each statement in `emit` writes NixOS options:
 Values can be literals (`#true`, `16`, `"text"`), strings with `{lookups}` in them, or one of a few special forms:
 
 - `(collect)"<child>"` makes a list from a repeated child's values. `(collect-opt)` is the same but leaves the option out when the list would be empty, which keeps the NixOS default.
+- `(list)"a" "b"` writes a list of the values that follow it on the line, e.g. `(list)"/mnt/{share.tag}"` for an option that wants a list even when there's only one entry.
 - `(scalar)"{lookup}"` writes a bool or number as itself, where a plain `"{lookup}"` would make it a string.
 - `(secret)"<name>"` points at a decrypted secret's path (see [Secrets, installers and images](12-secrets-and-images.md)).
 - `(indent-str)#""" ... """#` writes a multi-line Nix string.

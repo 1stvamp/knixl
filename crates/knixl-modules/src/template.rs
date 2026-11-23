@@ -46,12 +46,13 @@ pub enum SegmentTemplate {
 pub enum ValueTemplate {
     Bool(bool),
     Int(i128),
-    Str(Vec<StrPart>),       // "{upstream}"
-    IndentStr(Vec<StrPart>), // (indent-str #""" ... """#)
-    Collect(String),         // (collect "alias") -> List of that child's first arg
-    CollectOpt(String),      // (collect-opt "x") -> like Collect, but the set is dropped when empty
-    Secret(Vec<StrPart>),    // (secret)"name" -> config.<backend>.secrets."name".path
+    Str(Vec<StrPart>),        // "{upstream}"
+    IndentStr(Vec<StrPart>),  // (indent-str #""" ... """#)
+    Collect(String),          // (collect "alias") -> List of that child's first arg
+    CollectOpt(String), // (collect-opt "x") -> like Collect, but the set is dropped when empty
+    Secret(Vec<StrPart>), // (secret)"name" -> config.<backend>.secrets."name".path
     Scalar(Vec<StrPart>), // (scalar)"{x}" -> the bound scalar emitted as its native bool/int/string
+    List(Vec<ValueTemplate>), // (list)"a" "b" -> [ "a" "b" ], each a plain bool/int/string
 }
 
 pub enum StrPart {
@@ -337,6 +338,12 @@ impl ValueTemplate {
         backend: crate::SecretsBackend,
     ) -> Result<NixExpr, LowerError> {
         Ok(match self {
+            ValueTemplate::List(items) => NixExpr::List(
+                items
+                    .iter()
+                    .map(|v| v.interpret(b, loops, backend))
+                    .collect::<Result<_, _>>()?,
+            ),
             ValueTemplate::Bool(v) => NixExpr::Bool(*v),
             ValueTemplate::Int(v) => NixExpr::Int(*v),
             ValueTemplate::Str(parts) => NixExpr::Str(interp_parts(parts, b, loops)?),
@@ -734,9 +741,20 @@ fn parse_stmt(n: &kdl::KdlNode) -> Result<Stmt, LowerError> {
             let value = positional
                 .get(1)
                 .ok_or_else(|| LowerError::Other("`set` missing value".into()))?;
+            // `(list)` makes the value and every positional after it the list's elements.
+            let value = if value.ty().map(|t| t.value()) == Some("list") {
+                ValueTemplate::List(
+                    positional[1..]
+                        .iter()
+                        .map(|e| plain_value(e.value()))
+                        .collect::<Result<_, _>>()?,
+                )
+            } else {
+                parse_value(value)?
+            };
             Ok(Stmt::Set {
                 path: parse_path(path),
-                value: parse_value(value)?,
+                value,
             })
         }
         "when-flag" => {
@@ -859,18 +877,19 @@ fn parse_value(entry: &kdl::KdlEntry) -> Result<ValueTemplate, LowerError> {
         Some(other) => Err(LowerError::Other(format!(
             "unknown value annotation `{other}`"
         ))),
-        None => {
-            let v = entry.value();
-            if let Some(b) = v.as_bool() {
-                Ok(ValueTemplate::Bool(b))
-            } else if let Some(i) = v.as_integer() {
-                Ok(ValueTemplate::Int(i))
-            } else if let Some(s) = v.as_string() {
-                Ok(ValueTemplate::Str(parse_str_parts(s)))
-            } else {
-                Err(LowerError::Other("unsupported set value".into()))
-            }
-        }
+        None => plain_value(entry.value()),
+    }
+}
+
+fn plain_value(v: &kdl::KdlValue) -> Result<ValueTemplate, LowerError> {
+    if let Some(b) = v.as_bool() {
+        Ok(ValueTemplate::Bool(b))
+    } else if let Some(i) = v.as_integer() {
+        Ok(ValueTemplate::Int(i))
+    } else if let Some(s) = v.as_string() {
+        Ok(ValueTemplate::Str(parse_str_parts(s)))
+    } else {
+        Err(LowerError::Other("unsupported set value".into()))
     }
 }
 
@@ -1029,6 +1048,17 @@ fn check_stmts<'a>(
                                 errors.push(format!("collect `{child}` is not a repeated child"))
                             }
                             Err(e) => errors.push(e),
+                        }
+                    }
+                    ValueTemplate::List(items) => {
+                        for item in items {
+                            if let ValueTemplate::Str(parts) = item {
+                                for part in parts {
+                                    if let StrPart::Interp(lk) = part {
+                                        expect_scalar(&lk.0, shapes, loops, errors);
+                                    }
+                                }
+                            }
                         }
                     }
                     ValueTemplate::Bool(_) | ValueTemplate::Int(_) => {}
@@ -2554,6 +2584,36 @@ mod tests {
             Some(NixExpr::List(items)) => assert_eq!(items.len(), 1),
             other => panic!("a.b = {other:?}"),
         }
+    }
+
+    #[test]
+    fn list_wraps_interpolated_values_in_a_list() {
+        let manifest = "module name=\"li\" version=\"0.1.0\" {\n    claims-node \"li\"\n    schema {\n        child \"share\" repeated=#true {\n            arg \"tag\" type=\"string\" required=#true\n        }\n    }\n    emit {\n        for-each \"s\" in \"share\" {\n            set \"x.{s.tag}.lowerdir\" (list)\"/mnt/shares/{s.tag}\"\n            set \"x.{s.tag}.options\" (list)\"ro\" \"noatime\" 3 #true\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let m = DeclarativeModule::from_kdl(&doc, std::path::Path::new("li")).expect("loads");
+        let out = lower(&m, &node("li {\n    share \"src\"\n}"));
+        match find(&out, "x.\"src\".lowerdir") {
+            Some(NixExpr::List(items)) => {
+                assert_eq!(items.len(), 1);
+                assert!(matches!(&items[0], NixExpr::Str(s) if s == "/mnt/shares/src"));
+            }
+            other => panic!("lowerdir = {other:?}"),
+        }
+        match find(&out, "x.\"src\".options") {
+            Some(NixExpr::List(items)) => {
+                assert_eq!(items.len(), 4);
+                assert!(matches!(&items[2], NixExpr::Int(3)));
+                assert!(matches!(&items[3], NixExpr::Bool(true)));
+            }
+            other => panic!("options = {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_with_an_unknown_lookup_fails_to_load() {
+        let manifest = "module name=\"lb\" version=\"0.1.0\" {\n    claims-node \"lb\"\n    schema {\n    }\n    emit {\n        set \"a.b\" (list)\"{nope}\"\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        assert!(DeclarativeModule::from_kdl(&doc, std::path::Path::new("lb")).is_err());
     }
 
     #[test]
