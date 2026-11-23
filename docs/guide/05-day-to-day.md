@@ -90,7 +90,7 @@ Everything except build results:
 | Code | Meaning | Usual fix |
 | --- | --- | --- |
 | 0 | Clean, or applied cleanly. | |
-| 1 | Internal error, or a malformed `knixl.kdl`. | Read the message; if it isn't about your files, please report it. |
+| 1 | Internal error. | Please report it. |
 | 2 | Bad command-line usage. | Check `knixl <command> --help`. |
 | 3 | A generated file was edited by hand. | [Deal with the drift](#when-a-file-has-drifted). |
 | 4 | A version change would alter the output. | `knixl upgrade`. |

@@ -2345,7 +2345,7 @@ fn dispatch() -> Code {
             Ok(registry) => print_doc(&registry, node),
             Err(e) => {
                 eprintln!("knixl: {e}");
-                Code::Internal
+                gather_error_code(&e)
             }
         };
     }
@@ -2488,6 +2488,20 @@ struct Ctx {
     /// Root-relative host sources whose generated config allows unfree (see `gather`).
     unfree_hosts: BTreeSet<std::path::PathBuf>,
 }
+/// A broken `knixl.kdl`, module manifest or host file is the user's input, so it is a
+/// Validation (#131); only I/O, the lock and the formatter are Internal.
+fn gather_error_code(e: &knixl_pipeline::gather::GatherError) -> Code {
+    use knixl_pipeline::gather::GatherError;
+    use knixl_pipeline::GenerateError;
+    match e {
+        GatherError::Module(_)
+        | GatherError::Generate(
+            GenerateError::Parse(_) | GenerateError::Validation(_) | GenerateError::Lower(_),
+        ) => Code::Validation,
+        GatherError::Io(_) | GatherError::Lock(_) | GatherError::Generate(_) => Code::Internal,
+    }
+}
+
 impl Ctx {
     fn load() -> Ctx {
         let root = discover_root();
@@ -2497,7 +2511,7 @@ impl Ctx {
         let project = knixl_pipeline::gather::gather(&root, &default_formatter(), tool)
             .unwrap_or_else(|e| {
                 eprintln!("knixl: {e}");
-                std::process::exit(Code::Internal as i32);
+                std::process::exit(gather_error_code(&e) as i32);
             });
         Ctx {
             inputs: project.inputs,

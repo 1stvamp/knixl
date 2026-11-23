@@ -38,8 +38,8 @@ With a `system` block, every host needs a nixpkgs to build from. Add `nixpkgs re
 **`system {} with flake inputs needs every host on one nixpkgs baseline rev`** (exit 5)
 In input mode every host builds from the one nixpkgs input, so they all need the same release. Either put them on the same release, or drop the `input` lines to use the input-free flake (see [More hosts](04-running-machine.md#more-hosts)).
 
-**``input `nixpkgs`: url "github:NixOS/nixpkgs/nixos-25.11" carries a ref; pin it with rev= instead``** (exit 1)
-Flake inputs are pinned by commit, never by branch. (This one exits with 1, which other pages describe as an internal error: errors in `knixl.kdl` currently share that code.) Drop the branch from the URL; for nixpkgs the commit comes from your hosts' release, and for other inputs add `rev="<commit>"` or let `upgrade` resolve one.
+**``input `nixpkgs`: url "github:NixOS/nixpkgs/nixos-25.11" carries a ref; pin it with rev= instead``** (exit 5)
+Flake inputs are pinned by commit, never by branch. Drop the branch from the URL; for nixpkgs the commit comes from your hosts' release, and for other inputs add `rev="<commit>"` or let `upgrade` resolve one.
 
 **``generated/flake.lock is missing: run `nix flake lock` in generated/ and commit it``** (exit 5)
 In input mode, `check` compares Nix's lock with knixl's. After the first `generate`, and after any `upgrade` that moves an input: `git add generated`, then `(cd generated && nix flake lock)`, and commit.

@@ -72,6 +72,29 @@ fn a_typo_in_a_host_refuses_with_the_validation_exit_code() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// #131: a mistake in knixl.kdl is the user's input, so it is a Validation (5), never the
+/// Internal (1) that tells them to report a bug.
+#[test]
+fn a_mistake_in_knixl_kdl_refuses_with_the_validation_exit_code() {
+    let root = temp_project("project-config-exit");
+    fs::write(
+        root.join("knixl.kdl"),
+        "system {\n    state-version \"25.11\"\n    input \"nixpkgs\" url=\"github:NixOS/nixpkgs/nixos-25.11\"\n}\n",
+    )
+    .unwrap();
+    for cmd in ["plan", "check", "generate"] {
+        let out = knixl(&root, &[cmd]);
+        assert_eq!(
+            out.status.code(),
+            Some(5),
+            "{cmd}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stderr).contains("carries a ref"));
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn json_check_carries_validation_errors() {
     let root = temp_project("json-validation");

@@ -458,7 +458,7 @@ pub fn gather_with_lock(
         if let Some(raw) = raw {
             let text = formatter
                 .format(&raw)
-                .map_err(|e| GatherError::Module(e.to_string()))?;
+                .map_err(|e| GatherError::Generate(e.into()))?;
             let path = PathBuf::from("generated/flake.nix");
             generated.insert(path.clone(), text.clone());
             expected.push(ExpectedFile {
