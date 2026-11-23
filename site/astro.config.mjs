@@ -3,8 +3,12 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import starlightLinksValidator from 'starlight-links-validator';
 
+// The specs used to be the guide, at /docs/<name>/.
+const specs = ['overview', 'architecture', 'reproducibility-and-taint', 'module-system', 'template-grammar', 'cli', 'oracle'];
+
 export default defineConfig({
 	site: 'https://knixl.dev',
+	redirects: Object.fromEntries(specs.map((s) => [`/docs/${s}/`, `/design/${s}/`])),
 	integrations: [
 		starlight({
 			title: 'knixl',
@@ -17,8 +21,13 @@ export default defineConfig({
 			customCss: ['./src/styles/custom.css'],
 			plugins: [starlightLinksValidator({ errorOnLocalLinks: false })],
 			sidebar: [
-				{ label: 'Guide', items: [{ autogenerate: { directory: 'docs' } }] },
+				{ label: 'Guide', items: [{ autogenerate: { directory: 'guide' } }] },
 				{ label: 'Examples', items: [{ autogenerate: { directory: 'examples' } }] },
+				{
+					label: 'Design specs',
+					collapsed: true,
+					items: [{ autogenerate: { directory: 'design' } }],
+				},
 				{
 					label: 'Decisions (ADRs)',
 					collapsed: true,

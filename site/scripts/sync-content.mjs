@@ -25,9 +25,14 @@ const routes = new Map();
 
 function docPages() {
 	const pages = [];
+	for (const name of readdirSync(join(REPO, 'docs/guide')).sort()) {
+		const m = name.match(/^(\d\d)-(.+)\.md$/);
+		if (m) pages.push({ src: `docs/guide/${name}`, out: `guide/${m[2]}.md`, route: `/guide/${m[2]}/`, order: Number(m[1]) });
+	}
+	// The design specs, written for contributors; the user guide above is what users read.
 	for (const name of readdirSync(join(REPO, 'docs')).sort()) {
 		const m = name.match(/^(\d\d)-(.+)\.md$/);
-		if (m) pages.push({ src: `docs/${name}`, out: `docs/${m[2]}.md`, route: `/docs/${m[2]}/`, order: Number(m[1]) });
+		if (m) pages.push({ src: `docs/${name}`, out: `design/${m[2]}.md`, route: `/design/${m[2]}/`, order: Number(m[1]) });
 	}
 	for (const name of readdirSync(join(REPO, 'docs/adr')).sort()) {
 		const m = name.match(/^(\d{4})-(.+)\.md$/);
@@ -128,7 +133,7 @@ const list = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', '
 const fence = (lang, title, text) => `\`\`\`${lang} title=${yaml(title)}\n${text.trimEnd()}\n\`\`\`\n`;
 
 function main() {
-	for (const dir of ['docs', 'adr', 'examples']) rmSync(join(CONTENT, dir), { recursive: true, force: true });
+	for (const dir of ['docs', 'guide', 'design', 'adr', 'examples']) rmSync(join(CONTENT, dir), { recursive: true, force: true });
 	rmSync(join(CONTENT, 'changelog.md'), { force: true });
 
 	const docs = docPages();
@@ -139,7 +144,7 @@ function main() {
 
 	for (const d of docs) {
 		const split = splitTitle(read(d.src), d.out);
-		// Guide headings carry their file number ("05: CLI and exit codes"); the sidebar orders them.
+		// Spec headings carry their file number ("05: CLI and exit codes"); the sidebar orders them.
 		const title = split.title.replace(/^\d\d: /, '');
 		const body = split.body;
 		write(
