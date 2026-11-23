@@ -22,10 +22,10 @@ Every action that changes something ends the session: applying an install, inser
 
 ## Install a package
 
-`knixl install` opens this screen when you run it in a terminal (pass `--yes` for the plain prompt instead), with the package and any version and flags you gave it. Opened from the home screen, it's a simpler version: there's no version pin and no `--build` check, so use `knixl install` for those. The screen has:
+`knixl install` opens this screen when you run it in a terminal (pass `--yes` for the plain prompt instead), with the package and any version and flags you gave it. Opened from the home screen, it starts on your default host but can't pin a version or run the `--build` check: type `curl@8.4.0` and it tells you to run `knixl install curl@8.4.0` instead. The screen has:
 
 - **Host**: which host gets the package. Left and right arrows switch between hosts.
-- **Package**: the package to add, e.g. `ripgrep`. Type it and press `Enter` to check it. (To pin a version, start from `knixl install curl@8.4.0`; the field itself doesn't take a version.)
+- **Package**: the package to add, e.g. `ripgrep`. Type it and press `Enter` to check it.
 - **Strict**: when on, a missing Nix is an error instead of a skipped check. `Space` or `Enter` toggles it.
 - **Preview**: the generated `.nix` for the host with the package added. `PageUp` and `PageDown` scroll it.
 - **Apply** and **Cancel**.
