@@ -31,6 +31,7 @@ pub enum Stmt {
         path: PathTemplate,
         source: String,
         body: Vec<Stmt>,
+        optional: bool, // `list-opt`: drop the assignment when there are no items
     }, // fold a repeated child into a list of attribute sets
 }
 
@@ -272,7 +273,12 @@ impl EmitTemplate {
                         loops.pop();
                     }
                 }
-                Stmt::List { path, source, body } => {
+                Stmt::List {
+                    path,
+                    source,
+                    body,
+                    optional,
+                } => {
                     let mut elems = Vec::new();
                     for item in resolve_list(source, b)? {
                         loops.push(source, item); // the child name is the loop binding
@@ -281,6 +287,9 @@ impl EmitTemplate {
                         loops.pop();
                         res?;
                         elems.push(fold_units_into_attrset(elem_units)?);
+                    }
+                    if *optional && elems.is_empty() {
+                        continue;
                     }
                     let assignment = Assignment {
                         path: path.interpret(b, loops)?,
@@ -773,7 +782,7 @@ fn parse_stmt(n: &kdl::KdlNode) -> Result<Stmt, LowerError> {
                 body: parse_stmts(n.children())?,
             })
         }
-        "list" => {
+        kw @ ("list" | "list-opt") => {
             // `list "<path>" from "<source>"`: the bare `from` is noise; take first + last.
             let args: Vec<String> = n
                 .entries()
@@ -784,15 +793,16 @@ fn parse_stmt(n: &kdl::KdlNode) -> Result<Stmt, LowerError> {
             let path = args
                 .first()
                 .cloned()
-                .ok_or_else(|| LowerError::Other("`list` missing path".into()))?;
+                .ok_or_else(|| LowerError::Other(format!("`{kw}` missing path")))?;
             let source = args
                 .last()
                 .cloned()
-                .ok_or_else(|| LowerError::Other("`list` missing source".into()))?;
+                .ok_or_else(|| LowerError::Other(format!("`{kw}` missing source")))?;
             Ok(Stmt::List {
                 path: parse_path(&path),
                 source,
                 body: parse_stmts(n.children())?,
+                optional: kw == "list-opt",
             })
         }
         other => Err(LowerError::Other(format!(
@@ -1050,7 +1060,9 @@ fn check_stmts<'a>(
                     Err(e) => errors.push(e),
                 }
             }
-            Stmt::List { path, source, body } => {
+            Stmt::List {
+                path, source, body, ..
+            } => {
                 for seg in &path.0 {
                     match seg {
                         SegmentTemplate::Interp(lk) => expect_scalar(&lk.0, shapes, loops, errors),
@@ -2529,6 +2541,18 @@ mod tests {
         match find(&out, "virtualisation.incus.preseed.networks") {
             Some(NixExpr::List(items)) => assert!(items.is_empty()),
             other => panic!("networks = {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_opt_drops_the_assignment_when_empty_and_keeps_it_otherwise() {
+        let manifest = "module name=\"lo\" version=\"0.1.0\" {\n    claims-node \"lo\"\n    schema {\n        child \"r\" repeated=#true {\n            prop \"from\" type=\"int\" required=#true\n        }\n    }\n    emit {\n        list-opt \"a.b\" from \"r\" {\n            set \"from\" (scalar)\"{r.from}\"\n        }\n    }\n}";
+        let doc = manifest.parse::<kdl::KdlDocument>().unwrap();
+        let m = DeclarativeModule::from_kdl(&doc, std::path::Path::new("lo")).expect("loads");
+        assert!(find(&lower(&m, &node("lo")), "a.b").is_none());
+        match find(&lower(&m, &node("lo {\n    r from=1\n}")), "a.b") {
+            Some(NixExpr::List(items)) => assert_eq!(items.len(), 1),
+            other => panic!("a.b = {other:?}"),
         }
     }
 
