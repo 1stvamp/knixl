@@ -22,46 +22,55 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Recompute and report; write nothing.
+    /// Show what generate would change. Writes nothing.
     Plan {
+        /// Exit with the same codes as check (non-zero when anything needs doing).
         #[arg(long)]
         detailed_exitcode: bool,
     },
-    /// CI gate: succeed only if every file is Clean. Never writes, never prompts.
+    /// For CI: fail unless every generated file is up to date and unedited. Never writes.
     Check,
-    /// Apply. Silent for Stale/Missing; refuses Drifted/skew without the matching flag.
+    /// Write the generated Nix and the lockfile.
     Generate {
+        /// Regenerate files someone edited by hand, discarding their edits.
         #[arg(long)]
         accept_drift: bool,
+        /// Delete generated files no host produces any more.
         #[arg(long)]
         prune: bool,
     },
-    /// Version bump: show migration notes + diff, apply on --yes, then bump the lock.
+    /// Review and apply version changes: knixl, modules, nixpkgs releases, flake inputs.
     Upgrade {
+        /// Apply the changes (without it, only show them).
         #[arg(long)]
         yes: bool,
     },
-    /// Print the typed reference for a module node (from schema()).
-    Doc { node: String },
-    /// Add a package to a host: draft the KDL, verify under nix, preview, then regenerate.
+    /// Show what a module accepts: its arguments, properties and children.
+    Doc {
+        /// The node name, e.g. openssh.
+        node: String,
+    },
+    /// Add a package to a host, check it with Nix, and regenerate.
     Install {
         /// The nixpkgs attribute name (e.g. ripgrep) or versioned form (e.g. ripgrep@13.0.0).
         pkg: String,
+        /// The host to add it to (default: the host marked default=#true, else the only host).
         #[arg(long)]
         host: Option<String>,
+        /// Don't ask for confirmation (and don't open the TUI).
         #[arg(long)]
         yes: bool,
-        /// Treat a skipped nix check (nix absent) as an error.
+        /// Fail, instead of warning, when Nix isn't available to check the package.
         #[arg(long)]
         strict: bool,
-        /// Also build the package derivation (proves it builds, not just resolves).
+        /// Also build the package, to prove it builds as well as exists.
         #[arg(long)]
         build: bool,
-        /// Skip the build-feasibility check that picks the pin strategy: always commit-mix.
+        /// For a version pin, skip the trial build and always use the commit-mix strategy.
         #[arg(long)]
         no_abi_check: bool,
     },
-    /// Open the interactive TUI (install, browse modules, scaffold a module).
+    /// Open the interactive TUI: install a package, browse modules, create a module.
     Tui,
 }
 
