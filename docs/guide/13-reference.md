@@ -44,6 +44,7 @@ Write stale and missing files and update the lockfile. Refuses when a file has b
 Review and apply version changes: a new knixl or module version, a host's new `nixpkgs release`, unpinned flake inputs, and fetched modules. Shows migration notes and what would change; everything that touches the network happens here (and in `install`).
 
 - `--yes`: apply. Without it, `upgrade` only shows what it would do.
+- `--refresh`: also move every `nixpkgs release` to the newest commit on its branch (hosts pinned with `rev=` stay put).
 
 ### `knixl doc <node>`
 

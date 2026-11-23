@@ -44,6 +44,9 @@ enum Cmd {
         /// Apply the changes (without it, only show them).
         #[arg(long)]
         yes: bool,
+        /// Also move every nixpkgs release to the newest commit on its branch.
+        #[arg(long)]
+        refresh: bool,
     },
     /// Show what a module accepts: its arguments, properties and children.
     Doc {
@@ -107,13 +110,15 @@ fn verdict(plan: &Plan) -> Code {
 }
 
 fn run(cli: Cli, ctx: &Ctx) -> Code {
+    // `upgrade --refresh` (#129): re-resolve releases already in the lock to their branch tip.
+    let refresh = matches!(cli.cmd, Cmd::Upgrade { refresh: true, .. });
     // `install`/`upgrade` resolve a declared-but-unresolved nixpkgs baseline before the
     // validation gate, since they are its only remedy. Resolved in memory only; `pending` is
     // written by `Cmd::Upgrade` on `--yes`, or by `install`/`commit_install` in the confirmed,
     // revertable commit path.
     let pending: BTreeMap<String, HostBaseline> =
         if matches!(cli.cmd, Cmd::Upgrade { .. } | Cmd::Install { .. }) {
-            match resolve_pending_baselines(ctx) {
+            match resolve_pending_baselines(ctx, refresh) {
                 Ok(p) => p,
                 Err(code) => return code,
             }
@@ -138,7 +143,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
     // image targets build from in the input-free flake.
     let pending_project_release: Option<(String, String)> =
         if matches!(cli.cmd, Cmd::Upgrade { .. }) {
-            match resolve_pending_project_release(ctx) {
+            match resolve_pending_project_release(ctx, refresh) {
                 Ok(p) => p,
                 Err(code) => return code,
             }
@@ -375,7 +380,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             worst
         }
 
-        Cmd::Upgrade { yes } => {
+        Cmd::Upgrade { yes, .. } => {
             // A pending baseline/module resolution is work to do even when every file is
             // Clean and nothing needs ack: skip the "up to date" short-circuit so it gets
             // previewed (and, on --yes, written) below instead of silently vanishing.
@@ -1177,7 +1182,10 @@ fn options_hash_for_rev(rev: &str) -> String {
 /// The project's declared `nixpkgs release` (knixl.kdl), resolved in memory against the lock's
 /// `oracle` line (#134): `Ok(None)` when they already agree, `Some(("", ""))` to clear a
 /// release no longer declared, else the freshly resolved `(release, rev)`.
-fn resolve_pending_project_release(ctx: &Ctx) -> Result<Option<(String, String)>, Code> {
+fn resolve_pending_project_release(
+    ctx: &Ctx,
+    refresh: bool,
+) -> Result<Option<(String, String)>, Code> {
     let declared = knixl_pipeline::project::parse_project(&ctx.root)
         .ok()
         .and_then(|p| p.default_release);
@@ -1185,7 +1193,9 @@ fn resolve_pending_project_release(ctx: &Ctx) -> Result<Option<(String, String)>
     match declared {
         None if recorded.release.is_empty() => Ok(None),
         None => Ok(Some((String::new(), String::new()))),
-        Some(release) if release == recorded.release && !recorded.nixpkgs_rev.is_empty() => {
+        Some(release)
+            if release == recorded.release && !recorded.nixpkgs_rev.is_empty() && !refresh =>
+        {
             Ok(None)
         }
         Some(release) => {
@@ -1197,6 +1207,9 @@ fn resolve_pending_project_release(ctx: &Ctx) -> Result<Option<(String, String)>
                     );
                     Code::Validation
                 })?;
+            if release == recorded.release && rev == recorded.nixpkgs_rev {
+                return Ok(None);
+            }
             Ok(Some((release, rev)))
         }
     }
@@ -1213,13 +1226,20 @@ fn resolve_pending_baseline(
     ctx: &Ctx,
     host: &str,
     host_path: &std::path::Path,
+    refresh: bool,
 ) -> Result<Option<HostBaseline>, Code> {
     let Some(release) = declared_release(host_path) else {
         return Ok(None);
     };
     let declared = declared_rev(host_path);
-    if let Some(b) = ctx.lock.baselines.get(host) {
-        if b.release == release && declared.as_ref().is_none_or(|r| &b.nixpkgs_rev == r) {
+    let recorded = ctx.lock.baselines.get(host);
+    if let Some(b) = recorded {
+        // `--refresh` re-resolves a release-tracking baseline; an exact `rev=` stays put.
+        let refreshing = refresh && declared.is_none();
+        if b.release == release
+            && declared.as_ref().is_none_or(|r| &b.nixpkgs_rev == r)
+            && !refreshing
+        {
             return Ok(None);
         }
     }
@@ -1247,12 +1267,19 @@ fn resolve_pending_baseline(
             );
             Code::Validation
         })?;
+    // A refresh that finds the branch where it was is no change; one that moves keeps the
+    // host's own module pins, which only a release or override change re-resolves.
+    let modules = match recorded {
+        Some(b) if b.release == release && b.nixpkgs_rev == rev => return Ok(None),
+        Some(b) if b.release == release => b.modules.clone(),
+        _ => Vec::new(),
+    };
     let options_hash = options_hash_for_rev(&rev);
     Ok(Some(HostBaseline {
         release,
         nixpkgs_rev: rev,
         options_hash,
-        modules: Vec::new(),
+        modules,
     }))
 }
 
@@ -1265,12 +1292,15 @@ fn resolve_pending_baseline(
 /// (empty if every declared release already matched), or `Err(Code::Validation)` on the first
 /// resolver failure (message already printed). Nothing here is written; see `Cmd::Upgrade`
 /// and `commit_install` for where a caller commits (or discards) what this returns.
-fn resolve_pending_baselines(ctx: &Ctx) -> Result<BTreeMap<String, HostBaseline>, Code> {
+fn resolve_pending_baselines(
+    ctx: &Ctx,
+    refresh: bool,
+) -> Result<BTreeMap<String, HostBaseline>, Code> {
     use knixl_pipeline::install::list_hosts;
     let hosts = list_hosts(&ctx.root).unwrap_or_default();
     let mut pending = BTreeMap::new();
     for h in &hosts {
-        if let Some(b) = resolve_pending_baseline(ctx, &h.name, &h.path)? {
+        if let Some(b) = resolve_pending_baseline(ctx, &h.name, &h.path, refresh)? {
             pending.insert(h.name.clone(), b);
         }
     }
@@ -2486,10 +2516,11 @@ fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
             strategy_reason,
         } => {
             let ctx = Ctx::load();
-            let baseline_pending = match resolve_pending_baseline(&ctx, &host.name, &host.path) {
-                Ok(b) => b,
-                Err(code) => return code,
-            };
+            let baseline_pending =
+                match resolve_pending_baseline(&ctx, &host.name, &host.path, false) {
+                    Ok(b) => b,
+                    Err(code) => return code,
+                };
             commit_tui_install(
                 host,
                 pkg,

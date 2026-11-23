@@ -428,6 +428,60 @@ fn upgrade_resolves_and_clears_the_project_release() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// #129: a resolved release stays on its commit until `upgrade --refresh` moves it to the
+/// branch's new tip; an exact `rev=` never moves.
+#[test]
+fn upgrade_refresh_moves_a_release_to_its_branch_tip() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = temp_project("refresh");
+    let tip = root.join("branch-tip");
+    fs::write(&tip, "aaaa\n").unwrap();
+    let resolver = root.join("resolver");
+    fs::write(&resolver, format!("#!/bin/sh\ncat {}\n", tip.display())).unwrap();
+    fs::set_permissions(&resolver, fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_knixl"))
+            .args(args)
+            .current_dir(&root)
+            .env("KNIXL_FORMATTER", "cat")
+            .env("KNIXL_NIX_BUILD", "false")
+            .env("KNIXL_BASELINE_RESOLVER", &resolver)
+            .output()
+            .unwrap()
+    };
+    let lock = || fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+    declare_baseline_release(&root, "25.11");
+    assert_eq!(run(&["upgrade", "--yes"]).status.code(), Some(0));
+    assert!(lock().contains("nixpkgs-rev=\"aaaa\""));
+
+    // The branch moves on; a plain upgrade leaves the host where it was.
+    fs::write(&tip, "bbbb\n").unwrap();
+    let plain = run(&["upgrade"]);
+    assert!(!String::from_utf8_lossy(&plain.stdout).contains("would resolve nixpkgs release"));
+
+    let preview = run(&["upgrade", "--refresh"]);
+    assert!(
+        String::from_utf8_lossy(&preview.stdout)
+            .contains("would resolve nixpkgs release \"25.11\" for host \"web\" -> bbbb"),
+        "{}",
+        String::from_utf8_lossy(&preview.stdout)
+    );
+    assert!(
+        lock().contains("nixpkgs-rev=\"aaaa\""),
+        "a preview writes nothing"
+    );
+    assert_eq!(
+        run(&["upgrade", "--refresh", "--yes"]).status.code(),
+        Some(0)
+    );
+    assert!(lock().contains("nixpkgs-rev=\"bbbb\""), "{}", lock());
+
+    // Nothing to move: --refresh is a no-op for the baseline.
+    let again = run(&["upgrade", "--refresh"]);
+    assert!(!String::from_utf8_lossy(&again.stdout).contains("would resolve nixpkgs release"));
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn prune_deletes_orphaned_files() {
     let root = temp_project("prune");
