@@ -4,16 +4,16 @@ The messages you're most likely to meet, what they mean and what to do. Each one
 
 ## Your KDL
 
-**``no module claims node `opensh` ``** (exit 5)
+**``hosts/laptop.kdl:7: no module claims node `opensh` ``** (exit 5)
 No module handles a node with that name. Usually a typo; `knixl doc <node>` or **Browse modules** in the TUI shows the right names. If it's your own module, check its `claims-node` and that its file is at `modules/<name>/knixl-module.kdl`.
 
-**``unknown child `prot` ``** (exit 5)
+**``hosts/laptop.kdl:8: unknown child `prot` ``** (exit 5)
 The node exists but doesn't take a child by that name. `knixl doc <node>` lists what it does take.
 
-**`` `port` has the wrong type ``** (exit 5)
+**``hosts/laptop.kdl:8: `port` has the wrong type``** (exit 5)
 A value of the wrong kind, e.g. `port "22"` where the module wants the number `22`, or a bool written as `"true"` instead of `#true`.
 
-**`UnknownOption { key: "services.nopenope.enable" }`** (exit 5)
+**``hosts/laptop.kdl: `services.nopenope.enable` is not a NixOS option in this host's nixpkgs``** (exit 5)
 The oracle found an option path that doesn't exist in this host's nixpkgs. If it's in a module you wrote, fix the path; if the option was renamed in a newer NixOS, the module needs updating for that release. See [Validation and the oracle](11-validation.md).
 
 ## Generated files
@@ -38,8 +38,8 @@ With a `system` block, every host needs a nixpkgs to build from. Add `nixpkgs re
 **`system {} with flake inputs needs every host on one nixpkgs baseline rev`** (exit 5)
 In input mode every host builds from the one nixpkgs input, so they all need the same release. Either put them on the same release, or drop the `input` lines to use the input-free flake (see [More hosts](04-running-machine.md#more-hosts)).
 
-**``input `nixpkgs`: url "github:NixOS/nixpkgs/nixos-25.11" carries a ref; pin it with rev= instead``** (exit 1)
-Flake inputs are pinned by commit, never by branch. (This one exits with 1, which other pages describe as an internal error: errors in `knixl.kdl` currently share that code.) Drop the branch from the URL; for nixpkgs the commit comes from your hosts' release, and for other inputs add `rev="<commit>"` or let `upgrade` resolve one.
+**``input `nixpkgs`: url "github:NixOS/nixpkgs/nixos-25.11" carries a ref; pin it with rev= instead``** (exit 5)
+Flake inputs are pinned by commit, never by branch. Drop the branch from the URL; for nixpkgs the commit comes from your hosts' release, and for other inputs add `rev="<commit>"` or let `upgrade` resolve one.
 
 **``generated/flake.lock is missing: run `nix flake lock` in generated/ and commit it``** (exit 5)
 In input mode, `check` compares Nix's lock with knixl's. After the first `generate`, and after any `upgrade` that moves an input: `git add generated`, then `(cd generated && nix flake lock)`, and commit.
@@ -49,7 +49,7 @@ A module listed in `knixl.kdl`'s `modules` block hasn't been fetched yet. `knixl
 
 ## Nothing seems to be validated
 
-If a deliberately wrong option path doesn't fail, the oracle has no option set for that host's nixpkgs commit and is skipping validation without saying so. [Turning it on](11-validation.md#turning-it-on) shows how to build one.
+If a deliberately wrong option path doesn't fail, look for a warning saying the host has no NixOS option set: `knixl upgrade --yes` builds it. A host with no `nixpkgs release` has no commit to validate against at all, so give it one. [Validation and the oracle](11-validation.md#turning-it-on) has the details.
 
 ## The TUI won't start
 

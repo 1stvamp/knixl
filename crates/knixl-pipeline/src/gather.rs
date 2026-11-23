@@ -46,6 +46,9 @@ pub struct Project {
     /// Host sources (root-relative, e.g. `hosts/web.kdl`) whose generated output sets
     /// `nixpkgs.config.allowUnfree = true`, so install's build checks allow unfree for them.
     pub unfree_hosts: BTreeSet<PathBuf>,
+    /// Hosts with a nixpkgs rev to validate against but no option set cached for it, as
+    /// (host, rev): generated without option checks. `upgrade` builds these (#128).
+    pub unvalidated: Vec<(String, String)>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -103,6 +106,7 @@ pub fn gather_with_lock(
             tool: tool.clone(),
             formatter: formatter_pin.clone(),
             oracle: OraclePin {
+                release: String::new(),
                 nixpkgs_rev: String::new(),
                 options_hash: String::new(),
                 modules: Vec::new(),
@@ -174,6 +178,27 @@ pub fn gather_with_lock(
     // Shadowed stdlib modules are non-fatal: fold into the same warnings channel as the
     // generate-path lints, so shadowing is reported but never gates.
     let mut warnings: Vec<String> = module_notices.iter().map(|n| n.message()).collect();
+    let unvalidated: Vec<(String, String)> = if std::env::var_os("KNIXL_OPTIONS_JSON").is_some() {
+        Vec::new()
+    } else {
+        names
+            .iter()
+            .filter(|n| !oracles.contains_key(*n))
+            .filter_map(|n| {
+                let rev = lock
+                    .baselines
+                    .get(n)
+                    .map(|b| b.nixpkgs_rev.as_str())
+                    .unwrap_or(&lock.oracle.nixpkgs_rev);
+                (!rev.is_empty()).then(|| (n.clone(), rev.to_string()))
+            })
+            .collect()
+    };
+    for (host, rev) in &unvalidated {
+        warnings.push(format!(
+            "host \"{host}\": no NixOS option set for nixpkgs {rev}, so its options are not validated: run knixl upgrade --yes to build it"
+        ));
+    }
     let (mut expected, mut validation_errors) = match generate(
         &hosts,
         &registry,
@@ -458,7 +483,7 @@ pub fn gather_with_lock(
         if let Some(raw) = raw {
             let text = formatter
                 .format(&raw)
-                .map_err(|e| GatherError::Module(e.to_string()))?;
+                .map_err(|e| GatherError::Generate(e.into()))?;
             let path = PathBuf::from("generated/flake.nix");
             generated.insert(path.clone(), text.clone());
             expected.push(ExpectedFile {
@@ -502,6 +527,7 @@ pub fn gather_with_lock(
         oracles,
         flake_lock_problems,
         unfree_hosts,
+        unvalidated,
     })
 }
 

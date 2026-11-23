@@ -8,6 +8,14 @@ nixpkgs rev). Relates to: ADR 0005 (pinning).
 Refined by: ADR 0014 (accepted, 2026-09-29): an `oracle-modules` entry may name a declared
 flake input, so one declaration drives both validation and the host's imported modules.
 
+Amended (2026-11-23, #128): the BASE set is no longer a manual step. `upgrade` builds any
+missing option set, base or augmented, for every host with a resolved rev, reusing what is
+cached; `install` builds the set for a baseline it newly resolves. A failed base build only
+warns (the set is unverified, not wrongly declared); an augmented build failure is still a hard
+error. `plan`/`generate`/`check` warn for each host generated without an option set, so a
+skipped validation is never silent. They stay offline: building happens only in `upgrade` and
+`install`.
+
 ## Context
 
 The oracle (ADR 0003) validates every emitted option path against the NixOS option set for

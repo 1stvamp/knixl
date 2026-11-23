@@ -16,20 +16,13 @@ Use `nixosOptionsDoc`, the same mechanism behind search.nixos.org and the manual
 
 1. `KNIXL_OPTIONS_JSON` if set: an explicit path, and what the tests use. Wins over everything.
 2. Otherwise the file cached for the lock's `oracle nixpkgs-rev`, loaded automatically so a `check` validates against the locked options with no env var.
-3. Otherwise no options file: generation proceeds without option checks (best-effort, the same as an unknown rev).
+3. Otherwise no options file: generation proceeds without option checks for that host, and `plan`/`generate`/`check` say so with a warning.
 
-Populate the cache for a rev with `nixosOptionsDoc`, e.g. build the doc against the pinned nixpkgs and copy the result:
-
-```
-nix-build '<nixpkgs>' -A nixosOptionsDoc ...   # or an equivalent flake attr
-cp result/share/doc/nixos/options.json "$HOME/.cache/knixl/options-<rev>.json"
-```
-
-Fetching the BASE (no out-of-tree modules) set by rev is not yet automated inside knixl this way; the lookup is. `knixl_oracle::cache_path(rev)` returns the exact path to write. The AUGMENTED set (rev plus declared modules, below) is automated: `install`/`upgrade` build and cache it themselves.
+`upgrade` builds and caches every missing set itself (the BASE set for a rev, and the AUGMENTED set with declared modules, below), and `install` builds the set for a baseline it newly resolves. Both run `nixosOptionsDoc` against the pinned nixpkgs through `KNIXL_NIX_BUILD`. A failed base build is a warning; a failed augmented build is a hard error (ADR 0008, amended by #128). `knixl_oracle::cache_path(rev)` returns the path a set is cached at.
 
 ## Per-host baselines
 
-A single global oracle rev is not always enough: fleets migrate host by host, not all at once. A host can declare its own nixpkgs release with a `nixpkgs` node, e.g. `nixpkgs release="25.05"` inside `host "shared" { ... }` (`examples/hosts/shared.kdl`). That host is then validated against its own release's option set instead of the project-wide one; a host with no declared release simply falls back to the global oracle rev.
+A single global oracle rev is not always enough: fleets migrate host by host, not all at once. A host can declare its own nixpkgs release with a `nixpkgs` node, e.g. `nixpkgs release="25.05"` inside `host "shared" { ... }` (`examples/hosts/shared.kdl`). That host is then validated against its own release's option set instead of the project-wide one; a host with no declared release simply falls back to the global oracle rev. The global rev comes from a top-level `nixpkgs release="<rel>"` in `knixl.kdl`, which `upgrade` resolves into the lock's `oracle` line as `release=` plus `nixpkgs-rev=` (and clears when the declaration goes); it is also the rev installer and guest-image targets build from in the input-free flake (#134).
 
 Declaring a release does not resolve it on its own. The release string (`"25.05"`) has to become a nixpkgs commit, and that resolution is recorded per host in the lock as a `baseline` line (`release`, `nixpkgs-rev`, `options-hash`; see docs/02). Resolution goes through `KNIXL_BASELINE_RESOLVER` if set (an external `<bin> <release>` command), otherwise a built-in resolver: `git ls-remote` against the `nixos-<release>` branch, falling back to the GitHub commits API if `git` is unavailable or fails. A failure to resolve blocks, it never guesses.
 

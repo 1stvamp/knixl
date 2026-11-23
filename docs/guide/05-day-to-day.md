@@ -54,17 +54,14 @@ To move a host to a newer nixpkgs release, change its release (`nixpkgs release=
 
 ## Taking updates within a release
 
-Once a release is resolved, knixl keeps the host on that commit, and `upgrade` doesn't move it forward along the same release by itself. To take the security fixes and updates that land on a release (the job `nix flake update` does in a hand-written flake), find the current tip of the release branch and name it:
+Once a release is resolved, knixl keeps the host on that commit, so a plain `upgrade` never moves it. To take the security fixes and updates that land on a release (the job `nix flake update` does in a hand-written flake), ask for it:
 
 ```sh
-git ls-remote https://github.com/NixOS/nixpkgs refs/heads/nixos-25.11
+knixl upgrade --refresh          # show which hosts would move, and to what
+knixl upgrade --refresh --yes    # move them
 ```
 
-```kdl
-nixpkgs release="25.11" rev="<the commit it printed>"
-```
-
-Then `knixl upgrade --yes`, `knixl generate`, and in input mode `(cd generated && nix flake lock)` again, and rebuild. In input mode every host shares one nixpkgs, so update the `rev` on all of them together. If you've set up validation, build the option set for the new commit too.
+`--refresh` re-resolves every `nixpkgs release` (each host's, and the project's) to the newest commit on its branch. A host pinned to an exact `rev=` stays where it is. Then `knixl generate`, in input mode `(cd generated && nix flake lock)` again, and rebuild. `upgrade` builds the option set for the new commit as part of the same run.
 
 ## In CI
 
@@ -90,7 +87,7 @@ Everything except build results:
 | Code | Meaning | Usual fix |
 | --- | --- | --- |
 | 0 | Clean, or applied cleanly. | |
-| 1 | Internal error, or a malformed `knixl.kdl`. | Read the message; if it isn't about your files, please report it. |
+| 1 | Internal error. | Please report it. |
 | 2 | Bad command-line usage. | Check `knixl <command> --help`. |
 | 3 | A generated file was edited by hand. | [Deal with the drift](#when-a-file-has-drifted). |
 | 4 | A version change would alter the output. | `knixl upgrade`. |

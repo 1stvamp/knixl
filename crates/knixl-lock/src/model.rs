@@ -29,6 +29,9 @@ pub struct FormatterPin {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OraclePin {
+    /// The project's declared `nixpkgs release` (knixl.kdl) that `nixpkgs_rev` was resolved
+    /// from; empty when none is declared (#134).
+    pub release: String,
     pub nixpkgs_rev: String,
     pub options_hash: Hash,
     pub modules: Vec<OracleModulePin>,
@@ -139,6 +142,7 @@ impl Lock {
                 }
                 "oracle" => {
                     oracle = Some(OraclePin {
+                        release: prop_str_opt(node, "release"),
                         nixpkgs_rev: prop_str(node, "nixpkgs-rev")?,
                         options_hash: prop_str(node, "options-hash")?,
                         modules: parse_oracle_modules(node)?,
@@ -245,8 +249,14 @@ impl Lock {
             esc(&self.formatter.name),
             esc(&self.formatter.version),
         ));
+        // `release=` only when declared, so a lock without one renders as it always has.
+        let release = if self.oracle.release.is_empty() {
+            String::new()
+        } else {
+            format!("release=\"{}\" ", esc(&self.oracle.release))
+        };
         s.push_str(&format!(
-            "    oracle nixpkgs-rev=\"{}\" options-hash=\"{}\"",
+            "    oracle {release}nixpkgs-rev=\"{}\" options-hash=\"{}\"",
             esc(&self.oracle.nixpkgs_rev),
             esc(&self.oracle.options_hash),
         ));
@@ -533,6 +543,7 @@ mod tests {
                 version: "0.6.0".into(),
             },
             oracle: OraclePin {
+                release: String::new(),
                 nixpkgs_rev: "a1b2c3d".into(),
                 options_hash: "blake3:77de".into(),
                 modules: vec![],
@@ -605,6 +616,29 @@ mod tests {
         // Re-parsing the rendered form yields the same pins (byte-stable ordering).
         let again = Lock::parse(&lock.render()).expect("reparse");
         assert_eq!(again.pins, lock.pins);
+    }
+
+    /// #134: the oracle line carries the project release it was resolved from, and a lock
+    /// without one renders exactly as before.
+    #[test]
+    fn oracle_release_round_trips_and_is_omitted_when_empty() {
+        let with = r#"lock version=1 {
+    tool version="0.3.1"
+    formatter name="nixfmt-rfc-style" version="0.6.0"
+    oracle release="25.11" nixpkgs-rev="deadbeef" options-hash="blake3:x"
+}
+"#;
+        let lock = Lock::parse(with).expect("parse");
+        assert_eq!(lock.oracle.release, "25.11");
+        assert!(lock
+            .render()
+            .contains("oracle release=\"25.11\" nixpkgs-rev=\"deadbeef\""));
+        let without = with.replace("release=\"25.11\" ", "");
+        let lock = Lock::parse(&without).expect("parse");
+        assert_eq!(lock.oracle.release, "");
+        assert!(lock
+            .render()
+            .contains("    oracle nixpkgs-rev=\"deadbeef\""));
     }
 
     #[test]

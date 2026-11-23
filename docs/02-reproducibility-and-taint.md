@@ -16,7 +16,7 @@ Deterministic to the byte. Given the same inputs and the same five pins, the gen
 
 - `tool` version
 - `formatter` name + version
-- `oracle` nixpkgs-rev + options-hash
+- `oracle` nixpkgs-rev + options-hash, plus the project's `release` when `knixl.kdl` declares one
 - per `input` file: blake3 hash
 - per `module` used: name + version
 - per `output` file: blake3 hash, which input it came from, which modules produced it

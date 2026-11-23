@@ -42,7 +42,7 @@ knixl upgrade --yes
 knixl generate
 ```
 
-`upgrade` is the command that does anything involving the network or a version: here it resolves `release="25.11"` to a commit and records it. Run it without `--yes` first if you'd like to see what it would do. This is also the moment to set up validation for that commit, which takes one command and a minute's wait: see [Turning it on](11-validation.md#turning-it-on). `generate` then writes the flake:
+`upgrade` is the command that does anything involving the network or a version: here it resolves `release="25.11"` to a commit and records it. Run it without `--yes` first if you'd like to see what it would do. It also builds the NixOS option set for that commit, so knixl can [validate](11-validation.md) the host (a minute's wait, the first time). `generate` then writes the flake:
 
 ```nix
 {
@@ -121,7 +121,7 @@ system {
 }
 ```
 
-knixl then writes a flake with no inputs, which fetches each host's nixpkgs commit itself, so every host can be on its own release. The cost is that you can't add other flake inputs (so no disko, sops-nix or home-manager wiring), and in knixl 1.8.0 this flake needs `--impure` to evaluate, which is a bug. If you can keep every host on one release, input mode is the better choice.
+knixl then writes a flake with no inputs, which fetches each host's nixpkgs commit itself, so every host can be on its own release. The cost is that you can't add other flake inputs (so no disko, sops-nix or home-manager wiring). If you can keep every host on one release, input mode is the better choice.
 
 ## Other flake inputs
 

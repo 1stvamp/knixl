@@ -140,6 +140,10 @@ pub struct InstallModel {
     strategy_seq: u64,
     /// The label (`Chosen`) or error message (`Failed`) for the strategy status row.
     strategy_msg: Option<String>,
+    /// A `name@version` typed into the package field on a screen opened without a pin
+    /// (the hub), where the pin cannot be resolved: shown in place of the verify row, and
+    /// Apply stays off (#133).
+    pin_hint: bool,
     dims: (usize, usize),
 }
 
@@ -182,7 +186,14 @@ impl InstallModel {
                     .unwrap_or(0);
                 (idx, pkg.clone(), *strict, version.clone(), *no_abi_check)
             }
-            Entry::Hub => (0, String::new(), false, None, false),
+            // The hub starts on the default host, as `knixl install` does (#133).
+            Entry::Hub => (
+                cfg.hosts.iter().position(|h| h.default).unwrap_or(0),
+                String::new(),
+                false,
+                None,
+                false,
+            ),
         };
 
         let mut pkg = textinput::new();
@@ -232,6 +243,7 @@ impl InstallModel {
             strategy_spinner: new_spinner(),
             strategy_seq: 0,
             strategy_msg: None,
+            pin_hint: false,
             dims: (w, h),
         };
         let verify = model.begin_verify();
@@ -245,7 +257,7 @@ impl InstallModel {
     /// Apply is allowed only when no verify is in flight and each of resolve, parse, build,
     /// pin and strategy is `Ok`/`Chosen`/`Off`, or `Skipped` without `--strict`.
     fn apply_allowed(&self) -> bool {
-        if self.hosts.is_empty() || self.verifying {
+        if self.hosts.is_empty() || self.verifying || self.pin_hint {
             return false;
         }
         let resolve_ok = match self.resolves {
@@ -616,6 +628,10 @@ impl InstallModel {
                 // Enter commits the edited package name, re-verifies, and re-runs the build
                 // and pin resolve.
                 KeyCode::Enter => {
+                    self.pin_hint = self.version.is_none() && self.pkg.value().contains('@');
+                    if self.pin_hint {
+                        return Step::stay();
+                    }
                     let v = self.begin_verify();
                     let b = self.begin_build();
                     let p = self.begin_pin();
@@ -813,6 +829,12 @@ impl InstallModel {
     }
 
     fn verify_status(&self) -> String {
+        if self.pin_hint {
+            return theme::amber().render(&format!(
+                "\u{00b7} to pin a version, quit and run: knixl install {}",
+                self.pkg.value()
+            ));
+        }
         let (r_txt, r) = match self.resolves {
             Resolve::Yes => ("\u{2713} resolves", theme::good()),
             Resolve::No => ("\u{2717} no such package", theme::bad()),
@@ -1019,6 +1041,7 @@ mod tests {
             strategy_spinner: new_spinner(),
             strategy_seq: 0,
             strategy_msg: None,
+            pin_hint: false,
             dims: (40, 5),
         }
     }
@@ -1366,6 +1389,25 @@ mod tests {
         );
         assert_eq!(m.strategy, StrategyState::Failed);
         assert_eq!(m.strategy_msg.as_deref(), Some("neither strategy builds"));
+    }
+
+    /// #133: with no pin wired in (the hub), a typed `name@version` can't be resolved, so the
+    /// screen says how to pin instead of verifying, and Apply stays off.
+    #[test]
+    fn a_typed_version_without_a_pin_points_at_knixl_install() {
+        let mut m = model(1);
+        m.pkg.set_value("curl@8.4.0");
+        let key = |c| {
+            Box::new(KeyMsg {
+                key: c,
+                modifiers: KeyModifiers::NONE,
+            }) as Msg
+        };
+        let step = m.update(key(KeyCode::Enter), (80, 24));
+        assert!(step.cmd.is_none(), "no verify starts");
+        assert!(m.pin_hint);
+        assert!(!m.apply_allowed());
+        assert!(m.verify_status().contains("knixl install curl@8.4.0"));
     }
 
     #[test]
