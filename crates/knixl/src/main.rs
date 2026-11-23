@@ -223,17 +223,20 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
     let patched_inputs = (!pending.is_empty() || pending_flake_inputs.is_some())
         .then(|| patch_inputs_for_pending(&ctx.inputs, &pending, pending_flake_inputs.is_some()));
     let lock_for_plan = patched_lock.as_ref().unwrap_or(&ctx.lock);
-    // New flake-input pins change the flake itself, so its expected text has to come from the
-    // patched lock; planning against the old text would drop the flake as orphaned.
-    let regathered = match (&pending_flake_inputs, &patched_lock) {
-        (Some(_), Some(lock)) => match knixl_pipeline::gather::gather_with_lock(
+    // New flake-input pins and newly resolved baselines both change what gets generated (the
+    // flake's text, and whether the hosts can share one nixpkgs at all), so plan from the
+    // patched lock. Planning against the old one dropped the flake as orphaned and hid a
+    // validation error the new baseline causes (#135).
+    let regather = pending_flake_inputs.is_some() || !pending.is_empty();
+    let regathered = match (regather, &patched_lock) {
+        (true, Some(lock)) => match knixl_pipeline::gather::gather_with_lock(
             &ctx.root,
             &default_formatter(),
             ctx.running.tool.clone(),
             Some(lock.clone()),
         ) {
             Ok(p) => Some((
-                patch_inputs_for_pending(&p.inputs, &pending, true),
+                patch_inputs_for_pending(&p.inputs, &pending, pending_flake_inputs.is_some()),
                 p.generated,
             )),
             Err(e) => {
@@ -313,7 +316,9 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                 eprintln!("version skew present: run `knixl upgrade` to review and apply");
                 return Code::NeedsAck;
             }
-            let mut worst = Code::Clean;
+            // Precedence, not numeric order: drift (3) outranks a pending regeneration (6),
+            // as in `verdict` (#135).
+            let (mut drifted, mut orphaned) = (false, false);
             for f in &plan.files {
                 match &f.state {
                     FileState::Clean => {}
@@ -321,15 +326,22 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                     FileState::Drifted { .. } if accept_drift => write_file(ctx, f),
                     FileState::Drifted { .. } => {
                         report_taint(f, cli.json);
-                        worst = worst.max(Code::Drift);
+                        drifted = true;
                     }
                     FileState::Orphaned if prune => delete_file(ctx, f),
                     FileState::Orphaned => {
                         note_orphan(f, cli.json);
-                        worst = worst.max(Code::RegenPending);
+                        orphaned = true;
                     }
                 }
             }
+            let worst = if drifted {
+                Code::Drift
+            } else if orphaned {
+                Code::RegenPending
+            } else {
+                Code::Clean
+            };
             // Commit the lock ONLY on a clean apply, so it never lies about disk.
             if worst == Code::Clean {
                 write_lock(ctx, &plan.lock_next);

@@ -241,6 +241,82 @@ fn drift_is_detected_and_refused_without_accept_drift() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// #135: drift outranks a pending regeneration, so a hand edit beside an orphan still exits 3.
+#[test]
+fn generate_exits_drift_when_drift_and_an_orphan_coincide() {
+    let root = temp_project("drift-and-orphan");
+    assert_eq!(knixl(&root, &["generate"]).status.code(), Some(0));
+    let web = root.join("generated/hosts/web.nix");
+    fs::write(
+        &web,
+        format!("{}\n# hand edit\n", fs::read_to_string(&web).unwrap()),
+    )
+    .unwrap();
+    fs::remove_file(root.join("hosts/db.kdl")).unwrap();
+    let out = knixl(&root, &["generate"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("drift:") && stderr.contains("orphan:"),
+        "{stderr}"
+    );
+    assert_eq!(out.status.code(), Some(3), "{stderr}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// #135: in input mode every host shares one nixpkgs, so an upgrade that resolves a second
+/// host onto another release must refuse before writing anything. It used to plan off the
+/// old lock, miss the conflict, drop the flake from the lock and exit 0.
+#[test]
+fn upgrade_refuses_a_second_baseline_in_input_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = temp_project("input-mode-two-baselines");
+    fs::remove_file(root.join("hosts/db.kdl")).unwrap();
+    fs::write(
+        root.join("knixl.kdl"),
+        "system {\n    state-version \"25.11\"\n    input \"nixpkgs\" url=\"github:NixOS/nixpkgs\"\n}\n",
+    )
+    .unwrap();
+    declare_baseline_release(&root, "25.11");
+    let resolver =
+        std::env::temp_dir().join(format!("knixl-cli-two-baselines-{}", std::process::id()));
+    fs::write(
+        &resolver,
+        "#!/bin/sh\ncase \"$1\" in\n25.11) echo 1111111111111111111111111111111111111111 ;;\n*) echo 2222222222222222222222222222222222222222 ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&resolver, fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_knixl"))
+            .args(args)
+            .current_dir(&root)
+            .env("KNIXL_FORMATTER", "cat")
+            .env("KNIXL_BASELINE_RESOLVER", &resolver)
+            .output()
+            .unwrap()
+    };
+    assert_eq!(run(&["upgrade", "--yes"]).status.code(), Some(0));
+    assert_eq!(run(&["generate"]).status.code(), Some(0));
+    let lock_before = fs::read_to_string(root.join("knixl.lock.kdl")).unwrap();
+
+    fs::write(
+        root.join("hosts/nas.kdl"),
+        "host \"nas\" {\n    system \"x86_64-linux\"\n    nixpkgs release=\"25.05\"\n}\n",
+    )
+    .unwrap();
+    let out = run(&["upgrade", "--yes"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(5), "{stderr}");
+    assert!(stderr.contains("one nixpkgs baseline rev"), "{stderr}");
+    assert_eq!(
+        fs::read_to_string(root.join("knixl.lock.kdl")).unwrap(),
+        lock_before,
+        "a refused upgrade writes nothing"
+    );
+    assert!(!root.join("generated/hosts/nas.nix").exists());
+    let _ = fs::remove_file(&resolver);
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn prune_deletes_orphaned_files() {
     let root = temp_project("prune");
