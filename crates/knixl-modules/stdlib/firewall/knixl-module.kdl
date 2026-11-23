@@ -1,0 +1,66 @@
+// A declarative knixl module: the NixOS firewall, with open ports and port ranges,
+// trusted interfaces and the nftables backend. All stock NixOS options.
+
+module name="firewall" version="1.0.0" {
+    summary "The NixOS firewall: open ports and ranges, trusted interfaces, nftables."
+    claims-node "firewall"
+
+    schema {
+        child "enable" repeated=#true \
+            doc="Set networking.firewall.enable explicitly. NixOS has it on by default. At most one." {
+            arg "value" type="bool" required=#true
+        }
+        child "nftables" type="bool" \
+            doc="Use the nftables backend (networking.nftables.enable). Off means iptables."
+        child "allowed-tcp-port" type="int" repeated=#true \
+            doc="A TCP port to open (networking.firewall.allowedTCPPorts)."
+        child "allowed-udp-port" type="int" repeated=#true \
+            doc="A UDP port to open (networking.firewall.allowedUDPPorts)."
+        child "allowed-tcp-range" repeated=#true \
+            doc="An inclusive TCP port range to open (networking.firewall.allowedTCPPortRanges)." {
+            prop "from" type="int" required=#true
+            prop "to" type="int" required=#true
+        }
+        child "allowed-udp-range" repeated=#true \
+            doc="An inclusive UDP port range to open (networking.firewall.allowedUDPPortRanges)." {
+            prop "from" type="int" required=#true
+            prop "to" type="int" required=#true
+        }
+        child "trusted-interface" type="string" repeated=#true \
+            doc="An interface whose traffic bypasses the firewall, e.g. \"tailscale0\" (networking.firewall.trustedInterfaces)."
+        child "allow-ping" repeated=#true \
+            doc="Set networking.firewall.allowPing. NixOS default true. At most one." {
+            arg "value" type="bool" required=#true
+        }
+        child "log-refused-connections" repeated=#true \
+            doc="Set networking.firewall.logRefusedConnections. NixOS default true. At most one." {
+            arg "value" type="bool" required=#true
+        }
+    }
+
+    emit {
+        for-each "e" in "enable" {
+            set "networking.firewall.enable" (scalar)"{e.value}"
+        }
+        when-flag "nftables" {
+            set "networking.nftables.enable" #true
+        }
+        set "networking.firewall.allowedTCPPorts" (collect-opt)"allowed-tcp-port"
+        set "networking.firewall.allowedUDPPorts" (collect-opt)"allowed-udp-port"
+        list-opt "networking.firewall.allowedTCPPortRanges" from "allowed-tcp-range" {
+            set "from" (scalar)"{allowed-tcp-range.from}"
+            set "to" (scalar)"{allowed-tcp-range.to}"
+        }
+        list-opt "networking.firewall.allowedUDPPortRanges" from "allowed-udp-range" {
+            set "from" (scalar)"{allowed-udp-range.from}"
+            set "to" (scalar)"{allowed-udp-range.to}"
+        }
+        set "networking.firewall.trustedInterfaces" (collect-opt)"trusted-interface"
+        for-each "p" in "allow-ping" {
+            set "networking.firewall.allowPing" (scalar)"{p.value}"
+        }
+        for-each "l" in "log-refused-connections" {
+            set "networking.firewall.logRefusedConnections" (scalar)"{l.value}"
+        }
+    }
+}

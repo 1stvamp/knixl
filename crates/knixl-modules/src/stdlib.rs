@@ -86,6 +86,7 @@ mod tests {
         assert!(reg.get("web-service").is_some());
         assert!(reg.get("zfs").is_some());
         assert!(reg.get("tailscale").is_some());
+        assert!(reg.get("firewall").is_some());
     }
 
     #[test]

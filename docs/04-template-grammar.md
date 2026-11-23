@@ -229,9 +229,15 @@ It sets `services.openssh.enable = true`, forces `PasswordAuthentication`/`KbdIn
 
 ### tailscale
 
-`tailscale` claims the `tailscale` node and generates NixOS tailscale configuration. Node shape: an optional `open-firewall` (a bool flag), optional `up-flag` children hold flags passed to `tailscale up` (e.g. `up-flag "--ssh"`, `up-flag "--operator=alice"`), and an `auth-key secret="name"` child wires `services.tailscale.authKeyFile` to a named secret via `(secret)`.
+`tailscale` claims the `tailscale` node and generates NixOS tailscale configuration. Node shape: an optional `open-firewall` (a bool flag), optional `up-flag` children hold flags passed to `tailscale up` (e.g. `up-flag "--ssh"`), optional `set-flag` children hold flags passed to `tailscale set` (e.g. `set-flag "--operator=alice"`), and an `auth-key secret="name"` child wires `services.tailscale.authKeyFile` to a named secret via `(secret)`.
 
-The module sets `services.tailscale.enable = true`, sets `services.tailscale.openFirewall = true` when `open-firewall` is given, collects `up-flag` children into `services.tailscale.extraUpFlags` as a list, and wires the `auth-key` secret reference to `services.tailscale.authKeyFile`. If no `auth-key` is declared, `authKeyFile` is not set, leaving interactive login as the fallback.
+The module sets `services.tailscale.enable = true`, sets `services.tailscale.openFirewall = true` when `open-firewall` is given, collects `up-flag` children into `services.tailscale.extraUpFlags` and `set-flag` children into `services.tailscale.extraSetFlags` (NixOS runs these in a `tailscaled-set` unit after the daemon starts, so they apply to an already logged-in node, which `up` flags do not), and wires the `auth-key` secret reference to `services.tailscale.authKeyFile`. If no `auth-key` is declared, `authKeyFile` is not set, leaving interactive login as the fallback.
+
+### firewall
+
+`firewall` claims the `firewall` node: the NixOS firewall. Node shape: an optional `nftables` flag (the nftables backend; without it NixOS uses iptables), repeated `allowed-tcp-port <n>` and `allowed-udp-port <n>`, repeated `allowed-tcp-range from=<n> to=<n>` and `allowed-udp-range from=<n> to=<n>` (inclusive), repeated `trusted-interface "<name>"` (e.g. `"tailscale0"`, whose traffic bypasses the firewall), and at-most-one `enable <bool>`, `allow-ping <bool>` and `log-refused-connections <bool>` children.
+
+It sets `networking.nftables.enable = true` when `nftables` is given, collects ports into `networking.firewall.allowedTCPPorts`/`allowedUDPPorts` and interfaces into `trustedInterfaces` (each omitted when empty), folds the ranges into `allowedTCPPortRanges`/`allowedUDPPortRanges` (via `list-opt`, so omitted when empty), and sets `enable`, `allowPing` and `logRefusedConnections` via `(scalar)` only when given. NixOS defaults all three to true, so the node leaves the firewall on unless `enable #false` says otherwise. Every list merges with what other modules open (e.g. tailscale's `open-firewall`).
 
 ### home-manager
 

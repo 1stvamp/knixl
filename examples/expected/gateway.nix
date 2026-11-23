@@ -15,5 +15,25 @@
   services.tailscale.extraUpFlags = [
     "--ssh"
   ];
+  services.tailscale.extraSetFlags = [
+    "--advertise-exit-node"
+  ];
   services.tailscale.authKeyFile = config.sops.secrets."tailscale-authkey".path;
+  networking.nftables.enable = true;
+  networking.firewall.allowedTCPPorts = [
+    443
+  ];
+  networking.firewall.allowedUDPPorts = [
+    51820
+  ];
+  networking.firewall.allowedTCPPortRanges = [
+    {
+      from = 1714;
+      to = 1764;
+    }
+  ];
+  networking.firewall.trustedInterfaces = [
+    "tailscale0"
+  ];
+  networking.firewall.allowPing = false;
 }

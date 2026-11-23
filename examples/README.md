@@ -25,8 +25,9 @@ Notes:
   timezone/locale, `sysctl`, `nix.settings`, systemPackages, `mutableUsers`), `zfs` (with an
   explicit `force-import-root`), a `user` with a `hashed-password`, and `openssh`. It also shows
   `networking.hostName` defaulting to the host label.
-- `gateway` exercises the `tailscale` module: an auth key from a named secret, `up-flag`s, and
-  `open-firewall`.
+- `gateway` exercises the `tailscale` module (an auth key from a named secret, `up-flag`s, a
+  `set-flag` and `open-firewall`) and the `firewall` module (the nftables backend, open ports
+  and a port range, a trusted interface, and `allow-ping #false`).
 - `vault` exercises the `disko` module: a GPT layout with an ESP (`mount-option`), swap, a LUKS
   root, and a ZFS pool carrying `options`/`root-fs-options`.
 - `vmhost` exercises `incus` (the daemon preseed with bridge ipv6, the API-listener oneshot, and

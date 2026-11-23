@@ -1,5 +1,5 @@
 // A declarative knixl module: Tailscale with an auth key from a named secret
-// and optional up-flags. All stock NixOS options.
+// and optional up and set flags. All stock NixOS options.
 
 module name="tailscale" version="1.0.0" {
     summary "Tailscale with an auth key from a named secret and optional up-flags."
@@ -10,6 +10,8 @@ module name="tailscale" version="1.0.0" {
             doc="Open the firewall for Tailscale (services.tailscale.openFirewall)."
         child "up-flag" type="string" repeated=#true \
             doc="A flag appended to services.tailscale.extraUpFlags, e.g. \"--ssh\"."
+        child "set-flag" type="string" repeated=#true \
+            doc="A flag appended to services.tailscale.extraSetFlags (passed to tailscale set), e.g. \"--operator=wes\"."
         child "auth-key" repeated=#true \
             doc="Wire services.tailscale.authKeyFile to a named secret. At most one." {
             prop "secret" type="string" required=#true
@@ -22,6 +24,7 @@ module name="tailscale" version="1.0.0" {
             set "services.tailscale.openFirewall" #true
         }
         set "services.tailscale.extraUpFlags" (collect-opt)"up-flag"
+        set "services.tailscale.extraSetFlags" (collect-opt)"set-flag"
         for-each "k" in "auth-key" {
             set "services.tailscale.authKeyFile" (secret)"{k.secret}"
         }

@@ -4,6 +4,16 @@ host "gateway" {
     tailscale {
         open-firewall #true
         up-flag "--ssh"
+        set-flag "--advertise-exit-node"
         auth-key secret="tailscale-authkey"
+    }
+
+    firewall {
+        nftables #true
+        allowed-tcp-port 443
+        allowed-udp-port 51820
+        allowed-tcp-range from=1714 to=1764
+        trusted-interface "tailscale0"
+        allow-ping #false
     }
 }
