@@ -49,7 +49,7 @@ A module listed in `knixl.kdl`'s `modules` block hasn't been fetched yet. `knixl
 
 ## Nothing seems to be validated
 
-If a deliberately wrong option path doesn't fail, the oracle has no option set for that host's nixpkgs commit and is skipping validation without saying so. [Turning it on](11-validation.md#turning-it-on) shows how to build one.
+If a deliberately wrong option path doesn't fail, look for a warning saying the host has no NixOS option set: `knixl upgrade --yes` builds it. A host with no `nixpkgs release` has no commit to validate against at all, so give it one. [Validation and the oracle](11-validation.md#turning-it-on) has the details.
 
 ## The TUI won't start
 

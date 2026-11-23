@@ -360,6 +360,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                 && pending_host_modules.is_empty()
                 && pending_module_sources.is_none()
                 && pending_flake_inputs.is_none()
+                && ctx.unvalidated.is_empty()
             {
                 println!("already up to date");
                 return Code::Clean;
@@ -400,6 +401,14 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                         "would resolve flake input \"{}\" ({}) -> {}",
                         i.name, i.url, i.rev,
                     );
+                }
+                let missing: BTreeSet<&str> = ctx
+                    .unvalidated
+                    .iter()
+                    .map(|(_, rev)| rev.as_str())
+                    .collect();
+                for rev in missing {
+                    println!("would build the NixOS option set for nixpkgs {rev}");
                 }
                 eprintln!("re-run with --yes to apply");
                 return Code::NeedsAck;
@@ -458,6 +467,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
                 pending_modules.is_some(),
                 &changed_hosts,
                 false,
+                true,
             ) {
                 return code;
             }
@@ -951,6 +961,7 @@ fn commit_install(
             pending_modules.is_some(),
             &changed_hosts,
             strict,
+            false,
         ) {
             revert();
             return code;
@@ -1630,10 +1641,7 @@ fn build_and_cache_options(
     modules: &[OracleModulePin],
     strict: bool,
 ) -> Result<Option<String>, Code> {
-    // Base set fetch/build stays manual (docs/06, ADR 0007); only the augmented set (ADR 0008)
-    // is built here. Guards a plain baseline resolution (no module pins) from triggering a
-    // real nixpkgs fetch.
-    if rev.is_empty() || modules.is_empty() {
+    if rev.is_empty() {
         return Ok(None);
     }
     let tuples: Vec<(String, String, String)> = modules
@@ -1643,7 +1651,12 @@ fn build_and_cache_options(
     let Some(path) = knixl_oracle::cache_path_for(rev, &tuples) else {
         return Ok(None);
     };
+    // A set for a given rev and module pins never changes, so a cached one is reused.
+    if let Ok(bytes) = std::fs::read(&path) {
+        return Ok(Some(knixl_nix::hash(&bytes)));
+    }
     let eval = knixl_nix::nixeval::NixEval::resolve();
+    println!("building the NixOS option set for nixpkgs {rev} (a minute or so)");
     let json = match knixl_nix::optionsdoc::build_options_json(&eval, rev, &tuples) {
         Ok(json) => json,
         Err(knixl_nix::nixeval::NixError::Unavailable(_)) if strict => {
@@ -1652,6 +1665,12 @@ fn build_and_cache_options(
         }
         Err(knixl_nix::nixeval::NixError::Unavailable(_)) => {
             eprintln!("warning: nix unavailable, skipping oracle option set build");
+            return Ok(None);
+        }
+        // The base set (no modules) failing is "unverified" (offline, say), not a broken
+        // declaration, so it only warns (#128).
+        Err(knixl_nix::nixeval::NixError::Failed(m)) if modules.is_empty() => {
+            eprintln!("warning: building the NixOS option set for nixpkgs {rev} failed, so it is not validated: {m}");
             return Ok(None);
         }
         Err(knixl_nix::nixeval::NixError::Failed(m)) => {
@@ -1691,8 +1710,9 @@ fn build_pending_oracle_sets(
     project_modules_changed: bool,
     changed_hosts: &BTreeSet<String>,
     strict: bool,
+    fill_missing: bool,
 ) -> Result<(), Code> {
-    if project_modules_changed {
+    if project_modules_changed || fill_missing {
         let rev = lock.oracle.nixpkgs_rev.clone();
         let modules = lock.oracle.modules.clone();
         if let Some(hash) = build_and_cache_options(&rev, &modules, strict)? {
@@ -1718,7 +1738,7 @@ fn build_pending_oracle_sets(
         } else {
             project_modules_changed || changed_hosts.contains(&host.name)
         };
-        if !effective_changed {
+        if !effective_changed && !fill_missing {
             continue;
         }
         let modules = if has_override {
@@ -2508,6 +2528,8 @@ struct Ctx {
     flake_lock_problems: Vec<String>,
     /// Root-relative host sources whose generated config allows unfree (see `gather`).
     unfree_hosts: BTreeSet<std::path::PathBuf>,
+    /// Hosts generated without option checks for want of a cached set (see `gather`).
+    unvalidated: Vec<(String, String)>,
 }
 /// A broken `knixl.kdl`, module manifest or host file is the user's input, so it is a
 /// Validation (#131); only I/O, the lock and the formatter are Internal.
@@ -2544,6 +2566,7 @@ impl Ctx {
             generated: project.generated,
             warnings: project.warnings,
             flake_lock_problems: project.flake_lock_problems,
+            unvalidated: project.unvalidated,
             unfree_hosts: project.unfree_hosts,
         }
     }

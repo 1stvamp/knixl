@@ -28,11 +28,14 @@ fn temp_project(tag: &str) -> PathBuf {
     root
 }
 
+/// Every run here sets `KNIXL_NIX_BUILD=false`: `upgrade` builds missing NixOS option sets
+/// (#128), and a test's fake nixpkgs rev must not send that to the network.
 fn knixl(root: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_knixl"))
         .args(args)
         .current_dir(root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .output()
         .expect("run knixl")
 }
@@ -130,6 +133,7 @@ fn validation_errors_name_the_line_and_the_option() {
         .arg("plan")
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_OPTIONS_JSON", &options)
         .output()
         .unwrap();
@@ -290,6 +294,7 @@ fn upgrade_refuses_a_second_baseline_in_input_mode() {
             .args(args)
             .current_dir(&root)
             .env("KNIXL_FORMATTER", "cat")
+            .env("KNIXL_NIX_BUILD", "false")
             .env("KNIXL_BASELINE_RESOLVER", &resolver)
             .output()
             .unwrap()
@@ -313,6 +318,67 @@ fn upgrade_refuses_a_second_baseline_in_input_mode() {
         "a refused upgrade writes nothing"
     );
     assert!(!root.join("generated/hosts/nas.nix").exists());
+    let _ = fs::remove_file(&resolver);
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// #128: a host whose nixpkgs has no cached option set is reported, and `upgrade` builds the
+/// set (here with a fake nix-build that writes a tiny options.json), after which it validates.
+#[test]
+fn upgrade_builds_a_missing_base_option_set() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = temp_project("base-option-set");
+    let cache = root.join("xdg-cache");
+    let out_dir = root.join("fake-store");
+    fs::create_dir_all(out_dir.join("share/doc/nixos")).unwrap();
+    fs::write(
+        out_dir.join("share/doc/nixos/options.json"),
+        r#"{"services.nginx.enable":{"type":"boolean","readOnly":false}}"#,
+    )
+    .unwrap();
+    let build = root.join("fake-nix-build");
+    fs::write(&build, format!("#!/bin/sh\necho {}\n", out_dir.display())).unwrap();
+    fs::set_permissions(&build, fs::Permissions::from_mode(0o755)).unwrap();
+    let resolver = resolver_shim("base-option-set-rev", "cafe", "", 0);
+    declare_baseline_release(&root, "25.11");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_knixl"))
+            .args(args)
+            .current_dir(&root)
+            .env("KNIXL_FORMATTER", "cat")
+            .env("KNIXL_NIX_BUILD", &build)
+            .env("KNIXL_BASELINE_RESOLVER", &resolver)
+            .env("XDG_CACHE_HOME", &cache)
+            .output()
+            .unwrap()
+    };
+    // Resolving the release builds its set straight away.
+    let up = run(&["upgrade", "--yes"]);
+    assert_eq!(
+        up.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&up.stderr)
+    );
+    let cached = cache.join("knixl/options-cafe.json");
+    assert!(cached.is_file(), "the base set is cached");
+
+    // With the cache gone, plan says so and upgrade offers to rebuild it.
+    fs::remove_file(&cached).unwrap();
+    let plan = run(&["plan"]);
+    assert!(
+        String::from_utf8_lossy(&plan.stderr).contains("no NixOS option set for nixpkgs cafe"),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    let preview = run(&["upgrade"]);
+    assert_eq!(preview.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&preview.stdout)
+        .contains("would build the NixOS option set for nixpkgs cafe"));
+    assert_eq!(run(&["upgrade", "--yes"]).status.code(), Some(0));
+    assert!(cached.is_file(), "rebuilt");
+    let plan = run(&["plan"]);
+    assert!(!String::from_utf8_lossy(&plan.stderr).contains("no NixOS option set"));
     let _ = fs::remove_file(&resolver);
     let _ = fs::remove_dir_all(&root);
 }
@@ -422,6 +488,7 @@ fn install_build_refuses_when_the_build_fails() {
         .args(["install", "ripgrep", "--host", "web", "--yes", "--build"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &eval_shim)
         .env("KNIXL_NIX_BUILD", &bad_build)
         .output()
@@ -487,6 +554,7 @@ fn install_build_args(tag: &str, host_allows_unfree: bool) -> String {
         .args(["install", "ripgrep", "--host", "web", "--yes", "--build"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &eval_shim)
         .env("KNIXL_NIX_BUILD", &build)
         .output()
@@ -518,6 +586,7 @@ fn install_drafts_verifies_and_regenerates() {
         .args(["install", "ripgrep", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &shim)
         .output()
         .expect("run knixl install");
@@ -549,6 +618,7 @@ fn install_drafts_verifies_and_regenerates() {
         .args(["check"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .output()
         .expect("run check");
     assert_eq!(
@@ -569,6 +639,7 @@ fn install_refuses_a_nonexistent_package() {
         .args(["install", "nnoopkg", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &shim)
         .output()
         .expect("run knixl install");
@@ -597,6 +668,7 @@ fn install_refuses_a_package_the_host_takes_from_an_input() {
         .args(["install", "ripgrep", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &shim)
         .output()
         .expect("run knixl install");
@@ -621,6 +693,7 @@ fn install_strict_errors_when_nix_absent() {
         .args(["install", "ripgrep", "--host", "web", "--yes", "--strict"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", "/nonexistent/knixl-no-nix")
         .output()
         .expect("run knixl install");
@@ -661,6 +734,7 @@ fn install_pkg_at_version_refuses_when_resolver_cannot_find_it() {
         .args(["install", "htop@9.9.9", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &ok_eval)
         .env("KNIXL_PIN_RESOLVER", &nf_resolver)
         .output()
@@ -690,6 +764,7 @@ fn install_pkg_at_version_resolves_writes_the_pin_and_regenerates() {
         .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &ok_eval)
         .env("KNIXL_NIX_BUILD", &ok_build)
         .env("KNIXL_PIN_RESOLVER", &resolver)
@@ -766,6 +841,7 @@ fn install_pkg_at_version_reverts_the_pin_when_commit_fails_after_write_pin() {
         .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &parse_fail_eval)
         .env("KNIXL_NIX_BUILD", &ok_build)
         .env("KNIXL_PIN_RESOLVER", &resolver)
@@ -826,6 +902,7 @@ fn install_pkg_at_version_prefers_override_when_it_builds() {
         .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &ok_eval)
         .env("KNIXL_NIX_BUILD", &build)
         .env("KNIXL_PIN_RESOLVER", &resolver)
@@ -875,6 +952,7 @@ fn install_pkg_at_version_no_abi_check_skips_the_build_shim() {
         ])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &ok_eval)
         .env("KNIXL_NIX_BUILD", &never_build)
         .env("KNIXL_PIN_RESOLVER", &resolver)
@@ -931,6 +1009,7 @@ fn install_with_a_declared_release_resolves_and_writes_the_baseline() {
         .args(["install", "htop@3.2.1", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &ok_eval)
         .env("KNIXL_NIX_BUILD", &ok_build)
         .env("KNIXL_PIN_RESOLVER", &pin_resolver)
@@ -982,6 +1061,7 @@ fn install_ambient_with_a_declared_release_writes_the_baseline() {
         .args(["install", "ripgrep", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &ok_eval)
         .env("KNIXL_BASELINE_RESOLVER", &baseline_resolver)
         .output()
@@ -1023,6 +1103,7 @@ fn install_reverts_the_baseline_when_commit_fails_after_write_baseline() {
         .args(["install", "ripgrep", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &parse_fail_eval)
         .env("KNIXL_BASELINE_RESOLVER", &baseline_resolver)
         .output()
@@ -1067,6 +1148,7 @@ fn upgrade_without_yes_previews_a_pending_baseline_without_writing_the_lock() {
         .args(["upgrade"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_BASELINE_RESOLVER", &baseline_resolver)
         .output()
         .expect("run knixl upgrade");
@@ -1106,6 +1188,7 @@ fn upgrade_with_yes_writes_a_pending_baseline() {
         .args(["upgrade", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_BASELINE_RESOLVER", &baseline_resolver)
         .output()
         .expect("run knixl upgrade --yes");
@@ -1205,6 +1288,7 @@ fn install_with_a_declared_oracle_module_resolves_and_writes_the_pin() {
         .args(["install", "ripgrep", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &ok_eval)
         .env("KNIXL_MODULE_RESOLVER", &module_resolver)
         .output()
@@ -1259,6 +1343,7 @@ fn plan_does_not_resolve_or_write_a_declared_oracle_module() {
         .args(["plan"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_MODULE_RESOLVER", &never_called)
         .output()
         .expect("run knixl plan");
@@ -1295,6 +1380,7 @@ fn upgrade_with_yes_writes_a_pending_oracle_module() {
         .args(["upgrade", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_MODULE_RESOLVER", &module_resolver)
         .output()
         .expect("run knixl upgrade --yes");
@@ -1333,6 +1419,7 @@ fn upgrade_with_yes_clears_oracle_modules_when_the_declaration_is_removed() {
         .args(["upgrade", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_MODULE_RESOLVER", &module_resolver)
         .output()
         .expect("run knixl upgrade --yes (seed)");
@@ -1363,6 +1450,7 @@ fn upgrade_with_yes_clears_oracle_modules_when_the_declaration_is_removed() {
         .args(["upgrade", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_MODULE_RESOLVER", &never_called)
         .output()
         .expect("run knixl upgrade --yes");
@@ -1400,6 +1488,7 @@ fn install_reverts_the_oracle_modules_to_their_prior_value_when_commit_fails_aft
         .args(["upgrade", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_MODULE_RESOLVER", &seed_resolver)
         .output()
         .expect("run knixl upgrade --yes (seed)");
@@ -1426,6 +1515,7 @@ fn install_reverts_the_oracle_modules_to_their_prior_value_when_commit_fails_aft
         .args(["install", "ripgrep", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &parse_fail_eval)
         .env("KNIXL_MODULE_RESOLVER", &new_resolver)
         .output()
@@ -1494,6 +1584,7 @@ fn install_refuses_a_host_oracle_modules_override_without_a_declared_release() {
         .args(["install", "ripgrep", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_MODULE_RESOLVER", &never_called)
         .output()
         .expect("run knixl install");
@@ -1575,6 +1666,7 @@ fn install_with_a_declared_host_oracle_module_resolves_and_writes_it_to_the_base
         .args(["install", "ripgrep", "--host", "web", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_NIX", &ok_eval)
         .env("KNIXL_BASELINE_RESOLVER", &baseline_resolver)
         .env("KNIXL_MODULE_RESOLVER", &module_resolver)
@@ -1690,6 +1782,7 @@ fn upgrade_builds_and_caches_the_augmented_set_and_a_later_check_validates_disko
         .args(["upgrade", "--yes"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("KNIXL_BASELINE_RESOLVER", &baseline_resolver)
         .env("KNIXL_MODULE_RESOLVER", &module_resolver)
         .env("KNIXL_NIX_BUILD", &build_shim)
@@ -1724,6 +1817,7 @@ fn upgrade_builds_and_caches_the_augmented_set_and_a_later_check_validates_disko
         .args(["check"])
         .current_dir(&root)
         .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_NIX_BUILD", "false")
         .env("XDG_CACHE_HOME", &xdg)
         .output()
         .expect("run knixl check");

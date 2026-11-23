@@ -19,27 +19,15 @@ It's deliberately best-effort beyond that. NixOS describes option types as text 
 
 ## Turning it on
 
-The oracle needs the NixOS option set for the nixpkgs commit a host is on, as an `options.json` file in knixl's cache. knixl builds it automatically when you declare [out-of-tree modules](#modules-from-other-flakes), but for plain nixpkgs you currently build it yourself, once per nixpkgs commit. **Until you do, validation is skipped without a warning**, so do this when you set up a project.
+The oracle needs the NixOS option set for the nixpkgs commit a host is on, as an `options.json` file in knixl's cache. `knixl upgrade` builds it with Nix: when a host's `nixpkgs release` is first resolved, and on any later `upgrade` that finds one missing. The build takes a minute or so the first time; after that the file is reused by every project on the same commit (it lives in `~/.cache/knixl`, or `$XDG_CACHE_HOME/knixl`).
 
-First find the commit: it's the `nixpkgs-rev` on the host's `baseline` line in `knixl.lock.kdl`, which is there once the host declares a `nixpkgs release` and you've run `knixl upgrade`. Then build the option set and copy it into the cache:
+So the only thing to do is give each host a `nixpkgs release` and run `knixl upgrade --yes`. Until a host has an option set, `plan`, `generate` and `check` warn that it isn't validated:
 
-```sh
-rev=b6018f87da91d19d0ab4cf979885689b469cdd41
-out=$(nix-build --no-out-link -E "
-  let
-    src = builtins.fetchTarball \"https://github.com/NixOS/nixpkgs/archive/$rev.tar.gz\";
-    eval = import (src + \"/nixos/lib/eval-config.nix\") {
-      system = null;
-      modules = [ { nixpkgs.hostPlatform = \"x86_64-linux\"; } ];
-    };
-  in (eval.pkgs.nixosOptionsDoc { inherit (eval) options; }).optionsJSON")
-mkdir -p ~/.cache/knixl
-cp "$out/share/doc/nixos/options.json" ~/.cache/knixl/options-$rev.json
+```
+warning: host "laptop": no NixOS option set for nixpkgs b6018f8..., so its options are not validated: run knixl upgrade --yes to build it
 ```
 
-(The cache directory is `$XDG_CACHE_HOME/knixl` when that's set.) The build takes a minute or so. The `hostPlatform` in the snippet only matters for building the option list, which is practically the same on every platform, so one file serves `x86_64` and `aarch64` hosts alike. The option set for a commit never changes, so the file is shared by every project on that commit, and you only need it again when a host moves to a new commit.
-
-To test that it's active, put a wrong option path in a throwaway local module and run `knixl plan`: it should fail with "is not a NixOS option". In CI, either cache `~/.cache/knixl` between runs (keyed on `knixl.lock.kdl`) and run the snippet when it's missing, or set `KNIXL_OPTIONS_JSON` to the path of a prebuilt `options.json`, which is then used for every host.
+If the build fails (no network, say), `upgrade` carries on and warns. In CI, either cache `~/.cache/knixl` between runs (keyed on `knixl.lock.kdl`) and run `knixl upgrade --yes` when it's missing, or set `KNIXL_OPTIONS_JSON` to the path of a prebuilt `options.json`, which is then used for every host.
 
 ## Per-host option sets
 

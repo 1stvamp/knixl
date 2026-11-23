@@ -64,7 +64,7 @@ git ls-remote https://github.com/NixOS/nixpkgs refs/heads/nixos-25.11
 nixpkgs release="25.11" rev="<the commit it printed>"
 ```
 
-Then `knixl upgrade --yes`, `knixl generate`, and in input mode `(cd generated && nix flake lock)` again, and rebuild. In input mode every host shares one nixpkgs, so update the `rev` on all of them together. If you've set up validation, build the option set for the new commit too.
+Then `knixl upgrade --yes`, `knixl generate`, and in input mode `(cd generated && nix flake lock)` again, and rebuild. In input mode every host shares one nixpkgs, so update the `rev` on all of them together.
 
 ## In CI
 

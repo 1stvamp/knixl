@@ -24,7 +24,7 @@ NixOS modules are powerful, but a typical host ends up as a long file of option 
 
 A few things come with that:
 
-- **The output is checked.** KDL that no module understands is refused outright, so a typo never quietly drops out of your config. Once you've built the NixOS option set for your nixpkgs (a one-off step, see [Validation and the oracle](11-validation.md)), every option path knixl writes is also checked against it, so a misspelt or renamed option fails when you generate instead of at `nixos-rebuild` time.
+- **The output is checked.** KDL that no module understands is refused outright, so a typo never quietly drops out of your config. Once a host names its nixpkgs release, every option path knixl writes is also checked against the real NixOS option set for it (see [Validation and the oracle](11-validation.md)), so a misspelt or renamed option fails when you generate instead of at `nixos-rebuild` time.
 - **The output is locked.** knixl records a hash of every generated file in `knixl.lock.kdl`. Regenerating from the same KDL with the same versions gives the same bytes, and `knixl check` proves it in CI.
 - **Upgrades wait for you.** If a new knixl release would change your generated Nix, `generate` refuses and points you at `knixl upgrade`, which shows you what changed before it writes anything.
 - **Hand edits are caught.** If someone edits a generated file directly, knixl notices and refuses to overwrite their change until you decide what to do with it.

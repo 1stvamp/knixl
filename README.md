@@ -79,7 +79,7 @@ The binary lands at `target/release/knixl`.
 
 ### What it needs at runtime
 
-A Nix formatter (`nixfmt` or `nixfmt-rfc-style`) on your `PATH`, and Nix for `knixl install` and for building the option set that validation checks against. `generate` and `check` work offline. Option validation needs a one-off setup per nixpkgs commit, and is skipped until you do it: see [Validation and the oracle](https://knixl.dev/guide/validation/#turning-it-on).
+A Nix formatter (`nixfmt` or `nixfmt-rfc-style`) on your `PATH`, and Nix for `knixl install` and for building the option set that validation checks against. `generate` and `check` work offline. Option validation checks against the NixOS option set for each host's nixpkgs, which `knixl upgrade` builds: see [Validation and the oracle](https://knixl.dev/guide/validation/).
 
 ## Quickstart
 

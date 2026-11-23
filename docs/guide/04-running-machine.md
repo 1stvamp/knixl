@@ -42,7 +42,7 @@ knixl upgrade --yes
 knixl generate
 ```
 
-`upgrade` is the command that does anything involving the network or a version: here it resolves `release="25.11"` to a commit and records it. Run it without `--yes` first if you'd like to see what it would do. This is also the moment to set up validation for that commit, which takes one command and a minute's wait: see [Turning it on](11-validation.md#turning-it-on). `generate` then writes the flake:
+`upgrade` is the command that does anything involving the network or a version: here it resolves `release="25.11"` to a commit and records it. Run it without `--yes` first if you'd like to see what it would do. It also builds the NixOS option set for that commit, so knixl can [validate](11-validation.md) the host (a minute's wait, the first time). `generate` then writes the flake:
 
 ```nix
 {

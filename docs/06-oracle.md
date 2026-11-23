@@ -16,16 +16,9 @@ Use `nixosOptionsDoc`, the same mechanism behind search.nixos.org and the manual
 
 1. `KNIXL_OPTIONS_JSON` if set: an explicit path, and what the tests use. Wins over everything.
 2. Otherwise the file cached for the lock's `oracle nixpkgs-rev`, loaded automatically so a `check` validates against the locked options with no env var.
-3. Otherwise no options file: generation proceeds without option checks (best-effort, the same as an unknown rev).
+3. Otherwise no options file: generation proceeds without option checks for that host, and `plan`/`generate`/`check` say so with a warning.
 
-Populate the cache for a rev with `nixosOptionsDoc`, e.g. build the doc against the pinned nixpkgs and copy the result:
-
-```
-nix-build '<nixpkgs>' -A nixosOptionsDoc ...   # or an equivalent flake attr
-cp result/share/doc/nixos/options.json "$HOME/.cache/knixl/options-<rev>.json"
-```
-
-Fetching the BASE (no out-of-tree modules) set by rev is not yet automated inside knixl this way; the lookup is. `knixl_oracle::cache_path(rev)` returns the exact path to write. The AUGMENTED set (rev plus declared modules, below) is automated: `install`/`upgrade` build and cache it themselves.
+`upgrade` builds and caches every missing set itself (the BASE set for a rev, and the AUGMENTED set with declared modules, below), and `install` builds the set for a baseline it newly resolves. Both run `nixosOptionsDoc` against the pinned nixpkgs through `KNIXL_NIX_BUILD`. A failed base build is a warning; a failed augmented build is a hard error (ADR 0008, amended by #128). `knixl_oracle::cache_path(rev)` returns the path a set is cached at.
 
 ## Per-host baselines
 
