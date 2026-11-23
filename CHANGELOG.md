@@ -8,6 +8,23 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-23
+
+A `firewall` node, `set-flag` for tailscale, and a template list form that drops when empty.
+Nothing here changes generated output for an existing project.
+
+### Added
+- A stdlib `firewall` node: `nftables #true` for the nftables backend, repeated
+  `allowed-tcp-port`/`allowed-udp-port`, `allowed-tcp-range from= to=`/`allowed-udp-range`,
+  `trusted-interface "tailscale0"`, and `enable`, `allow-ping` and `log-refused-connections`
+  bools that emit only when given, so the NixOS defaults stand otherwise (#123).
+- `tailscale` takes repeated `set-flag` children, collected into
+  `services.tailscale.extraSetFlags`, e.g. `set-flag "--operator=wes"` (#124). NixOS passes
+  `up-flag`s only on an auth-key login, while set flags apply on every start.
+- Module templates can use `list-opt`, a `list` fold that leaves the assignment out when the
+  repeated child is absent, the way `(collect-opt)` relates to `(collect)` (#125). `list` still
+  writes `[ ]`.
+
 ## [1.7.0] - 2026-11-21
 
 Packages can come from any flake input, luks devices take a password or key file, and pinned
@@ -332,7 +349,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/1stvamp/knixl/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/1stvamp/knixl/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/1stvamp/knixl/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/1stvamp/knixl/compare/v1.5.1...v1.5.2
