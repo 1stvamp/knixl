@@ -95,6 +95,55 @@ fn a_mistake_in_knixl_kdl_refuses_with_the_validation_exit_code() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// #130: validation errors carry the line, and an oracle refusal reads as a sentence naming
+/// the file and the option rather than a Rust Debug struct.
+#[test]
+fn validation_errors_name_the_line_and_the_option() {
+    let root = temp_project("readable-validation");
+    fs::write(
+        root.join("hosts/typo.kdl"),
+        "host \"typo\" {\n    system \"x86_64-linux\"\n\n    opensh {\n    }\n}\n",
+    )
+    .unwrap();
+    let out = knixl(&root, &["plan"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("hosts/typo.kdl:4: no module claims node `opensh`"),
+        "{stderr}"
+    );
+
+    fs::remove_file(root.join("hosts/typo.kdl")).unwrap();
+    fs::create_dir_all(root.join("modules/bogus")).unwrap();
+    fs::write(
+        root.join("modules/bogus/knixl-module.kdl"),
+        "module name=\"bogus\" version=\"0.1.0\" {\n    claims-node \"bogus\"\n    schema {\n    }\n    emit {\n        set \"services.nopenope.enable\" #true\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("hosts/bogus.kdl"),
+        "host \"bogus\" {\n    system \"x86_64-linux\"\n    bogus\n}\n",
+    )
+    .unwrap();
+    let options = root.join("options.json");
+    fs::write(&options, "{}").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_knixl"))
+        .arg("plan")
+        .current_dir(&root)
+        .env("KNIXL_FORMATTER", "cat")
+        .env("KNIXL_OPTIONS_JSON", &options)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(5));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "hosts/bogus.kdl: `services.nopenope.enable` is not a NixOS option in this host's nixpkgs"
+        ),
+        "{stderr}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn json_check_carries_validation_errors() {
     let root = temp_project("json-validation");

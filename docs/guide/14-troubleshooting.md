@@ -4,16 +4,16 @@ The messages you're most likely to meet, what they mean and what to do. Each one
 
 ## Your KDL
 
-**``no module claims node `opensh` ``** (exit 5)
+**``hosts/laptop.kdl:7: no module claims node `opensh` ``** (exit 5)
 No module handles a node with that name. Usually a typo; `knixl doc <node>` or **Browse modules** in the TUI shows the right names. If it's your own module, check its `claims-node` and that its file is at `modules/<name>/knixl-module.kdl`.
 
-**``unknown child `prot` ``** (exit 5)
+**``hosts/laptop.kdl:8: unknown child `prot` ``** (exit 5)
 The node exists but doesn't take a child by that name. `knixl doc <node>` lists what it does take.
 
-**`` `port` has the wrong type ``** (exit 5)
+**``hosts/laptop.kdl:8: `port` has the wrong type``** (exit 5)
 A value of the wrong kind, e.g. `port "22"` where the module wants the number `22`, or a bool written as `"true"` instead of `#true`.
 
-**`UnknownOption { key: "services.nopenope.enable" }`** (exit 5)
+**``hosts/laptop.kdl: `services.nopenope.enable` is not a NixOS option in this host's nixpkgs``** (exit 5)
 The oracle found an option path that doesn't exist in this host's nixpkgs. If it's in a module you wrote, fix the path; if the option was renamed in a newer NixOS, the module needs updating for that release. See [Validation and the oracle](11-validation.md).
 
 ## Generated files

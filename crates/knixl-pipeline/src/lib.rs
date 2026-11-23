@@ -36,6 +36,19 @@ pub struct HostSource {
     pub src: String,
 }
 
+/// `path:line` for a byte offset into a host's KDL, so a validation error can be found; just the path
+/// when there is no offset.
+fn locate(host: &HostSource, offset: Option<usize>) -> String {
+    match offset {
+        Some(offset) => {
+            let upto = offset.min(host.src.len());
+            let line = host.src[..upto].matches('\n').count() + 1;
+            format!("{}:{line}", host.path.display())
+        }
+        None => host.path.display().to_string(),
+    }
+}
+
 /// One generated output file, post-format. Not written yet; that is the caller's job.
 pub struct GeneratedFile {
     pub path: PathBuf,         // e.g. generated/hosts/web.nix
@@ -154,14 +167,20 @@ fn generate_one(
         let module = registry.get(name).ok_or_else(|| {
             GenerateError::Validation(vec![format!(
                 "{}: no module claims node `{name}`",
-                host.path.display()
+                locate(host, Some(node.span().offset()))
             )])
         })?;
 
         module.schema().validate(node).map_err(|ds| {
             GenerateError::Validation(
                 ds.into_iter()
-                    .map(|d| format!("{}: {}", host.path.display(), d.message))
+                    .map(|d| {
+                        format!(
+                            "{}: {}",
+                            locate(host, d.span.map(|s| s.offset())),
+                            d.message
+                        )
+                    })
                     .collect(),
             )
         })?;
@@ -216,7 +235,13 @@ fn generate_one(
     let input_errors: Vec<String> = diags
         .iter()
         .filter(|d| d.severity == knixl_modules::Severity::Error)
-        .map(|d| format!("{}: {}", host.path.display(), d.message))
+        .map(|d| {
+            format!(
+                "{}: {}",
+                locate(host, d.span.map(|s| s.offset())),
+                d.message
+            )
+        })
         .collect();
     if !input_errors.is_empty() {
         return Err(GenerateError::Validation(input_errors));
@@ -240,7 +265,7 @@ fn generate_one(
                     continue;
                 }
                 if let Err(mismatch) = oracle.check(&a.path, &a.value) {
-                    errors.push(format!("{mismatch:?}"));
+                    errors.push(format!("{}: {mismatch}", host.path.display()));
                 }
             }
         }

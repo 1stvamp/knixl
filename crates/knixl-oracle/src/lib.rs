@@ -43,6 +43,20 @@ pub enum TypeMismatch {
     },
 }
 
+impl std::fmt::Display for TypeMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeMismatch::UnknownOption { key } => {
+                write!(f, "`{key}` is not a NixOS option in this host's nixpkgs")
+            }
+            TypeMismatch::ReadOnly { key } => write!(f, "`{key}` is a read-only NixOS option"),
+            TypeMismatch::WrongType { key, expected, got } => {
+                write!(f, "`{key}` takes {expected}, but was given {got}")
+            }
+        }
+    }
+}
+
 mod options_json {
     // serde model of nixosOptionsDoc output. `ty` is a human-readable STRING, which is
     // the whole reason the oracle is best-effort.

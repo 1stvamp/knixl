@@ -110,7 +110,7 @@ knixl generate
 
 `plan` reports the host file as `stale`: its KDL changed, so the generated file is out of date. `generate` rewrites it, and the module now switches on OpenSSH with password logins off, and declares the `wes` user with the `wheel` group and the key.
 
-If you get a node or a child name wrong, knixl refuses with exit code 5 and names the file and the node (``hosts/laptop.kdl: unknown child `prot` ``), and nothing is written.
+If you get a node or a child name wrong, knixl refuses with exit code 5 and says where (``hosts/laptop.kdl:8: unknown child `prot` ``), and nothing is written.
 
 ## Check it
 
