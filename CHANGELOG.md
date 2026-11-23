@@ -8,6 +8,49 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-23
+
+A user guide on [knixl.dev](https://knixl.dev/guide/introduction/), validation that turns itself
+on, `upgrade --refresh` for taking updates within a nixpkgs release, and a batch of fixes found
+while writing the guide.
+
+One entry below changes generated output for an existing project: an input-free system flake
+regenerates (`knixl upgrade` shows it as a regeneration). The first `upgrade` after updating
+also builds the NixOS option set for each host's nixpkgs, which takes a minute or so per commit.
+
+### Added
+- A user guide, from installing through a first host, deploying with the generated flake, the
+  everyday loop, the TUI, every module with an example, writing modules, validation and
+  troubleshooting (#136). The design specs move to a Design specs section at `/design/`, and the
+  old `/docs/` URLs redirect there.
+- `knixl upgrade --refresh` moves every `nixpkgs release` to the newest commit on its branch, the
+  job `nix flake update` does for a hand-written flake. A host pinned with `rev=` stays put
+  (#129).
+- A top-level `nixpkgs release="25.11"` in `knixl.kdl` is resolved by `upgrade` into the lockfile's
+  `oracle` line (which gains `release=`). Hosts without a release of their own are validated
+  against it, and installers and guest images build from it in an input-free flake (#134).
+
+### Changed
+- `upgrade` builds the NixOS option set for each host's nixpkgs when it isn't cached, so option
+  validation no longer needs a manual setup step; a failed build only warns. `plan`, `generate`
+  and `check` warn for every host they can't validate (#128).
+- Validation errors give the line (``hosts/laptop.kdl:8: unknown child `prot` ``), and an
+  unknown option reads as a sentence naming the file and the option (#130).
+- Every flag has `--help` text, written in user terms (#132).
+- The TUI's install screen, opened from the home screen, starts on the default host, and a typed
+  `name@version` points you at `knixl install name@version` (#133).
+
+### Fixed
+- The input-free system flake only evaluated with `--impure`, so `nixos-rebuild --flake` failed
+  on it (#127). **Projects using it regenerate `flake.nix`.**
+- Installer and guest-image targets were silently left out of the input-free flake (#134).
+- A mistake in `knixl.kdl` or a module file exited 1, the internal-error code; it now exits 5
+  (#131).
+- In input mode, `upgrade` accepted a second host on a different nixpkgs release, dropped the
+  flake from the lockfile and exited 0. It now refuses (#135).
+- `generate` exited 6 instead of 3 when a hand-edited file and an orphaned one occurred together
+  (#135).
+
 ## [1.8.0] - 2026-11-23
 
 A `firewall` node, `set-flag` for tailscale, and a template list form that drops when empty.
@@ -349,7 +392,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/1stvamp/knixl/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/1stvamp/knixl/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/1stvamp/knixl/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/1stvamp/knixl/compare/v1.5.2...v1.6.0
