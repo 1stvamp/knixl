@@ -44,6 +44,21 @@ pub enum NixError {
     Failed(String),
 }
 
+impl NixError {
+    /// A failed run, described by nix's stderr (or stdout when stderr is empty) and its exit
+    /// status, so a failure that prints nothing still says how it ended.
+    pub fn failed(out: &std::process::Output) -> Self {
+        let text = [&out.stderr, &out.stdout]
+            .into_iter()
+            .map(|b| String::from_utf8_lossy(b).trim().to_string())
+            .find(|t| !t.is_empty());
+        NixError::Failed(match text {
+            Some(t) => format!("{t} ({})", out.status),
+            None => format!("no output ({})", out.status),
+        })
+    }
+}
+
 /// A handle to the nix binaries. `KNIXL_NIX` overrides the eval binary and
 /// `KNIXL_NIX_BUILD` the build binary (shims in tests).
 #[derive(Debug, Clone)]
@@ -85,9 +100,7 @@ impl NixEval {
         let expr = format!("builtins.hasAttr \"{name}\" ({})", src.expr(false));
         let out = self.run(&["--eval", "-E", &expr])?;
         if !out.status.success() {
-            return Err(NixError::Failed(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ));
+            return Err(NixError::failed(&out));
         }
         Ok(String::from_utf8_lossy(&out.stdout).trim() == "true")
     }
@@ -98,9 +111,7 @@ impl NixEval {
         if out.status.success() {
             Ok(())
         } else {
-            Err(NixError::Failed(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ))
+            Err(NixError::failed(&out))
         }
     }
 
@@ -123,9 +134,7 @@ impl NixEval {
         if out.status.success() {
             Ok(())
         } else {
-            Err(NixError::Failed(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ))
+            Err(NixError::failed(&out))
         }
     }
 
@@ -147,9 +156,7 @@ impl NixEval {
         if out.status.success() {
             Ok(())
         } else {
-            Err(NixError::Failed(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ))
+            Err(NixError::failed(&out))
         }
     }
 }
@@ -312,5 +319,14 @@ mod tests {
             e.builds_expr("1 + 1"),
             Err(NixError::Unavailable(_))
         ));
+    }
+
+    #[test]
+    fn a_silent_failure_still_reports_its_exit_status() {
+        let out = std::process::Command::new("false").output().unwrap();
+        let NixError::Failed(m) = NixError::failed(&out) else {
+            panic!("expected Failed");
+        };
+        assert!(m.starts_with("no output (exit status: 1"), "{m}");
     }
 }

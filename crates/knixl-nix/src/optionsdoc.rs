@@ -84,9 +84,7 @@ pub fn build_options_json(
         }
     })?;
     if !out.status.success() {
-        return Err(NixError::Failed(
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ));
+        return Err(NixError::failed(&out));
     }
     let store_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let json_path = Path::new(&store_path).join("share/doc/nixos/options.json");
