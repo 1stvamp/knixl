@@ -8,6 +8,17 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-11-24
+
+A nix failure that prints nothing now still says how it ended.
+
+### Fixed
+- When nix exited non-zero with an empty stderr, the error read "building the oracle option set
+  failed: " with nothing after it. Nix failures now include stdout when stderr is empty, and
+  always the exit status (#145).
+- The guide says to use `nixpkgs#vulnix^out` for `KNIXL_VULNIX`, since `--print-out-paths` on
+  `nixpkgs#vulnix` also prints the man page path.
+
 ## [1.11.0] - 2026-11-24
 
 Reports of available updates, with the CVEs they fix, and ways to take only part of a refresh.
@@ -419,7 +430,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.11.1...HEAD
+[1.11.1]: https://github.com/1stvamp/knixl/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/1stvamp/knixl/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/1stvamp/knixl/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/1stvamp/knixl/compare/v1.8.0...v1.9.0
