@@ -25,9 +25,14 @@ const routes = new Map();
 
 function docPages() {
 	const pages = [];
+	// A letter after the number (`01a-`) slots a page between two numbered ones without
+	// renumbering the rest; the URL is the name after the prefix either way.
 	for (const name of readdirSync(join(REPO, 'docs/guide')).sort()) {
-		const m = name.match(/^(\d\d)-(.+)\.md$/);
-		if (m) pages.push({ src: `docs/guide/${name}`, out: `guide/${m[2]}.md`, route: `/guide/${m[2]}/`, order: Number(m[1]) });
+		const m = name.match(/^(\d\d)([a-z]?)-(.+)\.md$/);
+		if (m) {
+			const order = Number(m[1]) * 10 + (m[2] ? m[2].charCodeAt(0) - 96 : 0);
+			pages.push({ src: `docs/guide/${name}`, out: `guide/${m[3]}.md`, route: `/guide/${m[3]}/`, order });
+		}
 	}
 	// The design specs, written for contributors; the user guide above is what users read.
 	for (const name of readdirSync(join(REPO, 'docs')).sort()) {

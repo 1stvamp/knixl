@@ -32,7 +32,7 @@ A few things come with that:
 
 ## What it isn't
 
-knixl doesn't replace Nix or the NixOS module system. It writes NixOS modules, and Nix builds them. It also only works in one direction: if you edit the generated Nix, knixl can't turn that back into KDL. Changes go in the KDL, or in a hand-written module that sits beside the generated one (see [When knixl doesn't cover it](09-escape-hatches.md)).
+knixl doesn't replace Nix or the NixOS module system. It writes NixOS modules, and Nix builds them. It also only works in one direction: if you edit the generated Nix, knixl can't turn that back into KDL. Changes go in the KDL, or in a hand-written module that sits beside the generated one (see [When knixl doesn't cover it](09-escape-hatches.md)). [Why not just write Nix?](01a-why-not-just-nix.md) covers when plain Nix is the better choice, and [knixl and the alternatives](01b-alternatives.md) how it compares with nearby tools.
 
 It doesn't try to model all of NixOS either. The built-in modules cover the common ground (users, SSH, the firewall, disks, ZFS, Tailscale, nginx, Incus, packages and so on), and for everything else you can drop in raw Nix, import a module you wrote by hand, or write a small knixl module of your own.
 
@@ -45,4 +45,4 @@ It doesn't try to model all of NixOS either. The built-in modules cover the comm
 
 ## Where to go next
 
-If you're new, start with [Installing](02-installing.md) and then [Your first host](03-first-host.md), which builds a small project from an empty directory. If you already have a working project, [Day to day](05-day-to-day.md) covers the everyday commands and what to do when `check` fails, and [Reference](13-reference.md) lists every command, flag and setting.
+If you're weighing knixl up, read [Why not just write Nix?](01a-why-not-just-nix.md) and [knixl and the alternatives](01b-alternatives.md). If you're new, start with [Installing](02-installing.md) and then [Your first host](03-first-host.md), which builds a small project from an empty directory. If you already have a working project, [Day to day](05-day-to-day.md) covers the everyday commands and what to do when `check` fails, and [Reference](13-reference.md) lists every command, flag and setting.
