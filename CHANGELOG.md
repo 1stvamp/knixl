@@ -8,6 +8,22 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.11.2] - 2026-11-24
+
+A fix for `knixl updates` in CI, and a restructure of the code behind it.
+
+### Fixed
+- `knixl updates` failed with "building the oracle option set failed: no output (exit
+  status: 1)" whenever the refreshed nixpkgs had no cached option set, which is every run in
+  CI. Its refresh ran with the option set build switched off by a stand-in `nix-build` that
+  always failed; it now builds the option set (#147).
+
+### Changed
+- Internal restructure, with no change in behaviour: a `Lowerer` walks the module tree, so
+  modules no longer see the registry (ADR 0011 amended); the emitter decides an expression's
+  brackets by position; the CLI, the declarative module loader and the integration tests are
+  split into smaller files by responsibility (#147).
+
 ## [1.11.1] - 2026-11-24
 
 A nix failure that prints nothing now still says how it ended.
@@ -430,7 +446,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.11.1...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.11.2...HEAD
+[1.11.2]: https://github.com/1stvamp/knixl/compare/v1.11.1...v1.11.2
 [1.11.1]: https://github.com/1stvamp/knixl/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/1stvamp/knixl/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/1stvamp/knixl/compare/v1.9.0...v1.10.0
