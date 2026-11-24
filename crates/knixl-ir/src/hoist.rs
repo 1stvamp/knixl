@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::emit::{Emit, Writer};
+use crate::emit::{emit_expr, Writer};
 use crate::expr::{Binding, NixExpr};
 use crate::module::Assignment;
 
@@ -42,7 +42,7 @@ pub fn hoist(body: &mut [Assignment]) -> Vec<Binding> {
 /// Emitted-text key for a subexpression: equality is defined by what lands in the file.
 fn emit_key(expr: &NixExpr) -> String {
     let mut w = Writer::new();
-    expr.emit(&mut w);
+    emit_expr(&mut w, expr);
     w.into_string()
 }
 

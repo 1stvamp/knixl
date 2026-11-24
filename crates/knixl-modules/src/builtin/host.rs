@@ -1,7 +1,7 @@
 //! `host`: the container module. Consumes its own scalar fields, delegates the rest.
 use crate::{
-    Bucket, Child, Field, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, Unit,
-    ValueTy,
+    Bucket, Child, Delegate, Field, LowerCtx, LowerError, LowerOutput, Module, ModuleId,
+    NodeSchema, Unit, ValueTy,
 };
 use kdl::KdlNode;
 use knixl_ir::{Assignment, AttrKey, AttrPath, NixExpr};
@@ -35,10 +35,8 @@ impl Module for Host {
     fn schema(&self) -> &NodeSchema {
         &self.schema
     }
-    fn lower(&self, node: &KdlNode, ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError> {
+    fn lower(&self, node: &KdlNode, _ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError> {
         let mut units = Vec::new();
-        let mut raw = Vec::new();
-        let mut imports = Vec::new();
         if let Some(sys) = child_arg_str(node, "system") {
             units.push(unit_default(assign(
                 &["nixpkgs", "hostPlatform"],
@@ -54,20 +52,15 @@ impl Module for Host {
                 NixExpr::Str(name),
             )));
         }
-        // delegate everything except the fields host consumes itself. `nixpkgs` and
-        // `oracle-modules` are metadata (the declared baseline release and this host's own
-        // out-of-tree oracle module override, ADR 0008, both read by the pipeline's gather
-        // scan); neither contributes a `Unit` and must not be dispatched or linted.
-        for out in ctx.lower_children(node, &["system", "hostname", "nixpkgs", "oracle-modules"])? {
-            units.extend(out.units);
-            raw.extend(out.raw);
-            imports.extend(out.imports);
-        }
-        Ok(LowerOutput {
-            units,
-            raw,
-            imports,
-        })
+        Ok(LowerOutput::units(units))
+    }
+
+    /// Every child host doesn't declare is a module. Of the declared ones, `nixpkgs` and
+    /// `oracle-modules` are metadata (the declared baseline release and this host's own
+    /// out-of-tree oracle module override, ADR 0008, both read by the pipeline's gather scan)
+    /// and contribute nothing.
+    fn delegates(&self) -> Option<Delegate> {
+        Some(Delegate::Undeclared)
     }
 }
 
@@ -206,8 +199,8 @@ mod tests {
         // It emits nothing extra: only the two host-owned assignments (hostPlatform, hostName).
         let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
-        let out = h.lower(&n, &mut ctx).unwrap();
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &mut diags, vec![]);
+        let out = crate::Lowerer::new(&reg).lower(&h, &n, &mut ctx).unwrap();
         assert_eq!(out.units.len(), 2, "default emits nothing extra");
     }
 
@@ -217,9 +210,11 @@ mod tests {
         let n = node("host \"web\" {\n    system \"x86_64-linux\"\n}");
         let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &mut diags, vec![]);
 
-        let out = host.lower(&n, &mut ctx).unwrap();
+        let out = crate::Lowerer::new(&reg)
+            .lower(&host, &n, &mut ctx)
+            .unwrap();
         assert!(matches!(
             value_at(&out, &["nixpkgs", "hostPlatform"]),
             Some(NixExpr::Str(s)) if s == "x86_64-linux"
@@ -233,8 +228,10 @@ mod tests {
         let mut diags = Vec::new();
 
         let bare = node("host \"nas\" {\n    system \"x86_64-linux\"\n}");
-        let mut ctx = LowerCtx::new(Scope { host: "nas".into() }, &reg, &mut diags, vec![]);
-        let out = host.lower(&bare, &mut ctx).unwrap();
+        let mut ctx = LowerCtx::new(Scope { host: "nas".into() }, &mut diags, vec![]);
+        let out = crate::Lowerer::new(&reg)
+            .lower(&host, &bare, &mut ctx)
+            .unwrap();
         assert!(matches!(
             value_at(&out, &["networking", "hostName"]),
             Some(NixExpr::Str(s)) if s == "nas"
@@ -242,8 +239,10 @@ mod tests {
 
         let overridden =
             node("host \"nas\" {\n    system \"x86_64-linux\"\n    hostname \"nas-prod\"\n}");
-        let mut ctx2 = LowerCtx::new(Scope { host: "nas".into() }, &reg, &mut diags, vec![]);
-        let out2 = host.lower(&overridden, &mut ctx2).unwrap();
+        let mut ctx2 = LowerCtx::new(Scope { host: "nas".into() }, &mut diags, vec![]);
+        let out2 = crate::Lowerer::new(&reg)
+            .lower(&host, &overridden, &mut ctx2)
+            .unwrap();
         assert!(matches!(
             value_at(&out2, &["networking", "hostName"]),
             Some(NixExpr::Str(s)) if s == "nas-prod"
@@ -264,8 +263,10 @@ mod tests {
 
         let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
-        let out = host.lower(&n, &mut ctx).unwrap();
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &mut diags, vec![]);
+        let out = crate::Lowerer::new(&reg)
+            .lower(&host, &n, &mut ctx)
+            .unwrap();
 
         assert!(
             diags.iter().all(|d| !d.message.contains("nixpkgs")),

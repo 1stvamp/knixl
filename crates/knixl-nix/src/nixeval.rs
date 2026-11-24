@@ -63,8 +63,8 @@ impl NixError {
 /// `KNIXL_NIX_BUILD` the build binary (shims in tests).
 #[derive(Debug, Clone)]
 pub struct NixEval {
-    pub bin: PathBuf,
-    pub build_bin: PathBuf,
+    bin: PathBuf,
+    build_bin: PathBuf,
 }
 
 impl NixEval {
@@ -81,18 +81,24 @@ impl NixEval {
     }
 
     fn run(&self, args: &[&str]) -> Result<std::process::Output, NixError> {
-        crate::output_retrying_etxtbsy(|| {
-            let mut c = Command::new(&self.bin);
-            c.args(args);
-            c
-        })
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                NixError::Unavailable(format!("{} not found", self.bin.display()))
-            } else {
-                NixError::Unavailable(e.to_string())
-            }
-        })
+        spawn(&self.bin, args)
+    }
+
+    fn run_build(&self, args: &[&str]) -> Result<std::process::Output, NixError> {
+        let out = spawn(&self.build_bin, args)?;
+        if out.status.success() {
+            Ok(out)
+        } else {
+            Err(NixError::failed(&out))
+        }
+    }
+
+    /// Probed with `--version`, so detecting absence never touches the network.
+    pub fn build_available(&self) -> bool {
+        Command::new(&self.build_bin)
+            .arg("--version")
+            .output()
+            .is_ok()
     }
 
     /// True if `pkgs.<name>` exists in the given nixpkgs.
@@ -119,46 +125,41 @@ impl NixEval {
     /// `--no-out-link` avoids leaving a `result` symlink.
     pub fn builds(&self, src: &Nixpkgs, name: &str, allow_unfree: bool) -> Result<(), NixError> {
         let expr = src.expr(allow_unfree);
-        let out = crate::output_retrying_etxtbsy(|| {
-            let mut c = Command::new(&self.build_bin);
-            c.args(["--no-out-link", "-A", name, "-E", &expr]);
-            c
-        })
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                NixError::Unavailable(format!("{} not found", self.build_bin.display()))
-            } else {
-                NixError::Unavailable(e.to_string())
-            }
-        })?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(NixError::failed(&out))
-        }
+        self.run_build(&["--no-out-link", "-A", name, "-E", &expr])
+            .map(drop)
     }
 
     /// Build a raw expression, proving it evaluates and its derivation builds. Used at pin time
     /// to feasibility-test a candidate emit strategy. `--no-out-link` avoids a `result` symlink.
     pub fn builds_expr(&self, expr: &str) -> Result<(), NixError> {
-        let out = crate::output_retrying_etxtbsy(|| {
-            let mut c = Command::new(&self.build_bin);
-            c.args(["--no-out-link", "-E", expr]);
-            c
-        })
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                NixError::Unavailable(format!("{} not found", self.build_bin.display()))
-            } else {
-                NixError::Unavailable(e.to_string())
-            }
-        })?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(NixError::failed(&out))
-        }
+        self.run_build(&["--no-out-link", "-E", expr]).map(drop)
     }
+
+    pub fn build_out_path(&self, expr: &str) -> Result<String, NixError> {
+        let out = self.run_build(&[
+            "--no-out-link",
+            "--extra-experimental-features",
+            "nix-command flakes",
+            "-E",
+            expr,
+        ])?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+}
+
+fn spawn(bin: &Path, args: &[&str]) -> Result<std::process::Output, NixError> {
+    crate::output_retrying_etxtbsy(|| {
+        let mut c = Command::new(bin);
+        c.args(args);
+        c
+    })
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            NixError::Unavailable(format!("{} not found", bin.display()))
+        } else {
+            NixError::Unavailable(e.to_string())
+        }
+    })
 }
 
 #[cfg(test)]

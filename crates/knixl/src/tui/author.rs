@@ -8,7 +8,7 @@ use bubbletea_widgets::{textarea, textinput, Component};
 use crossterm::event::{KeyCode, KeyModifiers};
 use lipgloss::{join_vertical, rounded_border, Style, LEFT};
 
-use knixl_modules::template::{
+use knixl_modules::authoring::{
     load_editable, reconcile, render_manifest, validate_manifest, EntryKind, FieldTy, ModuleDraft,
     SchemaEntry, SubField, SubKind,
 };
@@ -973,7 +973,7 @@ mod tests {
         match step.nav {
             Nav::Scaffold { name, manifest } => {
                 assert_eq!(name, "cache");
-                knixl_modules::template::validate_manifest(&manifest)
+                knixl_modules::authoring::validate_manifest(&manifest)
                     .expect("emitted manifest valid");
             }
             _ => panic!("expected Nav::Scaffold"),
@@ -1035,7 +1035,7 @@ mod tests {
                     "version preserved: {text}"
                 );
                 assert!(text.contains("doc=\"the host\""), "doc preserved: {text}");
-                knixl_modules::template::validate_manifest(&text).expect("valid");
+                knixl_modules::authoring::validate_manifest(&text).expect("valid");
             }
             _other => panic!("expected SaveModule, got something else"),
         }

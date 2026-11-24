@@ -67,7 +67,7 @@ fn schema() -> NodeSchema {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Registry, Scope};
+    use crate::Scope;
 
     #[test]
     fn raw_nix_passes_child_source_through() {
@@ -80,9 +80,8 @@ mod tests {
             .unwrap()
             .clone();
         let m = RawNixModule::new();
-        let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &mut diags, vec![]);
 
         let out = m.lower(&node, &mut ctx).unwrap();
         assert!(out.units.is_empty());

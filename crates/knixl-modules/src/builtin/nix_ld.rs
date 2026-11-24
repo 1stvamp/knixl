@@ -102,7 +102,7 @@ fn schema() -> NodeSchema {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Registry, Scope};
+    use crate::Scope;
 
     fn node(src: &str) -> KdlNode {
         src.parse::<kdl::KdlDocument>()
@@ -115,13 +115,11 @@ mod tests {
 
     fn lower_ok(src: &str) -> Vec<Unit> {
         let m = NixLd::new();
-        let reg = Registry::new();
         let mut diags = Vec::new();
         let mut ctx = LowerCtx::new(
             Scope {
                 host: "type40".into(),
             },
-            &reg,
             &mut diags,
             vec![],
         );

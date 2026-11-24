@@ -1,6 +1,6 @@
 # ADR 0011: Guests as re-rooted nested module trees
 
-Status: accepted
+Status: accepted (amended 2026-11-24: how the nested tree is lowered)
 
 Relates to: ADR 0002 (emit source, not values), docs/03 (module system).
 
@@ -24,9 +24,10 @@ A built-in `guest "<name>"` module lowers a nested knixl module tree and
 **re-roots** its output under `containers.<name>.config`.
 
 - A `config { ... }` sub-block holds ordinary knixl module nodes (`os`, `user`,
-  `openssh`, `web-service`, ...). The guest lowers them through the same
-  `ctx.lower_children` path a host uses, so the entire module registry is reused
-  recursively: a guest is a mini-host.
+  `openssh`, `web-service`, ...). The guest declares that block as delegated
+  (`Module::delegates`), and the lowering driver (`Lowerer`) dispatches its children
+  through the registry exactly as it does a host's, so the entire module registry is
+  reused recursively: a guest is a mini-host.
 - Each assignment the nested modules produce is re-rooted by prepending
   `containers.<name>.config` to its attribute path. `web-service` inside a guest
   therefore yields `containers.<name>.config.services.nginx.enable = true;`, which
@@ -69,3 +70,13 @@ path. These can be revisited if a real need appears.
   is not caught. Documented, and consistent with the `raw-nix` trade-off.
 - Deeper nesting (a guest inside a guest) falls out of the recursion for free, but
   is untested territory in v1.
+
+## Amendment (2026-11-24): the guest no longer dispatches its own children
+
+As first built, the guest (like `host`) called `ctx.lower_children`, which reached the
+registry through `LowerCtx`. That gave every module the whole registry, and tied
+`Module`, `LowerCtx` and `Registry` into a cycle. Now a container only says which children
+it delegates, and `Lowerer`, which sits above the registry, lowers them and hands the
+outputs to the container's `adopt`. The guest's `adopt` does the re-rooting and the v1
+scope checks above. The decision is unchanged: the same registry lowers the nested tree,
+and its output is re-rooted under `containers.<name>.config`.

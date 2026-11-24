@@ -123,7 +123,7 @@ fn leaf(name: &str, doc: &str, required: bool) -> Child {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Registry, Scope};
+    use crate::Scope;
 
     fn node(src: &str) -> KdlNode {
         src.parse::<kdl::KdlDocument>()
@@ -138,9 +138,8 @@ mod tests {
     fn backups_emits_a_named_side_file_gated_by_when() {
         let b = Backups::new();
         let n = node("backups {\n    repo \"s3:https://s3.example.com/backups/db\"\n    schedule \"daily\"\n    when \"config.services.postgresql.enable\"\n}");
-        let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &mut diags, vec![]);
 
         let out = b.lower(&n, &mut ctx).unwrap();
         assert_eq!(out.units.len(), 1);
@@ -167,9 +166,8 @@ mod tests {
     fn backups_condition_is_absent_without_when() {
         let b = Backups::new();
         let n = node("backups {\n    repo \"r\"\n}");
-        let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &mut diags, vec![]);
         let out = b.lower(&n, &mut ctx).unwrap();
         assert!(out.units[0].assignment.condition.is_none());
     }

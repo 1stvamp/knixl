@@ -53,92 +53,112 @@ pub trait Emit {
     fn emit(&self, w: &mut Writer);
 }
 
-impl Emit for NixExpr {
-    fn emit(&self, w: &mut Writer) {
-        match self {
-            NixExpr::Bool(b) => w.push(if *b { "true" } else { "false" }),
-            NixExpr::Int(n) => {
-                let _ = write!(w.buf, "{n}");
-            }
-            NixExpr::Float(f) => w.push(&fmt_nix_float(*f)), // canonical, always a '.'
-            NixExpr::Null => w.push("null"),
-            NixExpr::Str(s) => {
-                w.push("\"");
-                w.push(&escape_nix_str(s));
-                w.push("\"");
-            }
-            NixExpr::IndentStr(s) => emit_indent_str(w, s), // '' ... '' with ''${ escaping
-            NixExpr::Ref(id) => w.push(id),
-            NixExpr::Path(p) => w.push(&p.display().to_string()),
-            NixExpr::Select(base, path) => {
-                // `(f x).y` and `(let .. in ..).y` need the base parenthesised; `pkgs.x`
-                // and `{ .. }.x` stand alone.
-                emit_atom(w, base);
-                for seg in path {
-                    w.push(".");
-                    w.push(seg);
-                }
-            }
-            NixExpr::List(items) if items.is_empty() => w.push("[ ]"),
-            NixExpr::List(items) => {
-                w.push("[");
-                w.nl();
-                w.open();
-                // List elements are whitespace-separated atoms, so a bare application or
-                // binding form must be parenthesised or it splits into several elements.
-                for it in items {
-                    emit_atom(w, it);
-                    w.nl();
-                }
-                w.close();
-                w.push("]");
-            }
-            NixExpr::AttrSet(map) => {
-                w.push("{");
-                w.nl();
-                w.open();
-                for (k, v) in map {
-                    // BTreeMap: sorted, deterministic
-                    emit_key(w, k);
-                    w.push(" = ");
-                    v.emit(w);
-                    w.push(";");
-                    w.nl();
-                }
-                w.close();
-                w.push("}");
-            }
-            NixExpr::Apply(f, args) => {
-                // A lambda or let in function position needs wrapping (`(x: b) y`); a bare
-                // ref/select/apply function is fine, so emit_atom leaves those alone.
-                emit_atom(w, f);
-                for a in args {
-                    w.push(" ");
-                    emit_arg(w, a);
-                }
-            }
-            NixExpr::Lambda { formals, body } => {
-                emit_formals(w, formals);
-                w.push(": ");
-                body.emit(w);
-            }
-            NixExpr::Let { bindings, body } => {
-                w.push("let");
-                w.nl();
-                w.open();
-                for b in bindings {
-                    w.push(&b.name);
-                    w.push(" = ");
-                    b.value.emit(w);
-                    w.push(";");
-                    w.nl();
-                }
-                w.close();
-                w.push("in ");
-                body.emit(w);
-            }
-            NixExpr::Raw(raw) => emit_raw(w, raw), // already validated; verbatim
+/// Where an expression sits, which decides whether it needs brackets.
+#[derive(Clone, Copy)]
+enum Position {
+    /// Stands on its own: a binding's value, a lambda or `let` body.
+    Top,
+    /// A list element, a select base, or a function position.
+    Atom,
+    /// A function argument.
+    Arg,
+}
+
+/// Brackets depend on where an expression sits, so the parent decides them.
+pub fn emit_expr(w: &mut Writer, e: &NixExpr) {
+    emit_at(w, e, Position::Top);
+}
+
+fn emit_at(w: &mut Writer, e: &NixExpr, pos: Position) {
+    if needs_parens(e, pos) {
+        w.push("(");
+        emit_at(w, e, Position::Top);
+        w.push(")");
+        return;
+    }
+    match e {
+        NixExpr::Bool(b) => w.push(if *b { "true" } else { "false" }),
+        NixExpr::Int(n) => {
+            let _ = write!(w.buf, "{n}");
         }
+        NixExpr::Float(f) => w.push(&fmt_nix_float(*f)), // canonical, always a '.'
+        NixExpr::Null => w.push("null"),
+        NixExpr::Str(s) => {
+            w.push("\"");
+            w.push(&escape_nix_str(s));
+            w.push("\"");
+        }
+        NixExpr::IndentStr(s) => emit_indent_str(w, s), // '' ... '' with ''${ escaping
+        NixExpr::Ref(id) => w.push(id),
+        NixExpr::Path(p) => w.push(&p.display().to_string()),
+        NixExpr::Select(base, path) => {
+            // `(f x).y` and `(let .. in ..).y` need the base parenthesised; `pkgs.x`
+            // and `{ .. }.x` stand alone.
+            emit_at(w, base, Position::Atom);
+            for seg in path {
+                w.push(".");
+                w.push(seg);
+            }
+        }
+        NixExpr::List(items) if items.is_empty() => w.push("[ ]"),
+        NixExpr::List(items) => {
+            w.push("[");
+            w.nl();
+            w.open();
+            // List elements are whitespace-separated atoms, so a bare application or
+            // binding form must be parenthesised or it splits into several elements.
+            for it in items {
+                emit_at(w, it, Position::Atom);
+                w.nl();
+            }
+            w.close();
+            w.push("]");
+        }
+        NixExpr::AttrSet(map) => {
+            w.push("{");
+            w.nl();
+            w.open();
+            for (k, v) in map {
+                // BTreeMap: sorted, deterministic
+                emit_key(w, k);
+                w.push(" = ");
+                emit_expr(w, v);
+                w.push(";");
+                w.nl();
+            }
+            w.close();
+            w.push("}");
+        }
+        NixExpr::Apply(f, args) => {
+            // A lambda or let in function position needs wrapping (`(x: b) y`); a bare
+            // ref/select/apply function is fine, so the Atom position leaves those alone.
+            emit_at(w, f, Position::Atom);
+            for a in args {
+                w.push(" ");
+                emit_at(w, a, Position::Arg);
+            }
+        }
+        NixExpr::Lambda { formals, body } => {
+            emit_formals(w, formals);
+            w.push(": ");
+            emit_expr(w, body);
+        }
+        NixExpr::Let { bindings, body } => {
+            w.push("let");
+            w.nl();
+            w.open();
+            for b in bindings {
+                w.push(&b.name);
+                w.push(" = ");
+                emit_expr(w, &b.value);
+                w.push(";");
+                w.nl();
+            }
+            w.close();
+            w.push("in ");
+            emit_expr(w, body);
+        }
+        NixExpr::Raw(raw) => emit_raw(w, raw), // already validated; verbatim
     }
 }
 
@@ -155,7 +175,7 @@ impl Emit for Assignment {
         let mut close = 0;
         if let Some(cond) = &self.condition {
             w.push("lib.mkIf (");
-            cond.emit(w);
+            emit_expr(w, cond);
             w.push(") ");
         }
         match &self.priority {
@@ -173,7 +193,7 @@ impl Emit for Assignment {
             }
             None => {}
         }
-        self.value.emit(w);
+        emit_expr(w, &self.value);
         for _ in 0..close {
             w.push(")");
         }
@@ -196,7 +216,7 @@ impl Emit for NixModule {
             for b in &self.lets {
                 w.push(&b.name);
                 w.push(" = ");
-                b.value.emit(w);
+                emit_expr(w, &b.value);
                 w.push(";");
                 w.nl();
             }
@@ -211,7 +231,7 @@ impl Emit for NixModule {
             w.nl();
             w.open();
             for i in &self.imports {
-                emit_atom(w, i);
+                emit_at(w, i, Position::Atom);
                 w.nl();
             }
             w.close();
@@ -358,41 +378,29 @@ fn emit_raw(w: &mut Writer, r: &RawNix) {
     }
 }
 
-/// Emit `e` where a single atom is required (a list element, a select base, or a function
-/// position). Function application and binding forms (`f x`, `let .. in ..`, lambdas) are not
-/// atoms, so they are parenthesised; everything else (refs, selects, literals, attrsets,
-/// lists) already stands alone. Without this, `[ import (fetchGit ..) ({..}).x ]` splits into
-/// separate list elements and `(import ..).x` loses its parens.
-fn emit_atom(w: &mut Writer, e: &NixExpr) {
-    let needs_parens = match e {
-        NixExpr::Apply(..) | NixExpr::Lambda { .. } | NixExpr::Let { .. } => true,
-        // Raw is opaque text, so its shape has to be read from the source itself (#81).
-        NixExpr::Raw(r) => !raw_is_atom(&r.src),
-        _ => false,
-    };
-    if needs_parens {
-        w.push("(");
-        e.emit(w);
-        w.push(")");
-    } else {
-        e.emit(w);
-    }
-}
-
-/// Emit a function argument: an atom stands alone (`f { .. }`, `f x.y`), except a negative
-/// number, since `f -1` parses as subtraction.
-fn emit_arg(w: &mut Writer, e: &NixExpr) {
-    let negative = match e {
-        NixExpr::Int(n) => *n < 0,
-        NixExpr::Float(x) => x.is_sign_negative(),
-        _ => false,
-    };
-    if negative {
-        w.push("(");
-        e.emit(w);
-        w.push(")");
-    } else {
-        emit_atom(w, e);
+/// Function application and binding forms (`f x`, `let .. in ..`, lambdas) are not atoms, so
+/// in atom position (a list element, a select base, a function position) they are bracketed;
+/// refs, selects, literals, attrsets and lists already stand alone. Without this,
+/// `[ import (fetchGit ..) ({..}).x ]` splits into separate list elements and `(import ..).x`
+/// loses its brackets. A function argument is an atom too, and a negative number also needs
+/// them there, since `f -1` parses as subtraction.
+fn needs_parens(e: &NixExpr, pos: Position) -> bool {
+    match pos {
+        Position::Top => false,
+        Position::Atom => match e {
+            NixExpr::Apply(..) | NixExpr::Lambda { .. } | NixExpr::Let { .. } => true,
+            // Raw is opaque text, so its shape has to be read from the source itself (#81).
+            NixExpr::Raw(r) => !raw_is_atom(&r.src),
+            _ => false,
+        },
+        Position::Arg => {
+            let negative = match e {
+                NixExpr::Int(n) => *n < 0,
+                NixExpr::Float(x) => x.is_sign_negative(),
+                _ => false,
+            };
+            negative || needs_parens(e, Position::Atom)
+        }
     }
 }
 
@@ -685,7 +693,7 @@ mod tests {
         m.insert(AttrKey::Ident("b".into()), NixExpr::Int(2));
         m.insert(AttrKey::Ident("a".into()), NixExpr::Int(1));
         assert_eq!(
-            capture(|w| NixExpr::AttrSet(m).emit(w)),
+            capture(|w| emit_expr(w, &NixExpr::AttrSet(m))),
             "{\n  a = 1;\n  b = 2;\n}"
         );
     }
@@ -693,7 +701,7 @@ mod tests {
     #[test]
     fn string_expr_is_quoted_and_escaped() {
         assert_eq!(
-            capture(|w| NixExpr::Str(r#"a"b"#.into()).emit(w)),
+            capture(|w| emit_expr(w, &NixExpr::Str(r#"a"b"#.into()))),
             r#""a\"b""#
         );
     }
@@ -719,8 +727,8 @@ mod tests {
             reverse.insert(k, v);
         }
         assert_eq!(
-            capture(|w| NixExpr::AttrSet(forward).emit(w)),
-            capture(|w| NixExpr::AttrSet(reverse).emit(w)),
+            capture(|w| emit_expr(w, &NixExpr::AttrSet(forward))),
+            capture(|w| emit_expr(w, &NixExpr::AttrSet(reverse))),
         );
     }
 
@@ -746,7 +754,10 @@ mod tests {
             NixExpr::Str("x".into()),
             NixExpr::Bool(true),
         ]);
-        assert_eq!(capture(|w| expr.emit(w)), capture(|w| expr.emit(w)));
+        assert_eq!(
+            capture(|w| emit_expr(w, &expr)),
+            capture(|w| emit_expr(w, &expr))
+        );
     }
 
     // ---- atom parenthesisation (list elements and select bases) ----
@@ -760,9 +771,9 @@ mod tests {
             vec![NixExpr::Ref("x".into())],
         )]);
         assert!(
-            capture(|w| expr.emit(w)).contains("(f x)"),
+            capture(|w| emit_expr(w, &expr)).contains("(f x)"),
             "application list element must be parenthesised: {}",
-            capture(|w| expr.emit(w))
+            capture(|w| emit_expr(w, &expr))
         );
     }
 
@@ -777,7 +788,7 @@ mod tests {
             )),
             vec!["y".into()],
         );
-        assert_eq!(capture(|w| expr.emit(w)), "(f x).y");
+        assert_eq!(capture(|w| emit_expr(w, &expr)), "(f x).y");
     }
 
     #[test]
@@ -786,7 +797,7 @@ mod tests {
             Box::new(NixExpr::Ref("pkgs".into())),
             vec!["ripgrep".into()],
         );
-        assert_eq!(capture(|w| expr.emit(w)), "pkgs.ripgrep");
+        assert_eq!(capture(|w| emit_expr(w, &expr)), "pkgs.ripgrep");
     }
 
     #[test]
@@ -802,14 +813,15 @@ mod tests {
             }),
             vec![NixExpr::Int(5)],
         );
-        assert_eq!(capture(|w| expr.emit(w)), "({ x }: x) 5");
+        assert_eq!(capture(|w| emit_expr(w, &expr)), "({ x }: x) 5");
     }
 
     #[test]
     fn arguments_are_bracketed_only_when_they_are_not_atoms() {
         // #109: every argument was wrapped, giving `fetchGit ({ .. })`.
-        let f =
-            |args| capture(|w| NixExpr::Apply(Box::new(NixExpr::Ref("f".into())), args).emit(w));
+        let f = |args| {
+            capture(|w| emit_expr(w, &NixExpr::Apply(Box::new(NixExpr::Ref("f".into())), args)))
+        };
         assert_eq!(
             f(vec![NixExpr::AttrSet(Default::default())]).replace('\n', ""),
             "f {}"
@@ -828,7 +840,7 @@ mod tests {
 
     #[test]
     fn an_empty_list_stays_on_one_line() {
-        assert_eq!(capture(|w| NixExpr::List(vec![]).emit(w)), "[ ]");
+        assert_eq!(capture(|w| emit_expr(w, &NixExpr::List(vec![]))), "[ ]");
     }
 
     // ---- raw in atom position ----
@@ -838,7 +850,7 @@ mod tests {
             src: src.into(),
             span: None,
         })]);
-        capture(|w| expr.emit(w))
+        capture(|w| emit_expr(w, &expr))
     }
 
     #[test]

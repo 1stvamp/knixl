@@ -64,29 +64,7 @@ pub fn build_options_json(
     nixpkgs_rev: &str,
     modules: &[(String, String, String)],
 ) -> Result<String, NixError> {
-    let expr = options_doc_expr(nixpkgs_rev, modules);
-    let out = crate::output_retrying_etxtbsy(|| {
-        let mut c = std::process::Command::new(&eval.build_bin);
-        c.args([
-            "--no-out-link",
-            "--extra-experimental-features",
-            "nix-command flakes",
-            "-E",
-            &expr,
-        ]);
-        c
-    })
-    .map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            NixError::Unavailable(format!("{} not found", eval.build_bin.display()))
-        } else {
-            NixError::Unavailable(e.to_string())
-        }
-    })?;
-    if !out.status.success() {
-        return Err(NixError::failed(&out));
-    }
-    let store_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let store_path = eval.build_out_path(&options_doc_expr(nixpkgs_rev, modules))?;
     let json_path = Path::new(&store_path).join("share/doc/nixos/options.json");
     std::fs::read_to_string(&json_path)
         .map_err(|e| NixError::Failed(format!("reading {}: {e}", json_path.display())))
@@ -142,16 +120,6 @@ mod tests {
         assert_eq!(nix_string_escape("a${b}"), r"a\${b}");
     }
 
-    /// True if a nix build binary is actually usable in this environment, so the
-    /// integration test below can skip cleanly (rather than fail CI) when nix is absent.
-    fn nix_build_available(eval: &NixEval) -> bool {
-        std::process::Command::new(&eval.build_bin)
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
-
     /// nix-gated: builds the real base (no-modules) options.json against a small pinned
     /// nixpkgs rev and checks the result is valid, non-empty options.json (parseable the
     /// same way `knixl_oracle::Oracle::from_options_json` parses it: a JSON object keyed by
@@ -160,7 +128,7 @@ mod tests {
     #[test]
     fn builds_real_base_options_json_against_a_pinned_nixpkgs_rev() {
         let eval = NixEval::resolve();
-        if !nix_build_available(&eval) {
+        if !eval.build_available() {
             eprintln!("skipping: nix build binary not available");
             return;
         }
@@ -194,7 +162,7 @@ mod tests {
     #[test]
     fn builds_options_json_with_one_real_module_pin() {
         let eval = NixEval::resolve();
-        if !nix_build_available(&eval) {
+        if !eval.build_available() {
             eprintln!("skipping: nix build binary not available");
             return;
         }

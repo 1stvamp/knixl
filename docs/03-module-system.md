@@ -4,7 +4,7 @@
 
 Make a hand-written Rust module and a runtime-loaded KDL module indistinguishable to the generator. The declarative loader is itself one `Module` impl that interprets KDL, so everything downstream (validation, dispatch, the lock, doc generation) sees only the trait.
 
-See `crates/knixl-modules/src/lib.rs` for the trait, `registry.rs` for dispatch, `builtin/` for Rust modules, and `template.rs` for the declarative interpreter.
+See `crates/knixl-modules/src/lib.rs` for the trait, `registry.rs` for lookup, `lower.rs` for dispatch, `builtin/` for Rust modules, and `template.rs` for the declarative interpreter.
 
 ## The trait
 
@@ -43,7 +43,7 @@ fails `UnknownOption`, exactly as a typo would.
 
 ## Composition lives in the container, not the leaf
 
-`host` consumes its own scalar fields and delegates the rest via `ctx.lower_children(node, &["system"])`, which dispatches each un-consumed child to its registered module and collects the outputs. Leaf modules (`postgres`, `web-service`) read their own subtree directly. Only container modules call `lower_children`.
+`host` reads the children its schema declares (`system`, `hostname`, ...) and delegates the rest: its `delegates()` returns `Delegate::Undeclared`, so the `Lowerer` dispatches every other child to its registered module and passes the outputs to `host`'s `adopt`, which appends them. A guest delegates its `config { }` block instead (`Delegate::Block("config")`) and its `adopt` re-roots the outputs (ADR 0011). Leaf modules (`postgres`, `web-service`) read their own subtree directly and never see the registry.
 
 ## Buckets and multi-file output
 

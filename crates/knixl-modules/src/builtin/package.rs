@@ -262,8 +262,7 @@ fn override_pkg(rev: &str, name: &str) -> NixExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Registry, Scope};
-    use knixl_ir::Emit;
+    use crate::Scope;
 
     fn node(src: &str) -> KdlNode {
         src.parse::<kdl::KdlDocument>()
@@ -278,9 +277,8 @@ mod tests {
     fn package_lowers_to_a_systempackages_list_entry() {
         let m = PackageModule::new();
         let n = node("package \"ripgrep\"");
-        let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &mut diags, vec![]);
 
         let out = m.lower(&n, &mut ctx).unwrap();
         assert_eq!(out.units.len(), 1);
@@ -316,7 +314,6 @@ mod tests {
     fn versioned_package_lowers_to_a_pinned_import_select() {
         let m = PackageModule::new();
         let n = node("package \"htop\" version=\"3.2.1\"");
-        let reg = Registry::new();
         let mut diags = Vec::new();
         let pins = vec![crate::ResolvedPin {
             package: "htop".into(),
@@ -324,7 +321,7 @@ mod tests {
             nixpkgs_rev: "abc123".into(),
             strategy: crate::PinStrategy::CommitMix,
         }];
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, pins);
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &mut diags, pins);
 
         let out = m.lower(&n, &mut ctx).unwrap();
         // The emitted text must contain the pinned fetchGit import and select the package
@@ -357,7 +354,6 @@ mod tests {
     fn render_pinned(strategy: crate::PinStrategy) -> String {
         let m = PackageModule::new();
         let n = node("package \"htop\" version=\"3.2.1\"");
-        let reg = Registry::new();
         let mut diags = Vec::new();
         let pins = vec![crate::ResolvedPin {
             package: "htop".into(),
@@ -365,11 +361,11 @@ mod tests {
             nixpkgs_rev: "abc123".into(),
             strategy,
         }];
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, pins);
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &mut diags, pins);
 
         let out = m.lower(&n, &mut ctx).unwrap();
         let mut w = knixl_ir::Writer::new();
-        out.units[0].assignment.value.emit(&mut w);
+        knixl_ir::emit::emit_expr(&mut w, &out.units[0].assignment.value);
         w.into_string()
     }
 
@@ -437,9 +433,8 @@ mod tests {
     fn versioned_package_without_a_matching_pin_is_a_lower_error() {
         let m = PackageModule::new();
         let n = node("package \"htop\" version=\"3.2.1\"");
-        let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &mut diags, vec![]);
         assert!(
             m.lower(&n, &mut ctx).is_err(),
             "declared version with no lock pin is an error"
@@ -449,13 +444,12 @@ mod tests {
     fn render_from(src: &str) -> (String, Vec<crate::Diagnostic>) {
         let m = PackageModule::new();
         let n = node(src);
-        let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &mut diags, vec![]);
         let out = m.lower(&n, &mut ctx).unwrap();
         let mut w = knixl_ir::Writer::new();
         for u in &out.units {
-            u.assignment.value.emit(&mut w);
+            knixl_ir::emit::emit_expr(&mut w, &u.assignment.value);
         }
         (w.into_string(), diags)
     }

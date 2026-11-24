@@ -2,16 +2,20 @@
 //! KDL module are indistinguishable to the generator: the declarative loader is itself
 //! one Module impl.
 
+pub mod authoring;
 pub mod builtin;
+pub mod declarative;
+pub mod lower;
 pub mod registry;
 pub mod stdlib;
-pub mod template;
+mod template;
 
 use kdl::KdlNode;
 use knixl_ir::{Assignment, RawNix};
 use miette::SourceSpan;
 use semver::Version;
 
+pub use lower::Lowerer;
 pub use registry::{Registry, RegistryError};
 
 /// Which precedence layer a module came from. Higher variants win.
@@ -80,12 +84,40 @@ pub trait Module: Send + Sync {
     /// Lower a node into bucketed assignments. The node is schema-valid here (the generator
     /// runs schema().validate() first), so lower() may assume presence.
     fn lower(&self, node: &KdlNode, ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError>;
+    /// Which children a container hands to their own modules. `Lowerer` lowers them and
+    /// passes the results to `adopt`. Default: none, a leaf reads its own subtree.
+    fn delegates(&self) -> Option<Delegate> {
+        None
+    }
+    /// Default: append the delegated children's output to this node's own.
+    fn adopt(
+        &self,
+        _node: &KdlNode,
+        mut own: LowerOutput,
+        children: Vec<LowerOutput>,
+    ) -> Result<LowerOutput, LowerError> {
+        for out in children {
+            own.units.extend(out.units);
+            own.raw.extend(out.raw);
+            own.imports.extend(out.imports);
+        }
+        Ok(own)
+    }
     /// Human-readable notes for a version move, shown by `upgrade`. `from` is the recorded
     /// version, `to` the running one; a note applies when its target lands in `(from, to]`.
     /// Default: none.
     fn migration_notes(&self, _from: &Version, _to: &Version) -> Vec<String> {
         Vec::new()
     }
+}
+
+/// The children a container delegates to their own modules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delegate {
+    /// Every child its schema doesn't declare (the declared ones it reads itself).
+    Undeclared,
+    /// The children of its one child block of this name, e.g. a guest's `config { }`.
+    Block(&'static str),
 }
 
 /// One declared migration step: notes shown when an upgrade crosses up to `to`.
@@ -385,7 +417,6 @@ pub enum SecretsBackend {
 
 pub struct LowerCtx<'a> {
     scope: Scope,
-    registry: &'a Registry,
     diags: &'a mut Vec<Diagnostic>,
     pins: Vec<ResolvedPin>,
     secrets_backend: SecretsBackend,
@@ -396,15 +427,9 @@ pub struct Scope {
 }
 
 impl<'a> LowerCtx<'a> {
-    pub fn new(
-        scope: Scope,
-        registry: &'a Registry,
-        diags: &'a mut Vec<Diagnostic>,
-        pins: Vec<ResolvedPin>,
-    ) -> Self {
+    pub fn new(scope: Scope, diags: &'a mut Vec<Diagnostic>, pins: Vec<ResolvedPin>) -> Self {
         Self {
             scope,
-            registry,
             diags,
             pins,
             secrets_backend: SecretsBackend::SopsNix,
@@ -433,39 +458,9 @@ impl<'a> LowerCtx<'a> {
             .find(|p| p.package == package && p.version == version)
     }
 
-    /// Dispatch each child NOT in `consumed` to its registered module, collect outputs.
-    /// Only container modules (host) call this; leaf modules read their own subtree.
-    pub fn lower_children(
-        &mut self,
-        node: &KdlNode,
-        consumed: &[&str],
-    ) -> Result<Vec<LowerOutput>, LowerError> {
-        let registry = self.registry;
-        let mut outputs = Vec::new();
-        if let Some(doc) = node.children() {
-            for child in doc.nodes() {
-                let name = child.name().value();
-                if consumed.contains(&name) {
-                    continue;
-                }
-                match registry.get(name) {
-                    Some(module) => {
-                        // Validate the delegated child against its own module's schema before
-                        // lowering; a schema error is non-fatal here (collected as a diagnostic).
-                        if let Err(diags) = module.schema().validate(child) {
-                            self.diags.extend(diags);
-                            continue;
-                        }
-                        let module_name = module.id().name;
-                        let mut out = module.lower(child, self)?;
-                        out.attribute(&module_name);
-                        outputs.push(out);
-                    }
-                    None => self.reject(child.span(), format!("no module claims node `{name}`")),
-                }
-            }
-        }
-        Ok(outputs)
+    /// Record diagnostics found outside a module, e.g. a delegated child's schema errors.
+    pub(crate) fn report(&mut self, diags: Vec<Diagnostic>) {
+        self.diags.extend(diags);
     }
 
     /// Note something worth saying that does not change what the KDL asked for.
@@ -793,8 +788,10 @@ mod tests {
         reg.register(Box::new(StubModule::new())).unwrap();
         let host = node("host \"web\" {\n    system \"x\"\n    stub\n    mystery\n}");
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
-        let outputs = ctx.lower_children(&host, &["system"]).unwrap();
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &mut diags, vec![]);
+        let outputs = Lowerer::new(&reg)
+            .lower_children(&host, &["system"], &mut ctx)
+            .unwrap();
         drop(ctx);
         assert_eq!(
             outputs.len(),
