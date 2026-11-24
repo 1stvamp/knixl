@@ -39,6 +39,15 @@ Browse lists every module available in the project, built in or your own, with t
 - `Enter` (or `i`) inserts the module into a host: pick the host, and knixl adds a skeleton block for the module to that host's KDL file, then exits and tells you which file to finish editing. If the host already has that module, it says so and changes nothing.
 - `e` opens the module in the editor described below, for modules defined in a `knixl-module.kdl` file in your project. The modules built into knixl can't be edited here.
 
+## Check for updates
+
+This screen runs the [update report](05-day-to-day.md#being-told-about-updates) in the background (a spinner shows it working; it takes a few minutes) and then shows, for each host that would move, how many packages change and how many CVEs the update fixes, with the full report underneath (`PageUp`/`PageDown` scroll it). Below the summary are your choices:
+
+- **take the whole nixpkgs update**, and under it **only if it fixes CVEs**, which applies the update only when it does.
+- **pin <package> to <version> on <host>**, one for each package a host installs directly that the update would change. These are an alternative to the whole update, so they're greyed out when it's chosen.
+
+`Space` or `Enter` toggles a choice, and **Apply** carries them out with the same commands you'd run yourself (`knixl upgrade --refresh --yes`, then `knixl generate`, or `knixl install <package>@<version>` for each pin) and ends the session. The screen needs a generated flake; without one it says so.
+
 ## New module
 
 This screen builds a declarative module, the kind described in [Writing your own modules](10-writing-modules.md), without writing its file by hand. You fill in:

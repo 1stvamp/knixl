@@ -14,6 +14,7 @@ const ITEMS: &[(&str, &str)] = &[
     ("Install a package", "install"),
     ("Browse modules", "browse"),
     ("New module", "author"),
+    ("Check for updates", "updates"),
     ("Quit", "quit"),
 ];
 
@@ -135,6 +136,11 @@ mod tests {
         }
         assert!(matches!(
             h.update(key(KeyCode::Enter), (80, 24)).nav,
+            Nav::Goto("updates")
+        ));
+        h.update(key(KeyCode::Down), (80, 24));
+        assert!(matches!(
+            h.update(key(KeyCode::Enter), (80, 24)).nav,
             Nav::Quit
         ));
     }
@@ -155,7 +161,13 @@ mod tests {
     #[test]
     fn view_lists_the_menu() {
         let v = HomeModel::new().view((80, 24));
-        for item in ["Install a package", "Browse modules", "New module", "Quit"] {
+        for item in [
+            "Install a package",
+            "Browse modules",
+            "New module",
+            "Check for updates",
+            "Quit",
+        ] {
             assert!(v.contains(item), "menu shows {item}: {v}");
         }
     }

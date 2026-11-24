@@ -45,6 +45,8 @@ Review and apply version changes: a new knixl or module version, a host's new `n
 
 - `--yes`: apply. Without it, `upgrade` only shows what it would do.
 - `--refresh`: also move every `nixpkgs release` to the newest commit on its branch (hosts pinned with `rev=` stay put).
+- `--if-security`: with `--refresh`, only refresh if the update fixes a CVE. `--min-severity <low|medium|high|critical>` raises the bar.
+- `--keep <package>=<pattern>`: with `--refresh`, move only as far as keeps the package's version matching the pattern (e.g. `curl=8.19.*`), among official channel releases. Repeatable.
 
 ### `knixl doc <node>`
 
@@ -59,6 +61,10 @@ Add a package to a host, check it, and regenerate. `<package>` is a nixpkgs attr
 - `--build`: also build the package.
 - `--strict`: fail, instead of warning, when Nix isn't available.
 - `--no-abi-check`: for a version pin, skip the trial build and use the commit-mix strategy.
+
+### `knixl updates`
+
+Report what `upgrade --refresh` would change on each host: version changes, classed major, minor, patch, other or downgrade, and the CVEs the update fixes (via vulnix). Changes nothing. Markdown by default, JSON with `--json`. Needs a generated flake and Nix; security needs vulnix (`KNIXL_VULNIX` to point at it). See [Being told about updates](05-day-to-day.md#being-told-about-updates).
 
 ### `knixl tui`
 
@@ -130,6 +136,7 @@ guest-image "<name>" [system="<platform>"] { ... }
 | `KNIXL_PIN_RESOLVER` | A command `<bin> <name> <version>` that prints a nixpkgs commit, replacing the nixhub lookup. |
 | `KNIXL_BASELINE_RESOLVER` | A command `<bin> <release>` that prints a nixpkgs commit, replacing `git ls-remote`. |
 | `KNIXL_MODULE_RESOLVER` | Replaces the built-in resolver for flake inputs and fetched modules. |
+| `KNIXL_VULNIX` | The vulnix binary `knixl updates` scans with. Default `vulnix`. |
 | `NIXPKGS_ALLOW_UNFREE` | Set to `1` to allow unfree packages in `install`'s builds. |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Proxy settings for the built-in resolvers. |
 

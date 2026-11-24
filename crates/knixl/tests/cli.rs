@@ -482,6 +482,17 @@ fn upgrade_refresh_moves_a_release_to_its_branch_tip() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// #142: `updates` evaluates hosts through the generated flake, so a modules-only project
+/// is told what it needs instead of failing somewhere inside nix.
+#[test]
+fn updates_needs_a_generated_flake() {
+    let root = temp_project("updates-no-flake");
+    let out = knixl(&root, &["updates"]);
+    assert_eq!(out.status.code(), Some(5));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("add a system block"));
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn prune_deletes_orphaned_files() {
     let root = temp_project("prune");

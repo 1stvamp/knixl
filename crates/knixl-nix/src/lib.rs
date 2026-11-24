@@ -2,6 +2,7 @@
 //! reproducibility boundary.
 
 pub mod baseline;
+pub mod channels;
 pub mod module;
 pub mod module_fetch;
 pub mod nixeval;

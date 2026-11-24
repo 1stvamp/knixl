@@ -47,6 +47,18 @@ enum Cmd {
         /// Also move every nixpkgs release to the newest commit on its branch.
         #[arg(long)]
         refresh: bool,
+        /// With --refresh: only refresh when the update fixes a CVE (see knixl updates).
+        #[arg(long, requires = "refresh")]
+        if_security: bool,
+        /// With --if-security: only count fixes at or above this severity
+        /// (low, medium, high or critical).
+        #[arg(long, requires = "if_security", value_parser = ["low", "medium", "high", "critical"])]
+        min_severity: Option<String>,
+        /// With --refresh: move only as far as keeps a package's version matching a pattern,
+        /// e.g. curl=8.19.* or linux=6.12.*, choosing among official channel releases.
+        /// Repeatable.
+        #[arg(long, requires = "refresh", value_name = "PACKAGE=PATTERN")]
+        keep: Vec<String>,
     },
     /// Show what a module accepts: its arguments, properties and children.
     Doc {
@@ -75,6 +87,9 @@ enum Cmd {
     },
     /// Open the interactive TUI: install a package, browse modules, create a module.
     Tui,
+    /// Report what `upgrade --refresh` would change on each host: version changes and the
+    /// security fixes among them. Needs a generated flake, Nix, and vulnix for the security part.
+    Updates,
 }
 
 #[repr(i32)]
@@ -112,13 +127,62 @@ fn verdict(plan: &Plan) -> Code {
 fn run(cli: Cli, ctx: &Ctx) -> Code {
     // `upgrade --refresh` (#129): re-resolve releases already in the lock to their branch tip.
     let refresh = matches!(cli.cmd, Cmd::Upgrade { refresh: true, .. });
+    let keeps: Vec<(String, String)> = match &cli.cmd {
+        Cmd::Upgrade { keep, .. } => {
+            let mut out = Vec::new();
+            for k in keep {
+                match k.split_once('=') {
+                    Some((p, v)) if !p.is_empty() && !v.is_empty() => {
+                        out.push((p.to_string(), v.to_string()))
+                    }
+                    _ => {
+                        eprintln!("knixl: --keep {k}: expected PACKAGE=PATTERN, e.g. curl=8.19.*");
+                        return Code::Usage;
+                    }
+                }
+            }
+            out
+        }
+        _ => Vec::new(),
+    };
+    // `--if-security`: decide from the update report whether the refresh is worth taking.
+    if let Cmd::Upgrade {
+        if_security: true,
+        min_severity,
+        ..
+    } = &cli.cmd
+    {
+        let floor = min_severity.as_deref().unwrap_or("low");
+        match updates_report(&ctx.root) {
+            Ok(reports) => {
+                let worst = reports
+                    .iter()
+                    .filter_map(|r| r.security.as_ref())
+                    .flat_map(|s| s.fixed.iter().flat_map(|f| f.cves.iter()))
+                    .map(|(_, score)| knixl_pipeline::updates::severity_rank(*score))
+                    .max();
+                if reports.iter().any(|r| r.security.is_none()) {
+                    eprintln!("knixl: --if-security needs vulnix to tell, so nothing is refreshed");
+                    return Code::Validation;
+                }
+                if worst.is_none_or(|w| w < knixl_pipeline::updates::severity_floor(floor)) {
+                    println!("no security fixes at {floor} or above in the update, so nothing is refreshed");
+                    return Code::Clean;
+                }
+            }
+            Err(e) => {
+                eprintln!("knixl: {e}");
+                return Code::Internal;
+            }
+        }
+    }
     // `install`/`upgrade` resolve a declared-but-unresolved nixpkgs baseline before the
     // validation gate, since they are its only remedy. Resolved in memory only; `pending` is
     // written by `Cmd::Upgrade` on `--yes`, or by `install`/`commit_install` in the confirmed,
     // revertable commit path.
     let pending: BTreeMap<String, HostBaseline> =
         if matches!(cli.cmd, Cmd::Upgrade { .. } | Cmd::Install { .. }) {
-            match resolve_pending_baselines(ctx, refresh) {
+            match resolve_pending_baselines(ctx, refresh, &keeps) {
                 Ok(p) => p,
                 Err(code) => return code,
             }
@@ -143,7 +207,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
     // image targets build from in the input-free flake.
     let pending_project_release: Option<(String, String)> =
         if matches!(cli.cmd, Cmd::Upgrade { .. }) {
-            match resolve_pending_project_release(ctx, refresh) {
+            match resolve_pending_project_release(ctx, refresh, &keeps) {
                 Ok(p) => p,
                 Err(code) => return code,
             }
@@ -555,6 +619,7 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
         ),
 
         Cmd::Tui => unreachable!("tui is dispatched before Ctx::load"),
+        Cmd::Updates => cmd_updates(ctx, cli.json),
     }
 }
 
@@ -1161,6 +1226,73 @@ fn declared_release(host_path: &std::path::Path) -> Option<String> {
     knixl_kdl::child_prop_str(node, "nixpkgs", "release")
 }
 
+/// A host's declared `system` (e.g. `x86_64-linux`).
+fn declared_system(host_path: &std::path::Path) -> Option<String> {
+    let src = std::fs::read_to_string(host_path).ok()?;
+    let doc = knixl_kdl::parse(&src).ok()?;
+    let node = doc.nodes().iter().find(|n| n.name().value() == "host")?;
+    knixl_kdl::child_arg_str(node, "system")
+}
+
+/// The newest official channel release of `release` after `current` whose versions of every
+/// kept package match its pattern (`upgrade --refresh --keep`), or `current` when none does.
+/// Releases are searched by bisection, evaluating each candidate's package versions.
+fn constrained_refresh(
+    release: &str,
+    system: &str,
+    current: &str,
+    keeps: &[(String, String)],
+) -> Result<String, String> {
+    use knixl_nix::channels;
+    let all = channels::list(release)?;
+    let start = all
+        .iter()
+        .position(|r| current.starts_with(&r.short_rev))
+        .ok_or_else(|| {
+            format!("nixpkgs {current} isn't a {release} channel release, so --keep can't tell which releases come after it")
+        })?;
+    let candidates = &all[start + 1..];
+    eprintln!(
+        "checking {} newer {release} channel releases against --keep",
+        candidates.len()
+    );
+    let mut revs: BTreeMap<usize, String> = BTreeMap::new();
+    let found = channels::newest_passing(candidates.len(), |i| {
+        let rev = channels::full_rev(release, &candidates[i].name)?;
+        revs.insert(i, rev.clone());
+        for (pkg, pattern) in keeps {
+            let attr = format!("github:NixOS/nixpkgs/{rev}#legacyPackages.{system}.{pkg}.version");
+            let version = run_capture(
+                std::path::Path::new("."),
+                std::path::Path::new("nix"),
+                &[
+                    "--extra-experimental-features",
+                    "nix-command flakes",
+                    "eval",
+                    "--raw",
+                    &attr,
+                ],
+                &[],
+            )?;
+            if !channels::glob_matches(pattern, &version) {
+                eprintln!(
+                    "  {}: {pkg} {version} is outside {pattern}",
+                    candidates[i].name
+                );
+                return Ok(false);
+            }
+        }
+        eprintln!("  {}: every kept package matches", candidates[i].name);
+        Ok(true)
+    })?;
+    Ok(match found {
+        Some(i) => revs
+            .remove(&i)
+            .expect("a passing release had its rev looked up"),
+        None => current.to_string(),
+    })
+}
+
 /// A host's declared `nixpkgs rev=".."` exact-commit pin (ADR 0014), if any.
 fn declared_rev(host_path: &std::path::Path) -> Option<String> {
     let src = std::fs::read_to_string(host_path).ok()?;
@@ -1185,6 +1317,7 @@ fn options_hash_for_rev(rev: &str) -> String {
 fn resolve_pending_project_release(
     ctx: &Ctx,
     refresh: bool,
+    keeps: &[(String, String)],
 ) -> Result<Option<(String, String)>, Code> {
     let declared = knixl_pipeline::project::parse_project(&ctx.root)
         .ok()
@@ -1199,14 +1332,22 @@ fn resolve_pending_project_release(
             Ok(None)
         }
         Some(release) => {
-            let rev = knixl_nix::baseline::BaselineResolver::resolve()
-                .lookup(&release)
-                .map_err(|e| {
-                    eprintln!(
-                        "knixl: cannot resolve the project nixpkgs release \"{release}\": {e}"
-                    );
-                    Code::Validation
-                })?;
+            let rev = if refresh && !keeps.is_empty() && release == recorded.release {
+                constrained_refresh(&release, "x86_64-linux", &recorded.nixpkgs_rev, keeps)
+                    .map_err(|e| {
+                        eprintln!("knixl: the project nixpkgs release: {e}");
+                        Code::Validation
+                    })?
+            } else {
+                knixl_nix::baseline::BaselineResolver::resolve()
+                    .lookup(&release)
+                    .map_err(|e| {
+                        eprintln!(
+                            "knixl: cannot resolve the project nixpkgs release \"{release}\": {e}"
+                        );
+                        Code::Validation
+                    })?
+            };
             if release == recorded.release && rev == recorded.nixpkgs_rev {
                 return Ok(None);
             }
@@ -1227,6 +1368,7 @@ fn resolve_pending_baseline(
     host: &str,
     host_path: &std::path::Path,
     refresh: bool,
+    keeps: &[(String, String)],
 ) -> Result<Option<HostBaseline>, Code> {
     let Some(release) = declared_release(host_path) else {
         return Ok(None);
@@ -1259,14 +1401,24 @@ fn resolve_pending_baseline(
             modules: Vec::new(),
         }));
     }
-    let rev = knixl_nix::baseline::BaselineResolver::resolve()
-        .lookup(&release)
-        .map_err(|e| {
-            eprintln!(
-                "knixl: cannot resolve nixpkgs release \"{release}\" for host \"{host}\": {e}"
-            );
-            Code::Validation
-        })?;
+    let rev = match recorded {
+        // `--keep`: only as far along the channel as the kept versions allow.
+        Some(b) if refresh && !keeps.is_empty() && b.release == release => {
+            let system = declared_system(host_path).unwrap_or_else(|| "x86_64-linux".into());
+            constrained_refresh(&release, &system, &b.nixpkgs_rev, keeps).map_err(|e| {
+                eprintln!("knixl: host \"{host}\": {e}");
+                Code::Validation
+            })?
+        }
+        _ => knixl_nix::baseline::BaselineResolver::resolve()
+            .lookup(&release)
+            .map_err(|e| {
+                eprintln!(
+                    "knixl: cannot resolve nixpkgs release \"{release}\" for host \"{host}\": {e}"
+                );
+                Code::Validation
+            })?,
+    };
     // A refresh that finds the branch where it was is no change; one that moves keeps the
     // host's own module pins, which only a release or override change re-resolves.
     let modules = match recorded {
@@ -1295,12 +1447,13 @@ fn resolve_pending_baseline(
 fn resolve_pending_baselines(
     ctx: &Ctx,
     refresh: bool,
+    keeps: &[(String, String)],
 ) -> Result<BTreeMap<String, HostBaseline>, Code> {
     use knixl_pipeline::install::list_hosts;
     let hosts = list_hosts(&ctx.root).unwrap_or_default();
     let mut pending = BTreeMap::new();
     for h in &hosts {
-        if let Some(b) = resolve_pending_baseline(ctx, &h.name, &h.path, refresh)? {
+        if let Some(b) = resolve_pending_baseline(ctx, &h.name, &h.path, refresh, keeps)? {
             pending.insert(h.name.clone(), b);
         }
     }
@@ -2001,6 +2154,10 @@ fn open_tui(
     let root = discover_root();
     let hosts = list_hosts(&root).map_err(|e| e.to_string())?;
     let modules = browse_modules(&root);
+    let updates: Option<tui::UpdatesFn> = root.join("generated/flake.nix").is_file().then(|| {
+        let root = root.clone();
+        std::sync::Arc::new(move || updates_report(&root)) as tui::UpdatesFn
+    });
     tui::run(
         entry,
         root.clone(),
@@ -2010,6 +2167,7 @@ fn open_tui(
         build,
         pin,
         strategy,
+        updates,
     )
 }
 
@@ -2517,7 +2675,7 @@ fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
         } => {
             let ctx = Ctx::load();
             let baseline_pending =
-                match resolve_pending_baseline(&ctx, &host.name, &host.path, false) {
+                match resolve_pending_baseline(&ctx, &host.name, &host.path, false, &[]) {
                     Ok(b) => b,
                     Err(code) => return code,
                 };
@@ -2540,6 +2698,11 @@ fn finish_tui_outcome(outcome: tui::Outcome) -> Code {
         } => commit_insert(&host, &node, &skeleton),
         tui::Outcome::Scaffold { name, manifest } => commit_scaffold(&name, &manifest),
         tui::Outcome::SaveModule { path, text } => commit_save_module(&path, &text),
+        tui::Outcome::Updates {
+            refresh,
+            if_security,
+            pins,
+        } => commit_tui_updates(refresh, if_security, &pins),
         tui::Outcome::Cancelled | tui::Outcome::Quit => Code::Clean,
     }
 }
@@ -2633,6 +2796,298 @@ struct Ctx {
     /// Hosts generated without option checks for want of a cached set (see `gather`).
     unvalidated: Vec<(String, String)>,
 }
+/// Run `prog args` in `cwd`, returning trimmed stdout, or the stderr tail on failure.
+fn run_capture(
+    cwd: &std::path::Path,
+    prog: &std::path::Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<String, String> {
+    let mut c = std::process::Command::new(prog);
+    c.args(args).current_dir(cwd);
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    let out = c.output().map_err(|e| format!("{}: {e}", prog.display()))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let tail: Vec<&str> = err.lines().rev().take(6).collect();
+        Err(format!(
+            "{} {}: {}",
+            prog.display(),
+            args.join(" "),
+            tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+        ))
+    }
+}
+
+/// Copy a project for `knixl updates` to work on, leaving out `.git` and symlinks (`result`
+/// links and the like), so the original is never touched.
+fn copy_project(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let ty = entry.file_type()?;
+        if name == ".git" || ty.is_symlink() {
+            continue;
+        }
+        let dest = to.join(&name);
+        if ty.is_dir() {
+            copy_project(&entry.path(), &dest)?;
+        } else {
+            std::fs::copy(entry.path(), dest)?;
+        }
+    }
+    Ok(())
+}
+
+/// The nixpkgs baselines recorded in a project's lock, by host: (release, rev).
+fn lock_baselines(root: &std::path::Path) -> BTreeMap<String, (String, String)> {
+    std::fs::read_to_string(root.join("knixl.lock.kdl"))
+        .ok()
+        .and_then(|t| knixl_lock::Lock::parse(&t).ok())
+        .map(|l| {
+            l.baselines
+                .into_iter()
+                .map(|(h, b)| (h, (b.release, b.nixpkgs_rev)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `knixl updates`: refresh one copy of the project, evaluate each host that moved in that
+/// copy and in an untouched one, and report the difference (#142). Nothing in the project
+/// changes; the copies live in the temp directory and are removed afterwards.
+fn cmd_updates(ctx: &Ctx, json: bool) -> Code {
+    if !ctx.root.join("generated/flake.nix").is_file() {
+        eprintln!(
+            "knixl: {}",
+            updates_report(&ctx.root).err().unwrap_or_default()
+        );
+        return Code::Validation;
+    }
+    match updates_report(&ctx.root) {
+        Ok(reports) => {
+            if json {
+                println!("{}", knixl_pipeline::updates::to_json(&reports));
+            } else {
+                print!("{}", knixl_pipeline::updates::render_markdown(&reports));
+            }
+            Code::Clean
+        }
+        Err(e) => {
+            eprintln!("knixl: {e}");
+            Code::Internal
+        }
+    }
+}
+
+/// Carry out the Updates screen's choice by running knixl's own commands, so the work and
+/// its output are exactly what the CLI does: the refresh (then generate), or each pin.
+fn commit_tui_updates(refresh: bool, if_security: bool, pins: &[(String, String, String)]) -> Code {
+    let Ok(me) = std::env::current_exe() else {
+        return Code::Internal;
+    };
+    let run = |args: &[&str]| -> Code {
+        println!("$ knixl {}", args.join(" "));
+        match std::process::Command::new(&me).args(args).status() {
+            Ok(s) if s.success() => Code::Clean,
+            Ok(_) => Code::Validation,
+            Err(e) => {
+                eprintln!("knixl: {e}");
+                Code::Internal
+            }
+        }
+    };
+    if refresh {
+        let mut args = vec!["upgrade", "--refresh", "--yes"];
+        if if_security {
+            args.push("--if-security");
+        }
+        let code = run(&args);
+        if code != Code::Clean {
+            return code;
+        }
+        return run(&["generate"]);
+    }
+    for (host, attr, version) in pins {
+        let spec = format!("{attr}@{version}");
+        let code = run(&["install", "--host", host, &spec, "--yes"]);
+        if code != Code::Clean {
+            return code;
+        }
+    }
+    Code::Clean
+}
+
+/// A host's own unpinned `package` nodes (no `version=`, no `from=`), by attribute name.
+fn direct_packages(root: &std::path::Path, host: &str) -> Vec<String> {
+    let hosts = knixl_pipeline::install::list_hosts(root).unwrap_or_default();
+    let Some(h) = hosts.iter().find(|h| h.name == host) else {
+        return Vec::new();
+    };
+    let Ok(src) = std::fs::read_to_string(&h.path) else {
+        return Vec::new();
+    };
+    let Ok(doc) = knixl_kdl::parse(&src) else {
+        return Vec::new();
+    };
+    doc.nodes()
+        .iter()
+        .find(|n| n.name().value() == "host")
+        .and_then(|n| n.children())
+        .map(|c| {
+            c.nodes()
+                .iter()
+                .filter(|n| n.name().value() == "package")
+                .filter(|n| n.get("version").is_none() && n.get("from").is_none())
+                .filter_map(knixl_kdl::first_arg_str)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Run the `knixl updates` analysis in a private scratch directory, removed afterwards.
+fn updates_report(
+    root: &std::path::Path,
+) -> Result<Vec<knixl_pipeline::updates::HostReport>, String> {
+    if !root.join("generated/flake.nix").is_file() {
+        return Err("updates evaluates each host through the generated flake: add a system block to knixl.kdl and run knixl generate".into());
+    }
+    let tmp = std::env::temp_dir().join(format!("knixl-updates-{}", std::process::id()));
+    // Owner-only, and never an existing directory: another user could have made the
+    // predictable path first to read or tamper with the copied project.
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&tmp)
+            .map_err(|e| format!("{}: {e}", tmp.display()))?;
+    }
+    let result = updates_in(root, &tmp);
+    let _ = std::fs::remove_dir_all(&tmp);
+    result
+}
+
+fn updates_in(
+    root: &std::path::Path,
+    tmp: &std::path::Path,
+) -> Result<Vec<knixl_pipeline::updates::HostReport>, String> {
+    use knixl_pipeline::updates;
+    use std::path::Path;
+    let (old_dir, new_dir) = (tmp.join("old"), tmp.join("new"));
+    for d in [&old_dir, &new_dir] {
+        copy_project(root, d).map_err(|e| format!("copying the project: {e}"))?;
+    }
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let (git, nix) = (Path::new("git"), Path::new("nix"));
+    let flakes = ["--extra-experimental-features", "nix-command flakes"];
+    // The refreshed copy only needs to evaluate, so skip building option sets for it.
+    let no_build = [("KNIXL_NIX_BUILD", "false")];
+    eprintln!("refreshing nixpkgs in a copy of the project");
+    run_capture(&new_dir, &me, &["upgrade", "--refresh", "--yes"], &no_build)?;
+    run_capture(&new_dir, &me, &["generate"], &no_build)?;
+
+    let before = lock_baselines(&old_dir);
+    let after = lock_baselines(&new_dir);
+    let moved: Vec<(String, String, String, String)> = after
+        .iter()
+        .filter_map(|(host, (release, rev))| {
+            let (_, old) = before.get(host)?;
+            (old != rev).then(|| (host.clone(), release.clone(), old.clone(), rev.clone()))
+        })
+        .collect();
+    if moved.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    for d in [&old_dir, &new_dir] {
+        run_capture(d, git, &["init", "-q"], &[])?;
+        run_capture(d, git, &["add", "-A"], &[])?;
+    }
+    if new_dir.join("generated/flake.lock").is_file() {
+        let mut args = flakes.to_vec();
+        args.extend(["flake", "lock"]);
+        run_capture(&new_dir.join("generated"), nix, &args, &[])?;
+        run_capture(&new_dir, git, &["add", "-A"], &[])?;
+    }
+
+    let vulnix_bin = std::env::var("KNIXL_VULNIX").unwrap_or_else(|_| "vulnix".into());
+    let vulnix = Path::new(&vulnix_bin);
+    let mut vulnix_missing = false;
+    let mut scan = |drv: &str| -> Option<Vec<updates::Vuln>> {
+        if vulnix_missing {
+            return None;
+        }
+        let out = std::process::Command::new(vulnix)
+            .args(["--json", drv])
+            .output();
+        match out {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!(
+                    "warning: {} not found, so security fixes are not checked (set KNIXL_VULNIX)",
+                    vulnix.display()
+                );
+                vulnix_missing = true;
+                None
+            }
+            Err(e) => {
+                eprintln!("warning: vulnix: {e}");
+                None
+            }
+            // vulnix exits non-zero when it finds anything, so judge it by its output.
+            Ok(o) => match updates::parse_vulnix(&String::from_utf8_lossy(&o.stdout)) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    eprintln!("warning: {e}");
+                    None
+                }
+            },
+        }
+    };
+
+    let mut reports = Vec::new();
+    for (host, release, old_rev, new_rev) in moved {
+        let attr = format!(
+            "./generated#nixosConfigurations.\"{host}\".config.system.build.toplevel.drvPath"
+        );
+        let mut drvs = Vec::new();
+        for d in [&old_dir, &new_dir] {
+            eprintln!(
+                "evaluating {host} in {}",
+                d.file_name().unwrap().to_string_lossy()
+            );
+            let mut args = flakes.to_vec();
+            args.extend(["eval", "--raw", attr.as_str()]);
+            drvs.push(run_capture(d, nix, &args, &[])?);
+        }
+        let closure = |drv: &str| -> Result<Vec<String>, String> {
+            run_capture(Path::new("."), Path::new("nix-store"), &["-qR", drv], &[])
+                .map(|s| s.lines().map(str::to_string).collect())
+        };
+        let diff = updates::diff_closures(&closure(&drvs[0])?, &closure(&drvs[1])?);
+        eprintln!("scanning {host} with vulnix");
+        let security = match (scan(&drvs[0]), scan(&drvs[1])) {
+            (Some(old), Some(new)) => Some(updates::security(&old, &new, &diff)),
+            _ => None,
+        };
+        let direct = direct_packages(root, &host);
+        reports.push(updates::HostReport {
+            host,
+            release,
+            old_rev,
+            new_rev,
+            diff,
+            security,
+            direct,
+        });
+    }
+    Ok(reports)
+}
+
 /// A broken `knixl.kdl`, module manifest or host file is the user's input, so it is a
 /// Validation (#131); only I/O, the lock and the formatter are Internal.
 fn gather_error_code(e: &knixl_pipeline::gather::GatherError) -> Code {

@@ -12,6 +12,7 @@ mod browse;
 mod home;
 mod install;
 mod theme;
+mod updates;
 mod widgets;
 
 use std::path::PathBuf;
@@ -25,6 +26,7 @@ use author::AuthorModel;
 use browse::BrowseModel;
 use home::HomeModel;
 use install::InstallModel;
+use updates::UpdatesModel;
 
 pub use install::{Parse, Resolve};
 
@@ -89,6 +91,11 @@ pub enum StrategyOutcome {
 /// so it must be recomputed for whichever host is currently selected, rather than fixed at
 /// injection time. Injected only when a version was requested; `Send + Sync` so the Install
 /// screen runs it off the event loop.
+/// Runs the `knixl updates` report for the project (a few minutes: evaluations and vulnix).
+pub type UpdatesFn = std::sync::Arc<
+    dyn Fn() -> Result<Vec<knixl_pipeline::updates::HostReport>, String> + Send + Sync,
+>;
+
 pub type StrategyFn = Arc<dyn Fn(&str, &str, &str) -> StrategyOutcome + Send + Sync>;
 
 /// A registered module as the Browse screen sees it: its claimed node, a kind tag, the
@@ -158,6 +165,13 @@ pub enum Outcome {
         path: std::path::PathBuf,
         text: String,
     },
+    /// Take the whole nixpkgs refresh (optionally only if it fixes CVEs), or else pin these
+    /// (host, package, version) on their own.
+    Updates {
+        refresh: bool,
+        if_security: bool,
+        pins: Vec<(String, String, String)>,
+    },
 }
 
 /// Everything the screens read, injected before the program runs.
@@ -173,6 +187,8 @@ pub struct TuiConfig {
     pub pin: Option<PinFn>,
     /// Injected only when a version was requested; see `StrategyFn`.
     pub strategy: Option<StrategyFn>,
+    /// `None` when the project has no generated flake to evaluate.
+    pub updates: Option<UpdatesFn>,
 }
 
 fn config() -> &'static TuiConfig {
@@ -221,6 +237,12 @@ pub enum Nav {
     EditModule {
         manifest: std::path::PathBuf,
     },
+    /// Apply the Updates screen's choice and end the session.
+    ApplyUpdates {
+        refresh: bool,
+        if_security: bool,
+        pins: Vec<(String, String, String)>,
+    },
 }
 
 /// A reducer's result: a navigation intent plus an optional command to run.
@@ -247,6 +269,7 @@ enum Screen {
     Install(Box<InstallModel>),
     Browse(Box<BrowseModel>),
     Author(Box<AuthorModel>),
+    Updates(Box<UpdatesModel>),
 }
 
 pub struct App {
@@ -293,6 +316,7 @@ impl Model for App {
             Screen::Install(i) => i.update(msg, self.size),
             Screen::Browse(b) => b.update(msg, self.size),
             Screen::Author(a) => a.update(msg, self.size),
+            Screen::Updates(u) => u.update(msg, self.size),
         };
         self.apply(step)
     }
@@ -303,6 +327,7 @@ impl Model for App {
             Screen::Install(i) => i.view(self.size),
             Screen::Browse(b) => b.view(self.size),
             Screen::Author(a) => a.view(self.size),
+            Screen::Updates(u) => u.view(self.size),
         };
         // Centre the screen in the full terminal so the alternate screen is used end to end.
         let (w, h) = self.size;
@@ -357,6 +382,18 @@ impl App {
                 self.outcome = Outcome::SaveModule { path, text };
                 Some(command::quit())
             }
+            Nav::ApplyUpdates {
+                refresh,
+                if_security,
+                pins,
+            } => {
+                self.outcome = Outcome::Updates {
+                    refresh,
+                    if_security,
+                    pins,
+                };
+                Some(command::quit())
+            }
             Nav::EditModule { manifest } => {
                 // A read or parse failure stays on Browse (a no-op) rather than opening a
                 // broken editor; there is nowhere sensible to show the error from here.
@@ -391,6 +428,11 @@ impl App {
                 self.screen = Screen::Author(Box::new(AuthorModel::enter(self.size)));
                 None
             }
+            Nav::Goto("updates") => {
+                let (m, cmd) = UpdatesModel::enter(self.size);
+                self.screen = Screen::Updates(Box::new(m));
+                cmd
+            }
             Nav::Goto(_) => None,
         }
     }
@@ -407,6 +449,7 @@ pub fn run(
     build: Option<BuildFn>,
     pin: Option<PinFn>,
     strategy: Option<StrategyFn>,
+    updates: Option<UpdatesFn>,
 ) -> Result<Outcome, String> {
     let _ = CONFIG.set(TuiConfig {
         root,
@@ -417,6 +460,7 @@ pub fn run(
         build,
         pin,
         strategy,
+        updates,
     });
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
