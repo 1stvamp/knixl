@@ -1,7 +1,7 @@
 //! The curated declarative modules embedded into the binary. See
 //! docs/adr/0010-module-distribution.md.
+use crate::declarative::DeclarativeModule;
 use crate::registry::Registry;
-use crate::template::DeclarativeModule;
 use crate::{Module, ModuleLayer, ShadowNotice};
 use include_dir::{include_dir, Dir};
 use std::collections::BTreeSet;
@@ -113,7 +113,7 @@ mod tests {
         // web-service is a real stdlib node; claim it before stdlib registers to force a
         // shadow, and tell layer_of it came from the fetched layer.
         let src = "module name=\"fake-fetched\" version=\"1.0.0\" {\n    claims-node \"web-service\"\n    schema {\n    }\n    emit {\n    }\n}\n";
-        let module = crate::template::DeclarativeModule::from_kdl(
+        let module = crate::declarative::DeclarativeModule::from_kdl(
             &src.parse::<kdl::KdlDocument>().unwrap(),
             std::path::Path::new("fetched/web-service/knixl-module.kdl"),
         )

@@ -2,7 +2,8 @@
 //! A built-in module; see docs/04-template-grammar.md for why.
 use crate::builtin::host::unit_default;
 use crate::{
-    Bucket, Child, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, Unit, ValueTy,
+    Bucket, Child, Delegate, LowerCtx, LowerError, LowerOutput, Module, ModuleId, NodeSchema, Unit,
+    ValueTy,
 };
 use kdl::KdlNode;
 use knixl_ir::{Assignment, AttrKey, AttrPath, NixExpr};
@@ -49,9 +50,8 @@ impl Module for Guest {
     fn schema(&self) -> &NodeSchema {
         &self.schema
     }
-    fn lower(&self, node: &KdlNode, ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError> {
-        let name =
-            first_arg_str(node).ok_or_else(|| LowerError::Other("`guest` needs a name".into()))?;
+    fn lower(&self, node: &KdlNode, _ctx: &mut LowerCtx) -> Result<LowerOutput, LowerError> {
+        let name = guest_name(node)?;
         let mut units: Vec<Unit> = Vec::new();
 
         // --- envelope: containers.<name>.<opt> ---
@@ -102,33 +102,48 @@ impl Module for Guest {
             }));
         }
 
-        // --- nested config: lower the `config { }` block's modules and re-root under
-        //     containers.<name>.config (ADR 0011). ---
-        if let Some(config) = children_named(node, "config").next() {
-            for out in ctx.lower_children(config, &[])? {
-                if !out.raw.is_empty() {
-                    return Err(LowerError::Other(format!(
-                        "guest `{name}`: raw-nix inside a guest config cannot be re-rooted"
-                    )));
-                }
-                if !out.imports.is_empty() {
-                    return Err(LowerError::Other(format!(
-                        "guest `{name}`: an import inside a guest config cannot be re-rooted"
-                    )));
-                }
-                for unit in out.units {
-                    if !matches!(unit.bucket, Bucket::Default) {
-                        return Err(LowerError::Other(format!(
-                            "guest `{name}`: a side-file module cannot nest into a guest config"
-                        )));
-                    }
-                    units.push(unit_default(reroot(&name, unit.assignment)));
-                }
-            }
-        }
-
         Ok(LowerOutput::units(units))
     }
+
+    /// The `config { }` block holds ordinary modules, lowered as on a host (ADR 0011).
+    fn delegates(&self) -> Option<Delegate> {
+        Some(Delegate::Block("config"))
+    }
+
+    /// Re-root what the nested modules produced under `containers.<name>.config`.
+    fn adopt(
+        &self,
+        node: &KdlNode,
+        mut own: LowerOutput,
+        children: Vec<LowerOutput>,
+    ) -> Result<LowerOutput, LowerError> {
+        let name = guest_name(node)?;
+        for out in children {
+            if !out.raw.is_empty() {
+                return Err(LowerError::Other(format!(
+                    "guest `{name}`: raw-nix inside a guest config cannot be re-rooted"
+                )));
+            }
+            if !out.imports.is_empty() {
+                return Err(LowerError::Other(format!(
+                    "guest `{name}`: an import inside a guest config cannot be re-rooted"
+                )));
+            }
+            for unit in out.units {
+                if !matches!(unit.bucket, Bucket::Default) {
+                    return Err(LowerError::Other(format!(
+                        "guest `{name}`: a side-file module cannot nest into a guest config"
+                    )));
+                }
+                own.units.push(unit_default(reroot(&name, unit.assignment)));
+            }
+        }
+        Ok(own)
+    }
+}
+
+fn guest_name(node: &KdlNode) -> Result<String, LowerError> {
+    first_arg_str(node).ok_or_else(|| LowerError::Other("`guest` needs a name".into()))
 }
 
 /// Prepend `containers.<name>.config` to an assignment produced by a nested module.
@@ -251,11 +266,13 @@ mod tests {
             Scope {
                 host: "vmhost".into(),
             },
-            &reg,
             &mut diags,
             vec![],
         );
-        g.lower(&node(src), &mut ctx).expect("lower ok").units
+        crate::Lowerer::new(&reg)
+            .lower(&g, &node(src), &mut ctx)
+            .expect("lower ok")
+            .units
     }
 
     fn find<'a>(units: &'a [Unit], path: &str) -> Option<&'a NixExpr> {
@@ -330,14 +347,19 @@ mod tests {
             Scope {
                 host: "vmhost".into(),
             },
-            &reg,
             &mut diags,
             vec![],
         );
         let n = node(
             "guest \"llm\" {\n    config {\n        raw-nix {\n            \"boot.tmp.cleanOnBoot = true;\"\n        }\n    }\n}",
         );
-        let err = format!("{}", g.lower(&n, &mut ctx).err().expect("should error"));
+        let err = format!(
+            "{}",
+            crate::Lowerer::new(&reg)
+                .lower(&g, &n, &mut ctx)
+                .err()
+                .expect("should error")
+        );
         assert!(err.contains("raw-nix"), "got: {err}");
     }
 }

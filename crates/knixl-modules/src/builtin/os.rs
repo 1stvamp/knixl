@@ -377,7 +377,7 @@ fn list_child(name: &str, ty: ValueTy, doc: &str) -> Child {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Registry, Scope};
+    use crate::Scope;
 
     fn node(src: &str) -> KdlNode {
         src.parse::<kdl::KdlDocument>()
@@ -390,9 +390,8 @@ mod tests {
 
     fn lower_ok(src: &str) -> Vec<Unit> {
         let m = Os::new();
-        let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "nas".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = LowerCtx::new(Scope { host: "nas".into() }, &mut diags, vec![]);
         m.lower(&node(src), &mut ctx).expect("lower ok").units
     }
 
@@ -575,9 +574,8 @@ mod tests {
     #[test]
     fn a_tmpfiles_rule_without_a_type_is_an_error() {
         let m = Os::new();
-        let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "nas".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = LowerCtx::new(Scope { host: "nas".into() }, &mut diags, vec![]);
         // LowerOutput has no Debug impl, so match rather than expect_err.
         match m.lower(
             &node("os {\n    tmpfiles-rule \"/var/lib/bench\"\n}"),

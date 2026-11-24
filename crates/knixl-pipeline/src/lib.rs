@@ -27,7 +27,7 @@ use knixl_ir::{
     Assignment, AttrKey, Emit, Formals, ModuleRef, NixExpr, NixModule, Provenance, RawNix, Writer,
 };
 use knixl_kdl::{parse, ParseError};
-use knixl_modules::{Bucket, LowerCtx, LowerError, Registry, Scope};
+use knixl_modules::{Bucket, LowerCtx, LowerError, Lowerer, Registry, Scope};
 use knixl_nix::{FormatError, Formatter};
 use semver::Version;
 
@@ -192,12 +192,11 @@ fn generate_one(
             Scope {
                 host: host_name.clone(),
             },
-            registry,
             &mut diags,
             resolved_pins.clone(),
         )
         .with_secrets_backend(secrets_backend);
-        let mut output = module.lower(node, &mut ctx)?;
+        let mut output = Lowerer::new(registry).lower(module, node, &mut ctx)?;
         // The top-level module claims any unit its delegates did not already attribute.
         output.attribute(&module_name);
 
@@ -435,13 +434,12 @@ pub fn generate_image_targets(
             Scope {
                 host: target.name.clone(),
             },
-            registry,
             &mut diags,
             vec![],
         )
         .with_secrets_backend(secrets_backend);
         // The target node's children are modules; `system` is a prop, not a child.
-        for out in ctx.lower_children(&target.node, &["system"])? {
+        for out in Lowerer::new(registry).lower_children(&target.node, &["system"], &mut ctx)? {
             for unit in out.units {
                 if !matches!(unit.bucket, Bucket::Default) {
                     return Err(GenerateError::Validation(vec![format!(

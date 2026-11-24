@@ -10,7 +10,7 @@ use knixl_lock::model::{FormatterPin, ModuleSourcePin, OracleModulePin, OraclePi
 use knixl_lock::reconcile::{DiskState, ExpectedFile, Inputs, Versions};
 use knixl_lock::Lock;
 use knixl_modules::builtin::register_builtins;
-use knixl_modules::template::DeclarativeModule;
+use knixl_modules::declarative::DeclarativeModule;
 use knixl_modules::{Module, Registry};
 use knixl_nix::module_fetch::{hash_module, module_cache_path};
 use knixl_nix::{hash, Formatter};

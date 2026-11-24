@@ -89,7 +89,7 @@ fn schema() -> NodeSchema {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Registry, Scope};
+    use crate::Scope;
 
     fn lower(src: &str) -> (LowerOutput, Vec<crate::Diagnostic>) {
         let node = src
@@ -99,9 +99,8 @@ mod tests {
             .first()
             .unwrap()
             .clone();
-        let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = LowerCtx::new(Scope { host: "web".into() }, &mut diags, vec![]);
         let out = Import::new().lower(&node, &mut ctx).unwrap();
         (out, diags)
     }

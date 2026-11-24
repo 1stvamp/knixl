@@ -123,7 +123,7 @@ fn schema() -> NodeSchema {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Registry, Scope};
+    use crate::Scope;
 
     fn node(src: &str) -> KdlNode {
         src.parse::<kdl::KdlDocument>()
@@ -138,9 +138,8 @@ mod tests {
     fn postgres_forces_tcp_only_when_requested_and_lists_databases() {
         let pg = Postgres::new();
         let n = node("postgres version=16 {\n    listen-tcp #true\n    database \"app\"\n    database \"metrics\"\n}");
-        let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &mut diags, vec![]);
 
         let out = pg.lower(&n, &mut ctx).unwrap();
         // enable, package, ensureDatabases, and the forced enableTCPIP
@@ -153,9 +152,8 @@ mod tests {
     fn postgres_without_listen_tcp_omits_the_forced_override() {
         let pg = Postgres::new();
         let n = node("postgres {\n    database \"app\"\n}");
-        let reg = Registry::new();
         let mut diags = Vec::new();
-        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &reg, &mut diags, vec![]);
+        let mut ctx = LowerCtx::new(Scope { host: "db".into() }, &mut diags, vec![]);
 
         let out = pg.lower(&n, &mut ctx).unwrap();
         assert_eq!(out.units.len(), 3);
