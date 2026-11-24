@@ -8,6 +8,23 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-11-24
+
+Reports of available updates, with the CVEs they fix, and ways to take only part of a refresh.
+
+### Added
+- `knixl updates` shows what `upgrade --refresh` would change on each host without touching the
+  project: version changes classified as major, minor or patch, the CVEs the update fixes with
+  their CVSS severity (from vulnix), and an `install` line for each directly installed package
+  that would change. `--json` gives the same for scripts. The guide has a GitHub Actions
+  workflow that runs it daily and opens a draft PR with the report (#142).
+- `upgrade --refresh --if-security [--min-severity LEVEL]` only refreshes when the update fixes
+  a CVE at or above that severity.
+- `upgrade --refresh --keep PACKAGE=PATTERN` moves to the newest official channel release that
+  keeps each package inside its version pattern, e.g. `--keep curl=8.19.*`.
+- The TUI has a "Check for updates" screen with the report, the whole or security-only refresh,
+  and per-package pins.
+
 ## [1.10.0] - 2026-11-23
 
 A template value for literal lists.
@@ -402,7 +419,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.11.0...HEAD
+[1.11.0]: https://github.com/1stvamp/knixl/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/1stvamp/knixl/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/1stvamp/knixl/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/1stvamp/knixl/compare/v1.7.0...v1.8.0
