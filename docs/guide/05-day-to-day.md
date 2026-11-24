@@ -63,6 +63,76 @@ knixl upgrade --refresh --yes    # move them
 
 `--refresh` re-resolves every `nixpkgs release` (each host's, and the project's) to the newest commit on its branch. A host pinned to an exact `rev=` stays where it is. Then `knixl generate`, in input mode `(cd generated && nix flake lock)` again, and rebuild. `upgrade` builds the option set for the new commit as part of the same run.
 
+### Taking only some of it
+
+A nixpkgs update moves everything at once: a nixpkgs commit is one consistent set of packages, and the binary cache only has builds of those sets. So knixl doesn't pick packages out of an update; it lets you decide whether to take the update, and how far.
+
+- **Only when it fixes something.** `knixl upgrade --refresh --if-security` runs the [update report](#being-told-about-updates) first and only refreshes if the update fixes at least one CVE. Add `--min-severity high` (or `medium`, `critical`) to ignore lesser fixes. It needs vulnix, and refuses rather than guessing without it.
+- **Only as far as a version.** `knixl upgrade --refresh --keep curl=8.19.* --keep linux=6.12.*` moves to the newest nixpkgs that still has each named package within its pattern (`*` matches anything). It only considers official channel releases (the commits Hydra tested and the cache built), and finds the right one by bisection, evaluating a handful of them, so it takes a minute or so. The package name is a nixpkgs attribute (`linux` is the kernel package). If even the next release breaks a constraint, nothing moves.
+- **One application at a time.** For a package the host installs itself with `package`, the update report lists a `knixl install --host <host> <package>@<version>` line for each that changes: a [version pin](08-packages.md#pinning-a-version) that takes that one package's new version and leaves the rest of nixpkgs where it is. This only works for applications; a library like openssl is used by everything built against it, so its fixes come with the whole update.
+
+The TUI's **Check for updates** screen puts these together: it runs the report, shows how many CVEs the update fixes, and lets you choose the whole update (optionally only if it fixes CVEs) or individual application pins, then applies them.
+
+## Being told about updates
+
+`knixl updates` reports what `upgrade --refresh` would change, without changing anything: for each host that would move, the package versions that change (classed as major, minor, patch, other or downgrade) and the security fixes among them.
+
+```sh
+knixl updates            # markdown, e.g. for a pull request
+knixl updates --json     # for scripts
+```
+
+It refreshes a copy of the project, evaluates each host's system before and after (it doesn't build them), and diffs the two. Security fixes come from [vulnix](https://github.com/nix-community/vulnix), which it runs on both: a CVE flagged on the current system and not on the refreshed one is fixed, and the report lists each with its CVSS score and severity. A package whose version stays the same but loses a CVE shows as "patched". vulnix matches CVEs to packages by name across the whole build closure, so the list of what's still flagged afterwards (folded away at the end of the report) includes false positives; the fixes, being a difference between two scans, are the useful part. Without vulnix on the `PATH` (or `KNIXL_VULNIX` pointing at it), the report leaves security out and says so.
+
+It needs a generated flake (a `system` block) and Nix, and the first run downloads vulnix's CVE database, so expect a few minutes.
+
+### A daily pull request
+
+This GitHub Actions workflow runs every morning, and when there's anything to take, opens (or updates) a draft pull request with the refresh applied and the report as its description, labelled `security` when the update fixes any CVEs:
+
+```yaml
+name: nixpkgs updates
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  updates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/vulnix
+          key: vulnix-${{ github.run_id }}
+          restore-keys: vulnix-
+      - run: nix profile install nixpkgs#vulnix nixpkgs#nixfmt github:1stvamp/knixl
+      - run: knixl updates > "$RUNNER_TEMP/report.md"
+      - id: security
+        run: |
+          if grep -qE '^\*\*[1-9][0-9]* CVEs? fixed' "$RUNNER_TEMP/report.md"; then
+            echo "labels=security" >> "$GITHUB_OUTPUT"
+          fi
+      - run: |
+          knixl upgrade --refresh --yes
+          knixl generate
+          git add generated
+          (cd generated && nix flake lock)
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: nixpkgs-updates
+          title: nixpkgs updates
+          body-path: ${{ runner.temp }}/report.md
+          draft: true
+          labels: ${{ steps.security.outputs.labels }}
+```
+
+When nothing moves, the refresh changes no files and no pull request is opened. Merging the pull request is the update.
+
 ## In CI
 
 Put this in your pipeline:

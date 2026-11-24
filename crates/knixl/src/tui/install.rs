@@ -1007,6 +1007,7 @@ mod tests {
                         label: host.to_string(),
                     }
                 })),
+                updates: None,
             });
         });
     }
