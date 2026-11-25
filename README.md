@@ -10,6 +10,10 @@
 
 knixl generates maintainable, human-readable Nix from small amounts of opinionated KDL.
 
+- **Checked**: a typo, or an option that doesn't exist in your nixpkgs, refuses to generate.
+- **Locked**: the same KDL always gives the same bytes, and upgrades wait for you to review them.
+- **Pinned**: `knixl install curl@8.4.0` pins one package to one version on one host.
+
 **Documentation: [knixl.dev/guide](https://knixl.dev/guide/introduction/)**, starting with [your first host](https://knixl.dev/guide/first-host/).
 
 Pronounced "nix-ull". You describe each machine in a few lines of KDL; knixl writes ordinary NixOS modules from it, checks them against the real NixOS options, and records a hash of everything in a lockfile, so the same KDL always gives the same Nix and a knixl upgrade can't change your output without showing you first.
