@@ -8,12 +8,16 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+## [1.11.3] - 2026-11-25
+
+A clearer version skew error, and knixl.dev as the crates.io homepage.
+
 ### Changed
 - The version skew error now names each version that differs, as in "formatter 1.4.0 in the
   lock, 1.5.0 running", and gives both ways out: run with the locked version (for nixfmt, on
   `PATH` or through `KNIXL_FORMATTER`), or `knixl upgrade` to move to the running one. With
-  `--json` the deltas are printed as a `skew` object.
-- The crates.io homepage now points at knixl.dev.
+  `--json` the deltas are printed as a `skew` object (#150).
+- The crates.io homepage now points at knixl.dev (#150).
 
 ## [1.11.2] - 2026-11-24
 
@@ -453,7 +457,8 @@ reproducibility and drift-detection model.
 - Published to crates.io with prebuilt binaries for Linux (gnu and musl) and
   macOS on x86_64 and aarch64.
 
-[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.11.2...HEAD
+[Unreleased]: https://github.com/1stvamp/knixl/compare/v1.11.3...HEAD
+[1.11.3]: https://github.com/1stvamp/knixl/compare/v1.11.2...v1.11.3
 [1.11.2]: https://github.com/1stvamp/knixl/compare/v1.11.1...v1.11.2
 [1.11.1]: https://github.com/1stvamp/knixl/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/1stvamp/knixl/compare/v1.10.0...v1.11.0
