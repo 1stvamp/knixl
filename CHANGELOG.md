@@ -8,6 +8,13 @@ see `docs/release-changelog.md` for how each entry is written.
 
 ## [Unreleased]
 
+### Changed
+- The version skew error now names each version that differs, as in "formatter 1.4.0 in the
+  lock, 1.5.0 running", and gives both ways out: run with the locked version (for nixfmt, on
+  `PATH` or through `KNIXL_FORMATTER`), or `knixl upgrade` to move to the running one. With
+  `--json` the deltas are printed as a `skew` object.
+- The crates.io homepage now points at knixl.dev.
+
 ## [1.11.2] - 2026-11-24
 
 A fix for `knixl updates` in CI, and a restructure of the code behind it.

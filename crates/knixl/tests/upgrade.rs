@@ -269,6 +269,55 @@ fn upgrade_prints_migration_notes_for_a_module_bump() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn generate_names_each_skewed_version_and_both_ways_out() {
+    let root = temp_project("skew-message");
+    assert_eq!(knixl(&root, &["generate"]).status.code(), Some(0));
+
+    let lock_path = root.join("knixl.lock.kdl");
+    let lock = fs::read_to_string(&lock_path).unwrap();
+    let lock: String = lock
+        .lines()
+        .map(|l| {
+            if l.trim_start().starts_with("formatter ") {
+                let start = l.find("version=\"").unwrap() + "version=\"".len();
+                let end = start + l[start..].find('"').unwrap();
+                format!("{}0.0.1{}", &l[..start], &l[end..])
+            } else {
+                l.replace(
+                    "module \"web-service\" version=\"1.2.0\"",
+                    "module \"web-service\" version=\"1.0.0\"",
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&lock_path, lock + "\n").unwrap();
+    fs::remove_file(root.join("generated/hosts/web.nix")).unwrap();
+
+    let out = knixl(&root, &["generate"]);
+    assert_eq!(out.status.code(), Some(4));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("version skew: formatter 0.0.1 in the lock"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("version skew: module web-service 1.0.0 in the lock, 1.2.0 running"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("KNIXL_FORMATTER"), "{stderr}");
+    assert!(stderr.contains("knixl upgrade"), "{stderr}");
+
+    let out = knixl(&root, &["--json", "generate"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(r#"{"what":"module web-service","locked":"1.0.0","running":"1.2.0"}"#),
+        "{stdout}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 /// issue #22 review fix: `upgrade` without `--yes` must preview a pending baseline
 /// resolution (a network lookup, but read-only) and never write it, and must not report
 /// "already up to date" when there is a baseline pending.

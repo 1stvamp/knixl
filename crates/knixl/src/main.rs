@@ -444,7 +444,6 @@ fn run(cli: Cli, ctx: &Ctx) -> Code {
             // Drift is NOT this gate: it is handled per file below as exit 3.
             if plan.skew_needs_ack() {
                 report_skew(&plan, cli.json);
-                eprintln!("version skew present: run `knixl upgrade` to review and apply");
                 return Code::NeedsAck;
             }
             // Precedence, not numeric order: drift (3) outranks a pending regeneration (6),

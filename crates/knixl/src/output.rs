@@ -122,8 +122,52 @@ pub(crate) fn report_warnings(warnings: &[String]) {
     }
 }
 
-pub(crate) fn report_skew(_p: &Plan, _json: bool) {
-    eprintln!("version skew: recorded versions differ from the running tool; run `knixl upgrade`");
+pub(crate) fn report_skew(p: &Plan, json: bool) {
+    // Every file carries the same deltas; read them from the first skew present.
+    let Some(skew) = p.files.iter().find_map(|f| f.skew.as_ref()) else {
+        return;
+    };
+    let mut deltas: Vec<(String, String, String)> = Vec::new();
+    if let Some(d) = &skew.tool {
+        deltas.push(("knixl".into(), d.locked.to_string(), d.running.to_string()));
+    }
+    if let Some(d) = &skew.formatter {
+        deltas.push(("formatter".into(), d.locked.clone(), d.running.clone()));
+    }
+    for (name, d) in &skew.modules {
+        deltas.push((
+            format!("module {name}"),
+            d.locked.to_string(),
+            d.running.to_string(),
+        ));
+    }
+    if json {
+        let items: Vec<String> = deltas
+            .iter()
+            .map(|(what, locked, running)| {
+                format!(
+                    "{{\"what\":{},\"locked\":{},\"running\":{}}}",
+                    json_str(what),
+                    json_str(locked),
+                    json_str(running)
+                )
+            })
+            .collect();
+        println!("{{\"skew\":[{}]}}", items.join(","));
+    }
+    for (what, locked, running) in &deltas {
+        eprintln!("version skew: {what} {locked} in the lock, {running} running");
+    }
+    if let Some(d) = &skew.tool {
+        eprintln!("  to keep knixl {}: run that version of knixl", d.locked);
+    }
+    if let Some(d) = &skew.formatter {
+        eprintln!(
+            "  to keep formatter {}: put that nixfmt first on PATH, or set KNIXL_FORMATTER to it",
+            d.locked
+        );
+    }
+    eprintln!("  to move to the running versions: run `knixl upgrade` to review and apply");
 }
 
 pub(crate) fn report_taint(f: &knixl_lock::FilePlan, _json: bool) {

@@ -24,8 +24,10 @@ Someone edited a generated file. Look at the edit with `git diff`, move anything
 **`orphan: generated/hosts/nas.nix is no longer generated (use --prune to delete)`** (exit 6)
 A host was removed or renamed and its old generated file is still there. `knixl generate --prune` deletes it.
 
-**`version skew: recorded versions differ from the running tool; run knixl upgrade`** (exit 4)
-Something recorded in the lockfile has changed version since it was written, and the output would change: knixl itself, a module, or the formatter. A different `nixfmt` is the usual culprit between teammates or in CI, because formatter releases format code differently; the lockfile records the version it expects (the `formatter` line). Run `knixl upgrade` to see the difference and `knixl upgrade --yes` to accept it, or, if you didn't mean to change versions, use the knixl and nixfmt versions the lockfile records.
+**`version skew: formatter 1.4.0 in the lock, 1.5.0 running`** (exit 4)
+Something recorded in the lockfile has changed version since it was written, and the output would change: knixl itself, a module, or the formatter. There's one line for each version that differs, followed by the ways out. A different `nixfmt` is the usual culprit between teammates or in CI, because formatter releases format code differently; the lockfile records the version it expects (the `formatter` line). Run `knixl upgrade` to see the difference and `knixl upgrade --yes` to accept it, or, if you didn't mean to change versions, use the knixl and nixfmt versions the lockfile records.
+
+To keep the formatter the lock records (also on the `formatter` line in `knixl.lock.kdl`), run knixl with that nixfmt, either first on your `PATH` or named directly with `KNIXL_FORMATTER=/path/to/nixfmt knixl generate`. This usually turns up after a `nix flake update`, because a nixfmt that comes from your flake's nixpkgs moves with it. The nixfmt bundled with knixl's flake package is only used when there's no other nixfmt on your `PATH`, so it can disagree with the lockfile in the same way.
 
 ## Releases, pins and inputs
 
